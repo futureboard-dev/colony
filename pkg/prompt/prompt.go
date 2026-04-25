@@ -9,7 +9,7 @@ import (
 //go:embed build.md
 var buildTmpl string
 
-//go:embed build-continue.md
+//go:embed build_continue.md
 var buildContinueTmpl string
 
 //go:embed fix.md
