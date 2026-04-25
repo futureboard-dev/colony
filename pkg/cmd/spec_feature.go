@@ -15,7 +15,7 @@ var specFeatureCmd = &cobra.Command{
 	Use:   "spec-feature [feature-name]",
 	Short: "Generate a TASK.md spec for a feature using an LLM",
 	Long: `Reads requirements from inline text or a file, calls the LLM to produce
-a filled-in Agent Task Spec, and writes it to .colony/features/<name>/TASK.md.
+a filled-in Agent Task Spec, and writes it to .colony/specs/<name>/TASK.md.
 
 Examples:
   colony spec_feature add-user-auth "users log in with email and password"
@@ -58,13 +58,13 @@ func runSpecFeature(cmd *cobra.Command, args []string) error {
 	}
 
 	slugName := slugify(featureName)
-	featureDir := filepath.Join(root, ".colony", "features", slugName)
+	featureDir := filepath.Join(root, ".colony", "specs", slugName)
 
 	if _, err := os.Stat(featureDir); err == nil {
-		return fmt.Errorf("feature directory already exists: %s", featureDir)
+		return fmt.Errorf("spec directory already exists: %s", featureDir)
 	}
 	if err := os.MkdirAll(featureDir, 0755); err != nil {
-		return fmt.Errorf("cannot create feature directory: %w", err)
+		return fmt.Errorf("cannot create spec directory: %w", err)
 	}
 
 	p, err := prompt.SpecFeature(input)
