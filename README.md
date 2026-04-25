@@ -328,53 +328,52 @@ To switch to a local model later:
    `RunE` — don't hold a long-lived client.
 4. Put shared logic in `pkg/module/`, never in `pkg/cmd/`.
 
-## Build
-
-```bash
-go build -o colony .
-./colony version
-./colony init
-./colony blueprint "a tiny URL shortener in Go"
-```
-
-## Usage
+## Quick start
 
 ### Prerequisites
 
 - Go 1.21+
 - An API key for your chosen provider (default: Anthropic)
 
-  ```bash
-  export ANTHROPIC_API_KEY=sk-ant-...
-  ```
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+```
 
-### Quick start
+### First-time setup
 
 ```bash
-# 1. Build
+# 1. Build the local binary — must output to ./colony, not ~/go/bin/colony
 go build -o colony .
 
-# 2. Initialise a project (creates .colony/config.json)
-./colony init
+# 2. Add ~/.local/bin to PATH (one-time)
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
 
-# 3. Generate a blueprint
-./colony blueprint "a URL shortener in Go"
+# 3. Install — creates ~/.local/bin/colony → this repo's binary
+./colony install
 
-# 4. Summarise git log
-./colony log
+# 4. Verify
+which colony          # → /Users/<you>/.local/bin/colony
+colony version
+```
 
-# 5. Run the swarm planner
-./colony swarm "add rate limiting to the API"
+> The symlink points at the binary in this repo. After any rebuild (`go build -o colony .`)
+> the change is live immediately — no need to re-run `install`.
 
-# 6. Create / list / complete tasks
-./colony task add "write unit tests for the auth package"
-./colony task list
-./colony task done <id>
+### Usage
+
+```bash
+colony init                                        # create .colony/config.json
+colony blueprint "a URL shortener in Go"           # generate a project blueprint
+colony log                                         # summarise git log
+colony swarm "add rate limiting to the API"        # run the swarm planner
+colony task add "write unit tests for auth"        # create a task
+colony task list                                   # list tasks
+colony task done <id>                              # mark task complete
 ```
 
 ### Switching LLM provider
 
-Edit `.colony/config.json`:
+Edit `.colony/config.json` — no code changes needed:
 
 ```json
 {
@@ -382,51 +381,9 @@ Edit `.colony/config.json`:
 }
 ```
 
-No code changes needed.
-
-## Install to `~/.local/bin` (system-wide via symlink)
-
-`colony install` creates a symlink from `~/.local/bin/colony` to the current
-binary so you can run `colony` from any directory without a `./` prefix.
-The symlink always points at the binary inside this repo, so rebuilding is
-enough to pick up changes — no need to re-install.
-
-### Step-by-step
-
-```bash
-# 1. Build the binary
-go build -o colony .
-
-# 2. Add ~/.local/bin to your PATH (one-time setup)
-#    Add this line to ~/.zshrc or ~/.bashrc, then reload your shell:
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
-source ~/.zshrc
-
-# 3. Install (creates the symlink automatically)
-./colony install
-
-# 4. Verify — should work from any directory now
-which colony          # → /Users/<you>/.local/bin/colony
-colony version
-```
-
-### Day-to-day workflow after install
-
-```bash
-# Rebuild and test — the symlink picks up the change immediately
-go build -o colony . && colony version
-```
-
 ### Uninstall
 
 ```bash
 colony uninstall
-# or manually:
-rm ~/.local/bin/colony
+# or manually: rm ~/.local/bin/colony
 ```
-
-> **For contributors / new team members** — `colony install` and
-> `colony uninstall` are plain Cobra subcommands in `pkg/cmd/install.go`.
-> They resolve `os.Executable()` at runtime, strip any existing symlinks,
-> and call `os.Symlink`. No `sudo`, no package manager, no global state
-> outside `~/.local/bin/colony`.
