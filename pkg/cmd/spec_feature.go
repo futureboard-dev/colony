@@ -6,110 +6,88 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/jirateep/colony/pkg/llm"
+	"github.com/jirateep/colony/pkg/prompt"
 	"github.com/spf13/cobra"
 )
 
 var specFeatureCmd = &cobra.Command{
-	Use:   "spec-feature [feature-name]",
-	Short: "Create a new feature directory with Agent Task Spec template",
-	Long: `Creates a feature directory at ./colony/features/[feature-name] with a TASK.md
-template following the Agent Task Spec format.
+	Use:   "spec_feature [feature-name]",
+	Short: "Generate a TASK.md spec for a feature using an LLM",
+	Long: `Reads requirements from inline text or a file, calls the LLM to produce
+a filled-in Agent Task Spec, and writes it to .colony/features/<name>/TASK.md.
 
-Example:
-  colony spec-feature add-user-auth
-  colony spec-feature "implement payment flow"`,
+Examples:
+  colony spec_feature add-user-auth "users log in with email and password"
+  colony spec_feature payment-flow --file requirements.md`,
 	Args: cobra.ExactArgs(1),
 	RunE: runSpecFeature,
 }
 
+var sfFile string
+
 func init() {
+	specFeatureCmd.Flags().StringVar(&sfFile, "file", "", "read requirements from this file instead of inline text")
 	rootCmd.AddCommand(specFeatureCmd)
 }
 
 func runSpecFeature(cmd *cobra.Command, args []string) error {
-	featureName := strings.Join(args, " ")
-	slugName := slugify(featureName)
+	featureName := args[0]
 
-	cwd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("cannot determine current directory: %w", err)
+	var input string
+	if sfFile != "" {
+		data, err := os.ReadFile(sfFile)
+		if err != nil {
+			return fmt.Errorf("read requirements file: %w", err)
+		}
+		input = string(data)
+	} else {
+		// remaining words after feature name come from stdin prompt — but
+		// cobra gives us only 1 arg (ExactArgs(1)), so read extra from flags.
+		// For inline text the user passes it as the single quoted arg.
+		input = featureName
 	}
 
-	featureDir := filepath.Join(cwd, ".colony", "features", slugName)
+	if strings.TrimSpace(input) == "" {
+		return fmt.Errorf("requirements are empty — pass text as the argument or use --file")
+	}
+
+	cfg, root, err := loadConfig()
+	if err != nil {
+		return err
+	}
+
+	slugName := slugify(featureName)
+	featureDir := filepath.Join(root, ".colony", "features", slugName)
 
 	if _, err := os.Stat(featureDir); err == nil {
 		return fmt.Errorf("feature directory already exists: %s", featureDir)
 	}
-
 	if err := os.MkdirAll(featureDir, 0755); err != nil {
 		return fmt.Errorf("cannot create feature directory: %w", err)
 	}
 
-	taskContent := fmt.Sprintf(`# Agent Task Spec
+	p, err := prompt.SpecFeature(input)
+	if err != nil {
+		return fmt.Errorf("build prompt: %w", err)
+	}
 
-## 1. Task (one sentence, one deliverable)
-<!-- What is the single thing Claude must produce? -->
-
-
----
-
-## 2. Files In Scope
-
-CREATE:
--
-
-MODIFY:
--
-
-DO NOT TOUCH:
--
-
----
-
-## 3. Done Criteria
-<!-- Must be testable. Not "it works" — specific assertions. -->
-
-- [ ]
-- [ ]
-- [ ]
-
----
-
-## 4. Explicit Decisions (do not infer these)
-<!-- Decisions already made. Claude must not deviate or "improve" these. -->
-
--
--
-
----
-
-## 5. Environment Variables Needed
-
-` + "```bash" + `
-
-` + "```" + `
-
----
-
-## 6. Tests to Write
-
--
-
----
-
-## 7. Context
-<!-- Paste your full requirements doc / notes below -->
-
----
-`)
+	ex := llm.New(cfg.Role("engineer"))
 
 	taskFile := filepath.Join(featureDir, "TASK.md")
-	if err := os.WriteFile(taskFile, []byte(taskContent), 0644); err != nil {
-		return fmt.Errorf("cannot write TASK.md: %w", err)
+	f, err := os.Create(taskFile)
+	if err != nil {
+		return fmt.Errorf("create TASK.md: %w", err)
+	}
+	defer f.Close()
+
+	fmt.Printf("Generating spec for %q...\n", slugName)
+	if err := ex.RunHeadless(cmd.Context(), root, p, f); err != nil {
+		os.RemoveAll(featureDir)
+		return fmt.Errorf("llm: %w", err)
 	}
 
 	fmt.Printf("✓ Created feature: %s\n", slugName)
-	fmt.Printf("  Directory: %s\n", featureDir)
 	fmt.Printf("  Task file: %s\n", taskFile)
 	return nil
 }

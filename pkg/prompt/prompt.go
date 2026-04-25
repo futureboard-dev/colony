@@ -24,6 +24,9 @@ var scoutTmpl string
 //go:embed review.md
 var reviewTmpl string
 
+//go:embed spec_feature.md
+var specFeatureTmpl string
+
 func render(tmpl string, data any) (string, error) {
 	t, err := template.New("").Parse(tmpl)
 	if err != nil {
@@ -58,4 +61,8 @@ func Scout(spec string) (string, error) {
 
 func Review(spec, diff string) (string, error) {
 	return render(reviewTmpl, map[string]any{"Spec": spec, "Diff": diff})
+}
+
+func SpecFeature(input string) (string, error) {
+	return render(specFeatureTmpl, map[string]any{"Input": input})
 }
