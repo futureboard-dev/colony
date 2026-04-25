@@ -12,7 +12,7 @@ import (
 )
 
 var specFeatureCmd = &cobra.Command{
-	Use:   "spec_feature [feature-name]",
+	Use:   "spec-feature [feature-name]",
 	Short: "Generate a TASK.md spec for a feature using an LLM",
 	Long: `Reads requirements from inline text or a file, calls the LLM to produce
 a filled-in Agent Task Spec, and writes it to .colony/features/<name>/TASK.md.
