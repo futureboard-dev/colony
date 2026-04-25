@@ -1,0 +1,67 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Binary output (project-specific)
+colony
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+coverage.txt
+coverage.html
+
+# Go workspace file
+go.work
+go.work.sum
+
+# Dependency directories
+vendor/
+
+# Build cache
+.cache/
+
+# IDE/Editor specific
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS specific
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+
+# Environment and secrets
+.env
+.env.*
+*.env
+!.env.example
+
+# Debug and profiling
+debug
+*.log
+*.prof
+cpu.prof
+mem.prof
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Project specific
+.colony
+.claude
+.crush
+CRUSH.md
+CLAUDE.md

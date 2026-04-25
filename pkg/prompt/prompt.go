@@ -1,0 +1,61 @@
+package prompt
+
+import (
+	"bytes"
+	_ "embed"
+	"text/template"
+)
+
+//go:embed build.md
+var buildTmpl string
+
+//go:embed build-continue.md
+var buildContinueTmpl string
+
+//go:embed fix.md
+var fixTmpl string
+
+//go:embed coordinator.md
+var coordinatorTmpl string
+
+//go:embed scout.md
+var scoutTmpl string
+
+//go:embed review.md
+var reviewTmpl string
+
+func render(tmpl string, data any) (string, error) {
+	t, err := template.New("").Parse(tmpl)
+	if err != nil {
+		return "", err
+	}
+	var buf bytes.Buffer
+	if err := t.Execute(&buf, data); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
+}
+
+func Build(lang string) (string, error) {
+	return render(buildTmpl, map[string]any{"Lang": lang})
+}
+
+func BuildContinue(lang string) (string, error) {
+	return render(buildContinueTmpl, map[string]any{"Lang": lang})
+}
+
+func Fix(gate, errors string) (string, error) {
+	return render(fixTmpl, map[string]any{"Gate": gate, "Errors": errors})
+}
+
+func Coordinator(spec string) (string, error) {
+	return render(coordinatorTmpl, map[string]any{"Spec": spec})
+}
+
+func Scout(spec string) (string, error) {
+	return render(scoutTmpl, map[string]any{"Spec": spec})
+}
+
+func Review(spec, diff string) (string, error) {
+	return render(reviewTmpl, map[string]any{"Spec": spec, "Diff": diff})
+}
