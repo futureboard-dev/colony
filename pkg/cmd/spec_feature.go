@@ -83,13 +83,13 @@ func runSpecFeature(cmd *cobra.Command, args []string) error {
 
 	fmt.Fprintf(f, "# Feature: %s\n\n", slugName)
 
-	fmt.Printf("Generating spec for %q...\n", slugName)
+	fmt.Printf("%sGenerating spec for %q...%s\n", ansiCyan, slugName, ansiReset)
 	if err := ex.RunHeadless(cmd.Context(), root, p, f); err != nil {
 		os.RemoveAll(featureDir)
 		return fmt.Errorf("llm: %w", err)
 	}
 
-	fmt.Printf("✓ Created feature: %s\n", slugName)
+	fmt.Printf("%s✓ Created feature: %s%s\n", ansiGreen, slugName, ansiReset)
 	fmt.Printf("  Task file: %s\n", taskFile)
 	return nil
 }

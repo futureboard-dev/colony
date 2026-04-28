@@ -16,6 +16,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const (
+	ansiReset  = "\033[0m"
+	ansiGreen  = "\033[32m"
+	ansiRed    = "\033[31m"
+	ansiCyan   = "\033[36m"
+	ansiYellow = "\033[33m"
+)
+
 var blueprintCmd = &cobra.Command{
 	Use:   "blueprint",
 	Short: "Run an agent pipeline to implement a spec in an isolated worktree",
@@ -122,6 +130,7 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 		if err := runGates(ctx, bpResume, langs, ex, out); err != nil {
 			return bpBlocked(bpResume, logPath, err, out)
 		}
+		fmt.Fprintf(out, "%s✓ Resumed and passed gates on branch: %s%s\n", ansiGreen, branch, ansiReset)
 		return bpCommit(bpResume, branch, "fix: resume after manual review — gates passed", out)
 	}
 
@@ -131,7 +140,7 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 		bpBanner(out, "🔄 BLUEPRINT CONTINUE", map[string]string{
 			"Worktree": bpContinue, "Branch": branch, "Language": bpLang,
 		})
-		fmt.Fprintf(out, "\n▶ STEP 1/3  Agent: continue writing code\n")
+		fmt.Fprintf(out, "\n%s▶ STEP 1/3  Agent: continue writing code%s\n", ansiCyan, ansiReset)
 		contPrompt, err := prompt.BuildContinue(bpLang)
 		if err != nil {
 			return err
@@ -139,7 +148,7 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 		if err := ex.RunAgent(ctx, bpContinue, contPrompt, out); err != nil {
 			return fmt.Errorf("continue agent failed: %w", err)
 		}
-		fmt.Fprintf(out, "✓ Agent finished continuing code\n")
+		fmt.Fprintf(out, "%s✓ Agent finished continuing code%s\n", ansiGreen, ansiReset)
 		if err := runGates(ctx, bpContinue, langs, ex, out); err != nil {
 			return bpBlocked(bpContinue, logPath, err, out)
 		}
@@ -171,7 +180,7 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 	})
 
 	// Step 1: Setup worktree
-	fmt.Fprintf(out, "▶ STEP 1/4  Setup isolated worktree\n")
+	fmt.Fprintf(out, "%s▶ STEP 1/4  Setup isolated worktree%s\n", ansiCyan, ansiReset)
 	worktreePath, err := module.SetupWorktree(root, projectName, branch, baseBranch)
 	if err != nil {
 		return err
@@ -183,10 +192,10 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(out, "   Installing dependencies...\n")
 		module.RunShell("pnpm install --frozen-lockfile", worktreePath, out) //nolint:errcheck
 	}
-	fmt.Fprintf(out, "✓ Worktree ready: %s\n", worktreePath)
+	fmt.Fprintf(out, "%s✓ Worktree ready: %s%s\n", ansiGreen, worktreePath, ansiReset)
 
 	// Step 2: Agent writes code
-	fmt.Fprintf(out, "\n▶ STEP 2/4  Agent: write code\n")
+	fmt.Fprintf(out, "\n%s▶ STEP 2/4  Agent: write code%s\n", ansiCyan, ansiReset)
 	writePrompt, err := prompt.Build(bpLang)
 	if err != nil {
 		return err
@@ -194,7 +203,7 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 	if err := ex.RunAgent(ctx, worktreePath, writePrompt, out); err != nil {
 		return fmt.Errorf("agent failed: %w", err)
 	}
-	fmt.Fprintf(out, "✓ Agent finished writing code\n")
+	fmt.Fprintf(out, "%s✓ Agent finished writing code%s\n", ansiGreen, ansiReset)
 
 	// Steps 3–4: Quality gates
 	if err := runGates(ctx, worktreePath, langs, ex, out); err != nil {
@@ -209,7 +218,7 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 
 	remoteURL := gitRemoteURL(worktreePath)
 	fmt.Fprintf(out, "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
-	fmt.Fprintf(out, "✅ BLUEPRINT COMPLETE\n\nBranch:   %s\nWorktree: %s\n\n", branch, worktreePath)
+	fmt.Fprintf(out, "%s✅ BLUEPRINT COMPLETE\n\nBranch:   %s\nWorktree: %s\n%s", ansiGreen, branch, worktreePath, ansiReset)
 	fmt.Fprintf(out, "Next:\n  Review:  git diff %s..%s\n", baseBranch, branch)
 	fmt.Fprintf(out, "  Push:    cd %s && git push -u origin %s\n", worktreePath, branch)
 	if remoteURL != "" {
@@ -224,7 +233,7 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 // Exported so swarm.go can reuse it.
 func runGates(ctx context.Context, worktreePath string, langs module.LangCommands, ex *llm.Executor, out io.Writer) error {
 	const maxAttempts = 2
-	fmt.Fprintf(out, "\n▶ GATES  format → typecheck → tests\n")
+	fmt.Fprintf(out, "\n%s▶ GATES  format → typecheck → tests%s\n", ansiCyan, ansiReset)
 	module.RunFormat(langs.Format, worktreePath, out)
 	if err := gateWithFix(ctx, "Type check", langs.TypeCheck, worktreePath, maxAttempts, ex, out); err != nil {
 		return err
@@ -237,10 +246,11 @@ func gateWithFix(ctx context.Context, name, gateCmd, workdir string, maxAttempts
 		fmt.Fprintf(out, "   %s (attempt %d/%d): %s\n", name, attempt, maxAttempts, gateCmd)
 		errOut, err := module.RunGateCapture(gateCmd, workdir)
 		if err == nil {
-			fmt.Fprintf(out, "✓ %s passed\n", name)
+			fmt.Fprintf(out, "%s✓ %s passed%s\n", ansiGreen, name, ansiReset)
 			return nil
 		}
-		fmt.Fprintf(out, "✗ %s failed\n%s\n", name, errOut)
+		fmt.Fprintf(out, "%s✗ %s failed%s\n", ansiRed, name, ansiReset)
+		fmt.Fprintf(out, "%s\n", errOut)
 		if attempt < maxAttempts {
 			fixP, ferr := prompt.Fix(name, errOut)
 			if ferr != nil {
@@ -248,7 +258,7 @@ func gateWithFix(ctx context.Context, name, gateCmd, workdir string, maxAttempts
 			}
 			fmt.Fprintf(out, "   Asking agent to fix %s errors...\n", name)
 			if rerr := ex.RunAgent(ctx, workdir, fixP, out); rerr != nil {
-				fmt.Fprintf(out, "⚠ fix agent error: %v\n", rerr)
+				fmt.Fprintf(out, "%s⚠ fix agent error: %v%s\n", ansiYellow, rerr, ansiReset)
 			}
 		}
 	}
@@ -277,8 +287,8 @@ func bpCommit(worktreePath, branch, msg string, out io.Writer) error {
 
 func bpBlocked(worktreePath, logPath string, err error, out io.Writer) error {
 	fmt.Fprintf(out, "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
-	fmt.Fprintf(out, "🚫 BLUEPRINT BLOCKED\n%v\nWorktree: %s\nLog:      %s\n", err, worktreePath, logPath)
-	fmt.Fprintf(out, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+	fmt.Fprintf(out, "%s🚫 BLUEPRINT BLOCKED\n%v\nWorktree: %s\nLog:      %s%s\n", ansiRed, err, worktreePath, logPath, ansiReset)
+	fmt.Fprintf(out, "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 	return err
 }
 
@@ -309,7 +319,7 @@ func bpRunHeadless(logPath string) error {
 		return err
 	}
 	fmt.Printf("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
-	fmt.Printf("🚀 BLUEPRINT RUNNING HEADLESS\n")
+	fmt.Printf("%s🚀 BLUEPRINT RUNNING HEADLESS%s\n", ansiCyan, ansiReset)
 	fmt.Printf("   PID:  %d\n   Log:  tail -f %s\n   Stop: kill %d\n", cmd.Process.Pid, logPath, cmd.Process.Pid)
 	fmt.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
 	return nil
