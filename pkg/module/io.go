@@ -58,14 +58,25 @@ func Slugify(s string) string {
 // ExtractTaskDesc pulls a task description from a spec file's first heading or filename.
 func ExtractTaskDesc(specContent, filename string) string {
 	scanner := bufio.NewScanner(strings.NewReader(specContent))
+	inTask := false
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if after, ok := strings.CutPrefix(line, "# "); ok {
-			after, _ = strings.CutPrefix(after, "Plan: ")
-			return after
+		if inTask {
+			if line == "" || strings.HasPrefix(line, "<!--") {
+				continue
+			}
+			return line
 		}
-		if after, ok := strings.CutPrefix(line, "## 1."); ok {
-			return strings.TrimSpace(after)
+		if after, ok := strings.CutPrefix(line, "# "); ok {
+			after, _ = strings.CutPrefix(after, "Feature: ")
+			after, _ = strings.CutPrefix(after, "Plan: ")
+			if after != "Agent Task Spec" {
+				return after
+			}
+			continue
+		}
+		if _, ok := strings.CutPrefix(line, "## 1."); ok {
+			inTask = true
 		}
 	}
 	base := strings.TrimSuffix(filename, ".md")

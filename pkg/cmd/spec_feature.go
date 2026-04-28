@@ -81,6 +81,8 @@ func runSpecFeature(cmd *cobra.Command, args []string) error {
 	}
 	defer f.Close()
 
+	fmt.Fprintf(f, "# Feature: %s\n\n", slugName)
+
 	fmt.Printf("Generating spec for %q...\n", slugName)
 	if err := ex.RunHeadless(cmd.Context(), root, p, f); err != nil {
 		os.RemoveAll(featureDir)

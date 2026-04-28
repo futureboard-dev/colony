@@ -64,5 +64,13 @@ func Review(spec, diff string) (string, error) {
 }
 
 func SpecFeature(input string) (string, error) {
-	return render(specFeatureTmpl, map[string]any{"Input": input})
+	t, err := template.New("").Delims("[[", "]]").Parse(specFeatureTmpl)
+	if err != nil {
+		return "", err
+	}
+	var buf bytes.Buffer
+	if err := t.Execute(&buf, map[string]any{"Input": input}); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
 }

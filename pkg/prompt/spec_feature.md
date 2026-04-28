@@ -61,4 +61,4 @@ DO NOT TOUCH:
 ---
 
 Requirements:
-{{.Input}}
+[[.Input]]

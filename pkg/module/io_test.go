@@ -47,9 +47,25 @@ func TestExtractTaskDescStripsPlaceholder(t *testing.T) {
 }
 
 func TestExtractTaskDescFromSubheading(t *testing.T) {
-	content := "## 1. Implement search endpoint\n\nDetails."
+	content := "## 1. Task (one sentence, one deliverable)\n<!-- comment -->\nImplement search endpoint\n\nDetails."
 	got := ExtractTaskDesc(content, "spec.md")
 	if got != "Implement search endpoint" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestExtractTaskDescFeaturePrefix(t *testing.T) {
+	content := "# Feature: add-user-auth\n\n# Agent Task Spec\n\n## 1. Task (one sentence, one deliverable)\n<!-- comment -->\nAdd email/password login\n"
+	got := ExtractTaskDesc(content, "TASK.md")
+	if got != "add-user-auth" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestExtractTaskDescSkipsAgentTaskSpecH1(t *testing.T) {
+	content := "# Agent Task Spec\n\n## 1. Task (one sentence, one deliverable)\nAdd a search endpoint\n"
+	got := ExtractTaskDesc(content, "spec.md")
+	if got != "Add a search endpoint" {
 		t.Errorf("got %q", got)
 	}
 }
