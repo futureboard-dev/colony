@@ -2,7 +2,8 @@ package prompt
 
 import (
 	"bytes"
-	_ "embed"
+	"embed"
+	"fmt"
 	"text/template"
 )
 
@@ -26,6 +27,20 @@ var reviewTmpl string
 
 //go:embed spec_feature.md
 var specFeatureTmpl string
+
+// ModulePrompts exposes the module-prompts directory as an embedded filesystem.
+//
+//go:embed module-prompts
+var ModulePrompts embed.FS
+
+// LoadModulePrompt reads a module prompt by role name from the embedded FS.
+func LoadModulePrompt(role string) (string, error) {
+	data, err := ModulePrompts.ReadFile("module-prompts/" + role + ".md")
+	if err != nil {
+		return "", fmt.Errorf("no module prompt for role %q", role)
+	}
+	return string(data), nil
+}
 
 func render(tmpl string, data any) (string, error) {
 	t, err := template.New("").Parse(tmpl)

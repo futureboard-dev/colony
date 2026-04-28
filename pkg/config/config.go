@@ -13,6 +13,36 @@ type LLMConfig struct {
 	APIKeyEnv string `json:"api_key_env,omitempty"`
 }
 
+// KeyEnvName returns the env var name for the API key.
+// APIKeyEnv in config takes precedence over the provider default.
+func (c LLMConfig) KeyEnvName() string {
+	if c.APIKeyEnv != "" {
+		return c.APIKeyEnv
+	}
+	switch c.Provider {
+	case "anthropic":
+		return "ANTHROPIC_API_KEY"
+	case "openrouter":
+		return "OPENROUTER_API_KEY"
+	case "openai":
+		return "OPENAI_API_KEY"
+	default:
+		return ""
+	}
+}
+
+// ValidateKey checks that the required API key environment variable is set.
+func (c LLMConfig) ValidateKey() error {
+	key := c.KeyEnvName()
+	if key == "" {
+		return fmt.Errorf("unknown provider %q: cannot derive API key env var — set api_key_env in config", c.Provider)
+	}
+	if os.Getenv(key) == "" {
+		return fmt.Errorf("missing API key for provider %q: %s is not set\n  Fix: export %s=<your-key>", c.Provider, key, key)
+	}
+	return nil
+}
+
 // Config is the top-level .colony/config.json structure.
 // Roles lets you assign different models to different agent roles.
 // If a role is not specified, the top-level LLM config is used.
@@ -63,9 +93,8 @@ func Init(projectRoot string) error {
 	cfg := Config{
 		Root: projectRoot,
 		LLM: LLMConfig{
-			Provider:  "anthropic",
-			Model:     "claude-opus-4-7",
-			APIKeyEnv: "ANTHROPIC_API_KEY",
+			Provider: "anthropic",
+			Model:    "claude-sonnet-4-6",
 		},
 	}
 	data, err := json.MarshalIndent(cfg, "", "  ")

@@ -218,16 +218,4 @@ If a user story cannot be designed against due to missing information, return in
 
 # INPUT
 
-## User Stories from BA AI
-
-<
-{paste BA AI JSON output here}
-
-> > >
-
-## Codebase Access
-
-<
-{describe how the architect should access the code: e.g., "Repository at /repo, use file-reading tools" or "Files attached" or "Use the available code-search tools"}
-
-> > >
+{paste BA AI JSON output and codebase access instructions here}
