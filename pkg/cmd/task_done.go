@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/jirateep/colony/pkg/module"
@@ -24,13 +25,14 @@ func init() {
 }
 
 func runTaskDone(cmd *cobra.Command, args []string) error {
-	branch := args[0]
+	input := args[0]
 
 	_, root, err := loadConfig()
 	if err != nil {
 		return err
 	}
 	projectName := module.ProjectName(root)
+	branch := normalizeBranchArg(input, projectName)
 
 	fmt.Printf("\n🧹 Cleaning up agent session...\n")
 	fmt.Printf("   Branch:   %s\n", branch)
@@ -55,4 +57,19 @@ func runTaskDone(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Printf("\n✅ Agent session cleaned up.\n")
 	return nil
+}
+
+// normalizeBranchArg accepts either a branch name (e.g. "agent/foo-...")
+// or an absolute worktree path and returns the branch name.
+func normalizeBranchArg(input, projectName string) string {
+	input = strings.TrimSpace(input)
+	if !filepath.IsAbs(input) {
+		return input
+	}
+	abs := filepath.Clean(input)
+	marker := string(filepath.Separator) + projectName + string(filepath.Separator)
+	if i := strings.Index(abs, marker); i >= 0 {
+		return abs[i+len(marker):]
+	}
+	return filepath.Base(filepath.Dir(abs)) + "/" + filepath.Base(abs)
 }
