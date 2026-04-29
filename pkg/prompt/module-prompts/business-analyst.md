@@ -78,9 +78,6 @@ Return a single JSON object with this exact schema:
 - Keep language plain, precise, and free of business jargon where possible.
 - Output ONLY the JSON object. No preamble, no commentary.
 
-# CLIENT INPUT
+# INPUT
 
-<
 {paste client message here}
-
-> > >

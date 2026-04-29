@@ -58,4 +58,5 @@ func init() {
 
 	rootCmd.AddCommand(installCmd)
 	rootCmd.AddCommand(uninstallCmd)
+	rootCmd.AddCommand(missionCmd)
 }

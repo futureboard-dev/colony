@@ -1,0 +1,39 @@
+name: feature-design
+input: "Design a user authentication feature with OAuth2 support for a web application. The system must support Google and GitHub as identity providers, issue short-lived JWTs, and allow seamless integration with an existing REST API."
+max_cycles: 3
+
+agents:
+  - id: analyst
+    role: business-analyst
+  - id: architect
+    role: architect
+  - id: pm_reviewer
+    role: project-manager
+  - id: tech_reviewer
+    role: architect
+  - id: final
+    role: project-manager
+
+flow:
+  # Linear start: seed input → analyst → architect
+  - from: __input__
+    to: analyst
+  - from: analyst
+    to: architect
+
+  # Fan-out: architect routes work to two parallel reviewers
+  - from: architect
+    to: pm_reviewer
+  - from: architect
+    to: tech_reviewer
+
+  # Fan-in: both reviewers must complete before the final review
+  - from: pm_reviewer
+    to: final
+  - from: tech_reviewer
+    to: final
+
+  # Cycle: if final reviewer rejects, send back to architect for revision
+  - from: final
+    on_approve: __output__
+    on_reject: architect

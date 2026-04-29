@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -97,5 +98,98 @@ func TestInitFailsIfAlreadyExists(t *testing.T) {
 	Init(tmp) //nolint:errcheck
 	if err := Init(tmp); err == nil {
 		t.Fatal("expected error on double init")
+	}
+}
+
+// --- KeyEnvName tests ---
+
+func TestKeyEnvNameAnthropic(t *testing.T) {
+	c := LLMConfig{Provider: "anthropic"}
+	if got := c.KeyEnvName(); got != "ANTHROPIC_API_KEY" {
+		t.Errorf("expected ANTHROPIC_API_KEY, got %s", got)
+	}
+}
+
+func TestKeyEnvNameOpenRouter(t *testing.T) {
+	c := LLMConfig{Provider: "openrouter"}
+	if got := c.KeyEnvName(); got != "OPENROUTER_API_KEY" {
+		t.Errorf("expected OPENROUTER_API_KEY, got %s", got)
+	}
+}
+
+func TestKeyEnvNameOpenAI(t *testing.T) {
+	c := LLMConfig{Provider: "openai"}
+	if got := c.KeyEnvName(); got != "OPENAI_API_KEY" {
+		t.Errorf("expected OPENAI_API_KEY, got %s", got)
+	}
+}
+
+func TestKeyEnvNameUnknownProvider(t *testing.T) {
+	c := LLMConfig{Provider: "unknown-llm"}
+	if got := c.KeyEnvName(); got != "" {
+		t.Errorf("expected empty string for unknown provider, got %s", got)
+	}
+}
+
+func TestKeyEnvNameAPIKeyEnvOverride(t *testing.T) {
+	c := LLMConfig{Provider: "anthropic", APIKeyEnv: "MY_CUSTOM_KEY"}
+	if got := c.KeyEnvName(); got != "MY_CUSTOM_KEY" {
+		t.Errorf("expected MY_CUSTOM_KEY override, got %s", got)
+	}
+}
+
+// --- ValidateKey tests ---
+
+func TestValidateKeySuccess(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-test-value")
+	c := LLMConfig{Provider: "anthropic"}
+	if err := c.ValidateKey(); err != nil {
+		t.Errorf("expected nil error when key is set, got: %v", err)
+	}
+}
+
+func TestValidateKeyMissingEnvVar(t *testing.T) {
+	os.Unsetenv("ANTHROPIC_API_KEY")
+	c := LLMConfig{Provider: "anthropic"}
+	err := c.ValidateKey()
+	if err == nil {
+		t.Fatal("expected error when key is unset")
+	}
+}
+
+func TestValidateKeyUnknownProvider(t *testing.T) {
+	c := LLMConfig{Provider: "bogus-provider"}
+	err := c.ValidateKey()
+	if err == nil {
+		t.Fatal("expected error for unknown provider with no api_key_env")
+	}
+}
+
+// --- Init generates correct model and no api_key_env ---
+
+func TestInitGeneratesCorrectDefaults(t *testing.T) {
+	tmp := t.TempDir()
+	if err := Init(tmp); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(tmp, ".colony", "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+
+	llm, ok := m["llm"].(map[string]any)
+	if !ok {
+		t.Fatal("llm key missing")
+	}
+	if model, _ := llm["model"].(string); model != "claude-sonnet-4-6" {
+		t.Errorf("expected model claude-sonnet-4-6, got %s", model)
+	}
+	if _, hasAPIKeyEnv := llm["api_key_env"]; hasAPIKeyEnv {
+		t.Error("api_key_env must not be present in generated config")
 	}
 }

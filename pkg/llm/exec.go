@@ -32,6 +32,9 @@ func (e *Executor) CLI() string {
 // RunHeadless runs a prompt non-interactively (text generation, no file tools).
 // Output is written to out. Used for coordinator, scout, reviewer roles.
 func (e *Executor) RunHeadless(ctx context.Context, workdir, prompt string, out io.Writer) error {
+	if err := e.cfg.ValidateKey(); err != nil {
+		return err
+	}
 	cli := e.CLI()
 	if err := checkInstalled(cli); err != nil {
 		return err
@@ -47,6 +50,9 @@ func (e *Executor) RunHeadless(ctx context.Context, workdir, prompt string, out 
 // RunAgent runs a prompt as an autonomous coding agent with file tools.
 // Output streams to out. Used for build and fix steps.
 func (e *Executor) RunAgent(ctx context.Context, workdir, prompt string, out io.Writer) error {
+	if err := e.cfg.ValidateKey(); err != nil {
+		return err
+	}
 	cli := e.CLI()
 	if err := checkInstalled(cli); err != nil {
 		return err
@@ -66,6 +72,9 @@ func (e *Executor) RunAgent(ctx context.Context, workdir, prompt string, out io.
 
 // RunInteractive opens an interactive agent session. Blocks until user exits.
 func (e *Executor) RunInteractive(workdir, initialPrompt string) error {
+	if err := e.cfg.ValidateKey(); err != nil {
+		return err
+	}
 	cli := e.CLI()
 	if err := checkInstalled(cli); err != nil {
 		return err
