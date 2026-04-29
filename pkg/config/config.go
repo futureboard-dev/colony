@@ -22,6 +22,8 @@ func (c LLMConfig) KeyEnvName() string {
 	switch c.Provider {
 	case "anthropic":
 		return "ANTHROPIC_API_KEY"
+	case "deepseek":
+		return "DEEPSEEK_API_KEY"
 	case "openrouter":
 		return "OPENROUTER_API_KEY"
 	case "openai":

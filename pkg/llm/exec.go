@@ -135,16 +135,24 @@ func (e *Executor) Preflight() error {
 func (e *Executor) headlessArgs(prompt string) []string {
 	switch e.CLI() {
 	case "claude":
-		args := []string{"-p", prompt, "--output-format", "text"}
+		// Headless = pure text generation. Disallow every tool so the model
+		// can't write files, run shell, or return a chat-style "Done — saved
+		// to X" summary instead of the JSON envelope the parser expects.
+		args := []string{
+			"-p", prompt,
+			"--output-format", "text",
+			"--disallowedTools", "Write,Edit,Bash,Read,Glob,Grep,WebFetch,WebSearch,Task,NotebookEdit",
+		}
 		if e.cfg.Model != "" {
 			args = append(args, "--model", e.cfg.Model)
 		}
 		return args
 	default:
-		args := []string{"run", "--yolo", "-q", prompt}
+		args := []string{"run", "-q"}
 		if e.cfg.Model != "" {
 			args = append(args, "-m", e.cfg.Model)
 		}
+		args = append(args, prompt)
 		return args
 	}
 }
@@ -162,10 +170,11 @@ func (e *Executor) agentArgs(prompt string) []string {
 		}
 		return args
 	default:
-		args := []string{"run", "--yolo", prompt}
+		args := []string{"run"}
 		if e.cfg.Model != "" {
 			args = append(args, "-m", e.cfg.Model)
 		}
+		args = append(args, prompt)
 		return args
 	}
 }

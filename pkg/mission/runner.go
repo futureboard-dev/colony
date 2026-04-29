@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"strings"
@@ -39,16 +40,23 @@ type ClarifyFn func(agentID, questions string) (string, error)
 
 // NewRunner returns the default in-process runner that reads clarifications from stdin.
 func NewRunner() Runner {
-	return &defaultRunner{clarify: stdinClarify}
+	return &defaultRunner{
+		clarify:   stdinClarify,
+		logWriter: os.Stderr,
+	}
 }
 
 // newRunnerWithClarify creates a runner with an injectable clarify function (used in tests).
 func newRunnerWithClarify(fn ClarifyFn) Runner {
-	return &defaultRunner{clarify: fn}
+	return &defaultRunner{
+		clarify:   fn,
+		logWriter: os.Stderr,
+	}
 }
 
 type defaultRunner struct {
-	clarify ClarifyFn
+	clarify   ClarifyFn
+	logWriter io.Writer
 }
 
 // stdinClarify is the production ClarifyFn: prints questions and reads the user's answer.
@@ -75,6 +83,10 @@ func stdinClarify(agentID, questions string) (string, error) {
 func (r *defaultRunner) Run(ctx context.Context, m *Mission, g *Graph, sessionID string, store storage.Store) (*Output, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	startedAt := time.Now()
+
+	fmt.Fprintf(r.logWriter, "Mission %q [%s]\n", m.Name, sessionID)
 
 	type nodeResult struct {
 		nodeID string
@@ -103,6 +115,14 @@ func (r *defaultRunner) Run(ctx context.Context, m *Mission, g *Graph, sessionID
 		stepNum++
 		thisStep := stepNum
 		active++
+
+		role := g.Agents[nodeID].Role
+		if m.MaxCycles > 0 {
+			fmt.Fprintf(r.logWriter, "  ▶ %s (%s) step %d run %d/%d\n", nodeID, role, thisStep, thisRun, m.MaxCycles)
+		} else {
+			fmt.Fprintf(r.logWriter, "  ▶ %s (%s) step %d\n", nodeID, role, thisStep)
+		}
+
 		go func() {
 			out, err := r.executeNode(ctx, m, g, nodeID, inputs, thisRun, thisStep, store, sessionID)
 			resultCh <- nodeResult{nodeID: nodeID, output: out, err: err}
@@ -201,6 +221,11 @@ func (r *defaultRunner) Run(ctx context.Context, m *Mission, g *Graph, sessionID
 	if runErr != nil {
 		return nil, runErr
 	}
+
+	totalSteps := stepNum
+	totalDuration := time.Since(startedAt)
+	fmt.Fprintf(r.logWriter, "Mission %q completed: %d steps, %s\n", m.Name, totalSteps, fmtDuration(totalDuration))
+
 	return finalOutput, nil
 }
 
@@ -258,6 +283,21 @@ func (r *defaultRunner) executeNode(
 		decision = string(out.Envelope.Decision)
 	}
 
+	// Log completion.
+	duration := finishedAt.Sub(startedAt)
+	mark := "✓"
+	if execErr != nil {
+		mark = "✗"
+	} else {
+		switch out.Envelope.Decision {
+		case REJECTED, REPROCESS:
+			mark = "✗"
+		case CLARIFICATION:
+			mark = "?"
+		}
+	}
+	fmt.Fprintf(r.logWriter, "  %s %s (%s) [%s] (%s)\n", mark, nodeID, agent.Role, decision, fmtDuration(duration))
+
 	step := storage.Step{
 		SessionID:  sessionID,
 		StepNum:    stepNum,
@@ -314,4 +354,21 @@ func subStepFor(runNum int) string {
 		return string(letters[idx])
 	}
 	return fmt.Sprintf("z%d", idx-len(letters)+1)
+}
+
+// fmtDuration formats a duration for human-readable logging.
+func fmtDuration(d time.Duration) string {
+	d = d.Round(100 * time.Millisecond)
+	s := d.Seconds()
+	if s < 60 {
+		return fmt.Sprintf("%.1fs", s)
+	}
+	m := int(d.Minutes())
+	sec := int(d.Seconds()) % 60
+	if m < 60 {
+		return fmt.Sprintf("%dm %ds", m, sec)
+	}
+	h := m / 60
+	m = m % 60
+	return fmt.Sprintf("%dh %dm", h, m)
 }

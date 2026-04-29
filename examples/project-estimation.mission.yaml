@@ -1,12 +1,12 @@
 name: project-estimation
 # Leave input vague — the analyst will ask clarifying questions before proceeding.
-input: "I need a project estimate."
+input: "i need a estimate for a project,"
 max_cycles: 3
 
-# LLM config: set provider/model in .colony/config.json or use role overrides below.
-# Example for DeepSeek V4 via OpenRouter:
+# LLM config: set in .colony/config.json.
+# Currently configured for DeepSeek V4 Pro via Crush:
 #   {
-#     "llm": { "provider": "openrouter", "model": "deepseek/deepseek-v4" }
+#     "llm": { "provider": "deepseek", "model": "deepseek-reasoner", "api_key_env": "DEEPSEEK_API_KEY" }
 #   }
 
 agents:

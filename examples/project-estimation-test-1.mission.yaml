@@ -1,0 +1,51 @@
+name: project-estimation
+input: "I need a project estimate. KFC Pop the Bucket — Customer Requirements (Mock)
+1. A web page where people tap a picture of a KFC bucket to make the number go up — like Popcat but with fried chicken.
+2. When the total taps across everyone reaches 1,150,000, a fun popup appears saying they unlocked something special.
+3. We need to handle a LOT of people at once — our TV ad might bring 200,000 people tapping at the same time.
+4. Show a leaderboard of the top 100 tappers (who clicked the most). Everyone else gets an estimated rank (e.g., 'you're
+around #5,432).
+5. The campaign runs for 2 weeks. The biggest spike happens right after the ad airs (about 5 minutes of peak traffic).
+6. No login required — just start tapping. Limit people to 10 taps per second so nobody cheats.
+7. Needs to work on phones and computers. Page should load fast even on slow connections.
+8. I don't care how you build it — just make it work without crashing when lots of people show up."
+max_cycles: 0
+
+
+# LLM config: set in .colony/config.json.
+# Currently configured for DeepSeek V4 Pro via Crush:
+#   {
+#     "llm": { "provider": "deepseek", "model": "deepseek-reasoner", "api_key_env": "DEEPSEEK_API_KEY" }
+#   }
+
+agents:
+  - id: analyst
+    role: business-analyst
+    interactive: true   # will ask user for clarification when input is vague
+  - id: estimator
+    role: estimator
+  - id: planner
+    role: project-manager
+  - id: reviewer
+    role: project-manager
+
+flow:
+  # analyst extracts requirements (may ask user questions first)
+  - from: __input__
+    to: analyst
+
+  # estimator breaks down effort and cost
+  - from: analyst
+    to: estimator
+
+  # planner builds timeline and milestone plan
+  - from: estimator
+    to: planner
+
+  # reviewer approves or sends back to estimator for revision
+  - from: planner
+    to: reviewer
+  - from: reviewer
+    on_approve: __output__
+    on_reject: estimator
+

@@ -45,19 +45,83 @@ func (n *LLMNode) Run(ctx context.Context, in Input) (Output, error) {
 	exec := llm.New(n.cfg)
 	var buf bytes.Buffer
 	if err := exec.RunHeadless(ctx, ".", combined, &buf); err != nil {
-		return Output{AgentID: n.agentID, Raw: buf.String()}, fmt.Errorf("agent %q: llm call failed: %w", n.agentID, err)
+		raw := buf.String()
+		return Output{AgentID: n.agentID, Raw: raw}, fmt.Errorf("agent %q: llm call failed: %w\n--- agent output ---\n%s\n---", n.agentID, err, raw)
 	}
 
 	raw := buf.String()
 
 	// Parse JSON envelope.
 	var env Envelope
-	if err := json.Unmarshal([]byte(raw), &env); err != nil {
+	if err := json.Unmarshal([]byte(extractJSON(raw)), &env); err != nil {
+		preview := raw
+		if len(preview) > 500 {
+			preview = preview[:500] + "...(truncated)"
+		}
 		return Output{AgentID: n.agentID, Raw: raw},
-			fmt.Errorf("agent %q: invalid JSON envelope: %w", n.agentID, err)
+			fmt.Errorf("agent %q: invalid JSON envelope: %w\n--- raw output ---\n%s\n---", n.agentID, err, preview)
 	}
 
 	return Output{AgentID: n.agentID, Envelope: env, Raw: raw}, nil
+}
+
+// extractJSON finds the JSON envelope object in s by locating the "decision"
+// key and tracing back to its enclosing {, then matching braces to find the
+// closing }. This handles reasoning preamble, markdown fences, and thinking
+// tokens that LLMs (especially chain-of-thought models) emit before the JSON.
+func extractJSON(s string) string {
+	decisionIdx := strings.Index(s, `"decision"`)
+	if decisionIdx >= 0 {
+		for i := decisionIdx - 1; i >= 0; i-- {
+			if s[i] == '{' {
+				if end := matchingBrace(s, i); end > i {
+					return s[i : end+1]
+				}
+			}
+		}
+	}
+	// Fallback: first { to last }
+	start := strings.Index(s, "{")
+	end := strings.LastIndex(s, "}")
+	if start >= 0 && end > start {
+		return s[start : end+1]
+	}
+	return strings.TrimSpace(s)
+}
+
+// matchingBrace returns the index of the } that closes the { at pos,
+// correctly handling nested braces and quoted strings.
+func matchingBrace(s string, pos int) int {
+	depth := 0
+	inStr := false
+	escaped := false
+	for i := pos; i < len(s); i++ {
+		c := s[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if c == '\\' && inStr {
+			escaped = true
+			continue
+		}
+		if c == '"' {
+			inStr = !inStr
+			continue
+		}
+		if inStr {
+			continue
+		}
+		if c == '{' {
+			depth++
+		} else if c == '}' {
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 // injectInput replaces the content after "# INPUT" in the prompt with the actual input.
