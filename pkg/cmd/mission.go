@@ -39,12 +39,14 @@ var missionAuditCmd = &cobra.Command{
 
 var (
 	missionFile   string
+	missionInput  string
 	auditSession  string
 	auditDecision string
 )
 
 func init() {
 	missionRunCmd.Flags().StringVar(&missionFile, "mission", "", "Path to *.mission.yaml file (required)")
+	missionRunCmd.Flags().StringVar(&missionInput, "input", "", "Override the mission's input field (optional)")
 	_ = missionRunCmd.MarkFlagRequired("mission")
 
 	missionAuditCmd.Flags().StringVar(&auditSession, "session", "", "Filter by session ID")
@@ -69,6 +71,10 @@ func runMission(cmd *cobra.Command, args []string) error {
 	m, err := mission.LoadMission(missionFile)
 	if err != nil {
 		return err
+	}
+
+	if missionInput != "" {
+		m.Input = missionInput
 	}
 
 	g, err := mission.BuildGraph(m, mission.DefaultRegistry, func(role string) config.LLMConfig {
