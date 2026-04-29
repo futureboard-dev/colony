@@ -79,7 +79,7 @@ func LLMNodeFactory(role string) NodeFactory {
 
 func init() {
 	// Register built-in roles backed by module prompts.
-	for _, role := range []string{"business-analyst", "architect", "project-manager"} {
+	for _, role := range []string{"business-analyst", "architect", "project-manager", "estimator"} {
 		r := role // capture
 		Register(r, func(agentID string, cfg config.LLMConfig) (Node, error) {
 			return NewLLMNode(agentID, r, cfg), nil

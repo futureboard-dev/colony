@@ -18,8 +18,9 @@ type Mission struct {
 
 // Agent declares a node in the mission graph.
 type Agent struct {
-	ID   string `yaml:"id"`
-	Role string `yaml:"role"`
+	ID          string `yaml:"id"`
+	Role        string `yaml:"role"`
+	Interactive bool   `yaml:"interactive,omitempty"`
 }
 
 // Edge declares a directed connection between nodes.

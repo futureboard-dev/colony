@@ -1,10 +1,12 @@
 package mission
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"time"
 
@@ -30,12 +32,45 @@ type Runner interface {
 	Run(ctx context.Context, m *Mission, g *Graph, sessionID string, store storage.Store) (*Output, error)
 }
 
-// NewRunner returns the default in-process runner.
+// ClarifyFn is called when an interactive agent returns CLARIFICATION.
+// It receives the agent ID and the questions from the feedback field,
+// and returns the user's answer to be appended to the agent's input.
+type ClarifyFn func(agentID, questions string) (string, error)
+
+// NewRunner returns the default in-process runner that reads clarifications from stdin.
 func NewRunner() Runner {
-	return &defaultRunner{}
+	return &defaultRunner{clarify: stdinClarify}
 }
 
-type defaultRunner struct{}
+// newRunnerWithClarify creates a runner with an injectable clarify function (used in tests).
+func newRunnerWithClarify(fn ClarifyFn) Runner {
+	return &defaultRunner{clarify: fn}
+}
+
+type defaultRunner struct {
+	clarify ClarifyFn
+}
+
+// stdinClarify is the production ClarifyFn: prints questions and reads the user's answer.
+func stdinClarify(agentID, questions string) (string, error) {
+	fmt.Printf("\n--- %s needs clarification ---\n", agentID)
+	fmt.Println(strings.TrimSpace(questions))
+	fmt.Print("\nYour response (press Enter twice when done): ")
+
+	scanner := bufio.NewScanner(os.Stdin)
+	var lines []string
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" && len(lines) > 0 {
+			break
+		}
+		lines = append(lines, line)
+	}
+	if err := scanner.Err(); err != nil {
+		return "", err
+	}
+	return strings.Join(lines, "\n"), nil
+}
 
 func (r *defaultRunner) Run(ctx context.Context, m *Mission, g *Graph, sessionID string, store storage.Store) (*Output, error) {
 	ctx, cancel := context.WithCancel(ctx)
@@ -171,7 +206,7 @@ func (r *defaultRunner) Run(ctx context.Context, m *Mission, g *Graph, sessionID
 
 func (r *defaultRunner) executeNode(
 	ctx context.Context,
-	m *Mission,
+	_ *Mission,
 	g *Graph,
 	nodeID string,
 	inputs []Output,
@@ -183,10 +218,29 @@ func (r *defaultRunner) executeNode(
 	node := g.Nodes[nodeID]
 	agent := g.Agents[nodeID]
 
-	inputText := combineInputs(inputs)
+	currentInput := combineInputs(inputs)
 	startedAt := time.Now()
 
-	out, execErr := node.Run(ctx, Input{Text: inputText})
+	var out Output
+	var execErr error
+
+	out, execErr = node.Run(ctx, Input{Text: currentInput})
+
+	// Clarification loop: only fires for interactive agents that return CLARIFICATION.
+	for execErr == nil && out.Envelope.Decision == CLARIFICATION && agent.Interactive {
+		answer, err := r.clarify(nodeID, out.Envelope.Feedback)
+		if err != nil {
+			execErr = fmt.Errorf("agent %q: clarify: %w", nodeID, err)
+			break
+		}
+		currentInput = currentInput + "\n\n## User Clarification\n\n" + answer
+		out, execErr = node.Run(ctx, Input{Text: currentInput})
+	}
+
+	// Non-interactive agent returning CLARIFICATION is treated as REJECTED.
+	if execErr == nil && out.Envelope.Decision == CLARIFICATION && !agent.Interactive {
+		out.Envelope.Decision = REJECTED
+	}
 
 	finishedAt := time.Now()
 	durationMS := finishedAt.Sub(startedAt).Milliseconds()
@@ -210,7 +264,7 @@ func (r *defaultRunner) executeNode(
 		SubStep:    subStepFor(runNum),
 		AgentID:    nodeID,
 		Role:       agent.Role,
-		InputText:  inputText,
+		InputText:  currentInput,
 		OutputJSON: outputJSON,
 		Decision:   decision,
 		DurationMS: durationMS,

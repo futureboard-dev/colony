@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -364,5 +365,125 @@ func TestMalformedEnvelope(t *testing.T) {
 	}
 	if steps[0].OutputJSON != "this is not json" {
 		t.Errorf("expected raw text in output_json, got %q", steps[0].OutputJSON)
+	}
+}
+
+// clarifyNode returns CLARIFICATION on the first call, then APPROVED on the second.
+// It records what input text it received on each call.
+type clarifyNode struct {
+	calls  []string
+	answer string // set after first call to simulate enriched input
+}
+
+func (n *clarifyNode) Run(_ context.Context, in Input) (Output, error) {
+	n.calls = append(n.calls, in.Text)
+	if len(n.calls) == 1 {
+		return Output{
+			Envelope: Envelope{Decision: CLARIFICATION, Feedback: "What is the budget?", Output: ""},
+			Raw:      `{"decision":"CLARIFICATION","feedback":"What is the budget?","output":""}`,
+		}, nil
+	}
+	return Output{
+		Envelope: Envelope{Decision: APPROVED, Output: "final stories"},
+		Raw:      `{"decision":"APPROVED","feedback":"","output":"final stories"}`,
+	}, nil
+}
+
+// TestClarificationInteractiveAgent: interactive agent asks a question, gets an answer,
+// then produces final output. Only one step should be persisted (the final result).
+func TestClarificationInteractiveAgent(t *testing.T) {
+	node := &clarifyNode{}
+	m := buildTestMission("clarify-interactive", []Agent{
+		{ID: "analyst", Interactive: true},
+	}, []Edge{
+		{From: "__input__", To: "analyst"},
+		{From: "analyst", To: "__output__"},
+	}, 0)
+
+	g := buildTestGraph(t, m, map[string]Node{"analyst": node})
+
+	store := openTestStore(t)
+	sessID := "clarify-interactive-test"
+	seedSession(t, store, sessID, m.Name)
+
+	clarifyFn := func(agentID, questions string) (string, error) {
+		if agentID != "analyst" {
+			t.Errorf("unexpected agentID in clarify: %s", agentID)
+		}
+		if questions != "What is the budget?" {
+			t.Errorf("unexpected questions: %s", questions)
+		}
+		return "$100k", nil
+	}
+
+	runner := newRunnerWithClarify(clarifyFn)
+	out, err := runner.Run(context.Background(), m, g, sessID, store)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if out == nil || out.Envelope.Output != "final stories" {
+		t.Errorf("expected final output 'final stories', got %+v", out)
+	}
+
+	// Node should have been called twice.
+	if len(node.calls) != 2 {
+		t.Fatalf("expected 2 node calls (clarify + final), got %d", len(node.calls))
+	}
+	// Second call must include the user's answer.
+	if !strings.Contains(node.calls[1], "$100k") {
+		t.Errorf("second call input should contain user answer, got: %s", node.calls[1])
+	}
+	// Only one step persisted (the final result).
+	steps, err := store.QuerySteps(storage.StepFilter{SessionID: sessID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(steps) != 1 {
+		t.Errorf("expected 1 persisted step, got %d", len(steps))
+	}
+	if steps[0].Decision != string(APPROVED) {
+		t.Errorf("persisted step should have APPROVED decision, got %s", steps[0].Decision)
+	}
+}
+
+// TestClarificationNonInteractiveAgent: non-interactive agent returning CLARIFICATION
+// is downgraded to REJECTED and routed accordingly.
+func TestClarificationNonInteractiveAgent(t *testing.T) {
+	node := &clarifyNode{}
+	m := buildTestMission("clarify-non-interactive", []Agent{
+		{ID: "analyst"}, // interactive: false (default)
+		{ID: "fallback"},
+	}, []Edge{
+		{From: "__input__", To: "analyst"},
+		{From: "analyst", OnApprove: "__output__", OnReject: "fallback"},
+		{From: "fallback", To: "__output__"},
+	}, 0)
+
+	g := buildTestGraph(t, m, map[string]Node{
+		"analyst":  node,
+		"fallback": &fakeNode{decision: APPROVED, output: "fallback ran"},
+	})
+
+	store := openTestStore(t)
+	sessID := "clarify-non-interactive-test"
+	seedSession(t, store, sessID, m.Name)
+
+	clarifyFn := func(_, _ string) (string, error) {
+		t.Error("clarify should not be called for non-interactive agent")
+		return "", nil
+	}
+
+	runner := newRunnerWithClarify(clarifyFn)
+	out, err := runner.Run(context.Background(), m, g, sessID, store)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// CLARIFICATION was downgraded to REJECTED → fallback ran.
+	if out == nil || out.Envelope.Output != "fallback ran" {
+		t.Errorf("expected fallback output, got %+v", out)
+	}
+	// analyst node should only have been called once (no clarification loop).
+	if len(node.calls) != 1 {
+		t.Errorf("expected 1 analyst call, got %d", len(node.calls))
 	}
 }

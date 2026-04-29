@@ -1,0 +1,41 @@
+name: project-estimation
+# Leave input vague — the analyst will ask clarifying questions before proceeding.
+input: "I need a project estimate."
+max_cycles: 3
+
+# LLM config: set provider/model in .colony/config.json or use role overrides below.
+# Example for DeepSeek V4 via OpenRouter:
+#   {
+#     "llm": { "provider": "openrouter", "model": "deepseek/deepseek-v4" }
+#   }
+
+agents:
+  - id: analyst
+    role: business-analyst
+    interactive: true   # will ask user for clarification when input is vague
+  - id: estimator
+    role: estimator
+  - id: planner
+    role: project-manager
+  - id: reviewer
+    role: project-manager
+
+flow:
+  # analyst extracts requirements (may ask user questions first)
+  - from: __input__
+    to: analyst
+
+  # estimator breaks down effort and cost
+  - from: analyst
+    to: estimator
+
+  # planner builds timeline and milestone plan
+  - from: estimator
+    to: planner
+
+  # reviewer approves or sends back to estimator for revision
+  - from: planner
+    to: reviewer
+  - from: reviewer
+    on_approve: __output__
+    on_reject: estimator

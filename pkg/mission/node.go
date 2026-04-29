@@ -6,9 +6,10 @@ import "context"
 type Decision string
 
 const (
-	APPROVED  Decision = "APPROVED"
-	REJECTED  Decision = "REJECTED"
-	REPROCESS Decision = "REPROCESS"
+	APPROVED      Decision = "APPROVED"
+	REJECTED      Decision = "REJECTED"
+	REPROCESS     Decision = "REPROCESS"
+	CLARIFICATION Decision = "CLARIFICATION"
 )
 
 // Envelope is the fixed JSON schema every agent must return.
