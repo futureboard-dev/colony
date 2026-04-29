@@ -64,7 +64,7 @@ func Init(projectRoot string) error {
 		Root: projectRoot,
 		LLM: LLMConfig{
 			Provider:  "anthropic",
-			Model:     "claude-opus-4-7",
+			Model:     "claude-sonnet-4-6",
 			APIKeyEnv: "ANTHROPIC_API_KEY",
 		},
 	}
