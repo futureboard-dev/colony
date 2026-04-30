@@ -7,8 +7,8 @@ Do not add, remove, or rename any section. Do not include commentary outside the
 
 # Agent Task Spec
 
-## 1. Task (one sentence, one deliverable)
-<!-- What is the single thing an agent must produce? -->
+## 1. {{TASK_NAME}}
+
 {{TASK}}
 
 ---
