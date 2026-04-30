@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"os"
 	"strings"
 
 	"github.com/jirateep/colony/pkg/config"
@@ -41,10 +43,14 @@ func (n *LLMNode) Run(ctx context.Context, in Input) (Output, error) {
 	// Inject input text under the # INPUT section.
 	combined := injectInput(promptText, in.Text)
 
-	// Run LLM headless.
+	// Run LLM headless. Tee CLI output to stderr (with an agent prefix) so the
+	// user sees live progress instead of staring at a frozen terminal while the
+	// model generates. The buffer still receives the full output for parsing.
 	exec := llm.New(n.cfg)
 	var buf bytes.Buffer
-	if err := exec.RunHeadless(ctx, ".", combined, &buf); err != nil {
+	stream := io.MultiWriter(&buf, prefixedWriter(os.Stderr, "    "+n.agentID+" │ "))
+	fmt.Fprintf(os.Stderr, "    %s │ <streaming…>\n", n.agentID)
+	if err := exec.RunHeadless(ctx, ".", combined, stream); err != nil {
 		raw := buf.String()
 		return Output{AgentID: n.agentID, Raw: raw}, fmt.Errorf("agent %q: llm call failed: %w\n--- agent output ---\n%s\n---", n.agentID, err, raw)
 	}
@@ -63,6 +69,37 @@ func (n *LLMNode) Run(ctx context.Context, in Input) (Output, error) {
 	}
 
 	return Output{AgentID: n.agentID, Envelope: env, Raw: raw}, nil
+}
+
+// prefixedWriter returns an io.Writer that prepends prefix to each line written
+// to w. Used to tag streamed LLM output with the agent ID so concurrent agents
+// don't produce indistinguishable streams.
+func prefixedWriter(w io.Writer, prefix string) io.Writer {
+	return &linePrefixer{w: w, prefix: []byte(prefix), atLineStart: true}
+}
+
+type linePrefixer struct {
+	w           io.Writer
+	prefix      []byte
+	atLineStart bool
+}
+
+func (p *linePrefixer) Write(b []byte) (int, error) {
+	for _, c := range b {
+		if p.atLineStart {
+			if _, err := p.w.Write(p.prefix); err != nil {
+				return 0, err
+			}
+			p.atLineStart = false
+		}
+		if _, err := p.w.Write([]byte{c}); err != nil {
+			return 0, err
+		}
+		if c == '\n' {
+			p.atLineStart = true
+		}
+	}
+	return len(b), nil
 }
 
 // extractJSON finds the JSON envelope object in s by locating the "decision"
