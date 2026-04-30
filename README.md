@@ -342,22 +342,19 @@ export ANTHROPIC_API_KEY=sk-ant-...
 ### First-time setup
 
 ```bash
-# 1. Build the local binary — must output to ./colony, not ~/go/bin/colony
-go build -o colony .
-
-# 2. Add ~/.local/bin to PATH (one-time)
+# 1. Add ~/.local/bin to PATH (one-time)
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
 
-# 3. Install — creates ~/.local/bin/colony → this repo's binary
-./colony install
+# 2. Build and symlink into PATH
+make install
 
-# 4. Verify
+# 3. Verify
 which colony          # → /Users/<you>/.local/bin/colony
 colony version
 ```
 
-> The symlink points at the binary in this repo. After any rebuild (`go build -o colony .`)
-> the change is live immediately — no need to re-run `install`.
+> `make install` creates a symlink from `~/.local/bin/colony` → `./colony` in this repo.
+> After any code change, run `make build` — the symlink picks it up immediately.
 
 ### Usage
 
@@ -384,6 +381,5 @@ Edit `.colony/config.json` — no code changes needed:
 ### Uninstall
 
 ```bash
-colony uninstall
-# or manually: rm ~/.local/bin/colony
+rm ~/.local/bin/colony
 ```
