@@ -32,15 +32,17 @@ Each role can use a different model. Configure in .colony/config.json:
 }
 
 var (
-	swarmSpec string
-	swarmLang string
-	swarmMode string
+	swarmSpec     string
+	swarmLang     string
+	swarmMode     string
+	swarmNoFormat bool
 )
 
 func init() {
 	swarmCmd.Flags().StringVar(&swarmSpec, "spec", "", "spec markdown file")
 	swarmCmd.Flags().StringVar(&swarmLang, "lang", "", "language: typescript, python, go")
 	swarmCmd.Flags().StringVar(&swarmMode, "mode", "standard", "quick | standard | full")
+	swarmCmd.Flags().BoolVar(&swarmNoFormat, "no-format", false, "skip the format gate")
 }
 
 func runSwarm(cmd *cobra.Command, args []string) error {
@@ -102,7 +104,7 @@ func runSwarm(cmd *cobra.Command, args []string) error {
 		if err := module.CopyFile(swarmSpec, subtaskFile); err != nil {
 			return err
 		}
-		branch, err := swarmBuild(ctx, root, projectName, baseBranch, swarmLang, langs, subtaskFile, cfg, out)
+		branch, err := swarmBuild(ctx, root, projectName, baseBranch, swarmLang, langs, subtaskFile, cfg, out, swarmNoFormat)
 		if err != nil {
 			return err
 		}
@@ -194,7 +196,7 @@ func runSwarm(cmd *cobra.Command, args []string) error {
 			buildSpec = scoutedPath
 		}
 
-		branch, err := swarmBuild(ctx, root, projectName, baseBranch, swarmLang, langs, buildSpec, cfg, out)
+		branch, err := swarmBuild(ctx, root, projectName, baseBranch, swarmLang, langs, buildSpec, cfg, out, swarmNoFormat)
 		if err != nil {
 			fmt.Fprintf(out, "✗ Subtask %s FAILED: %v\n", id, err)
 			return err
@@ -267,7 +269,7 @@ func runSwarm(cmd *cobra.Command, args []string) error {
 }
 
 // swarmBuild runs the build pipeline for one subtask spec file.
-func swarmBuild(ctx context.Context, root, projectName, baseBranch, lang string, langs module.LangCommands, specFile string, cfg *config.Config, out io.Writer) (string, error) {
+func swarmBuild(ctx context.Context, root, projectName, baseBranch, lang string, langs module.LangCommands, specFile string, cfg *config.Config, out io.Writer, skipFormat bool) (string, error) {
 	specData, err := os.ReadFile(specFile)
 	if err != nil {
 		return "", err
@@ -293,7 +295,7 @@ func swarmBuild(ctx context.Context, root, projectName, baseBranch, lang string,
 	if err := ex.RunAgent(ctx, worktreePath, writePrompt, out); err != nil {
 		return "", fmt.Errorf("build agent: %w", err)
 	}
-	if err := runGates(ctx, worktreePath, langs, ex, out); err != nil {
+	if err := runGates(ctx, worktreePath, langs, ex, out, skipFormat); err != nil {
 		return "", err
 	}
 	commitMsg := fmt.Sprintf("feat: %s\n\nSwarm subtask | Language: %s | Gates: format, typecheck, tests", taskDesc, lang)

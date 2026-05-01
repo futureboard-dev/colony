@@ -41,8 +41,9 @@ var (
 	bpResume   string
 	bpContinue string
 	bpBase     string
-	bpHeadless bool
-	bpLogFile  string // internal: set by headless re-exec
+	bpHeadless  bool
+	bpNoFormat  bool
+	bpLogFile   string // internal: set by headless re-exec
 )
 
 func init() {
@@ -53,6 +54,7 @@ func init() {
 	blueprintCmd.Flags().StringVar(&bpContinue, "continue", "", "worktree path: continue codegen then gates")
 	blueprintCmd.Flags().StringVar(&bpBase, "base", "", "base branch (must not be main/master)")
 	blueprintCmd.Flags().BoolVar(&bpHeadless, "headless", false, "run in background, tail log for output")
+	blueprintCmd.Flags().BoolVar(&bpNoFormat, "no-format", false, "skip the format gate")
 	blueprintCmd.Flags().StringVar(&bpLogFile, "_log", "", "")
 	blueprintCmd.Flags().MarkHidden("_log") //nolint:errcheck
 }
@@ -127,7 +129,7 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 		bpBanner(out, "🔄 BLUEPRINT RESUME", map[string]string{
 			"Worktree": bpResume, "Branch": branch, "Language": bpLang,
 		})
-		if err := runGates(ctx, bpResume, langs, ex, out); err != nil {
+		if err := runGates(ctx, bpResume, langs, ex, out, bpNoFormat); err != nil {
 			return bpBlocked(bpResume, logPath, err, out)
 		}
 		fmt.Fprintf(out, "%s✓ Resumed and passed gates on branch: %s%s\n", ansiGreen, branch, ansiReset)
@@ -149,7 +151,7 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("continue agent failed: %w", err)
 		}
 		fmt.Fprintf(out, "%s✓ Agent finished continuing code%s\n", ansiGreen, ansiReset)
-		if err := runGates(ctx, bpContinue, langs, ex, out); err != nil {
+		if err := runGates(ctx, bpContinue, langs, ex, out, bpNoFormat); err != nil {
 			return bpBlocked(bpContinue, logPath, err, out)
 		}
 		return bpCommit(bpContinue, branch, "feat: continue after interruption — gates passed", out)
@@ -206,7 +208,7 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(out, "%s✓ Agent finished writing code%s\n", ansiGreen, ansiReset)
 
 	// Steps 3–4: Quality gates
-	if err := runGates(ctx, worktreePath, langs, ex, out); err != nil {
+	if err := runGates(ctx, worktreePath, langs, ex, out, bpNoFormat); err != nil {
 		return bpBlocked(worktreePath, logPath, err, out)
 	}
 
@@ -231,10 +233,12 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 
 // runGates runs format → typecheck (with fix) → tests (with fix).
 // Exported so swarm.go can reuse it.
-func runGates(ctx context.Context, worktreePath string, langs module.LangCommands, ex *llm.Executor, out io.Writer) error {
+func runGates(ctx context.Context, worktreePath string, langs module.LangCommands, ex *llm.Executor, out io.Writer, skipFormat bool) error {
 	const maxAttempts = 2
 	fmt.Fprintf(out, "\n%s▶ GATES  format → typecheck → tests%s\n", ansiCyan, ansiReset)
-	module.RunFormat(langs.Format, worktreePath, out)
+	if !skipFormat {
+		module.RunFormat(langs.Format, worktreePath, out)
+	}
 	if err := gateWithFix(ctx, "Type check", langs.TypeCheck, worktreePath, maxAttempts, ex, out); err != nil {
 		return err
 	}

@@ -1,0 +1,42 @@
+name: project-estimation
+input: "1. Website Content Management\r\nStatic Pages\r\nMain pages like Home, Contact, and Student Life.\r\nAbility to edit text and swap banner images.\r\nPrograms\r\nBCM (Undergrad) & MSCM (Grad): Specific sections for Curriculum tables and Admission criteria.\r\nAnnouncements (News)\r\nCategories: PR, Honors, BCM News, and MSCM News.\r\nDetails: Title, date, image gallery, and article text.\r\nAcademic Calendar\r\nList of important dates and deadlines (can be toggled by Year).\r\n2. Admissions & Student Data\r\nApplicant Profiles\r\nPersonal Info: Name, Age, Gender, Nationality.\r\nContact Info: Email, Phone number.\r\nIdentification: Thai ID or Passport numbers/scans.\r\nAcademic History: Previous school and degree details.\r\nApplication Tracking (The \"Process\")\r\nStatus Indicators: Visual markers for: Documents Received → Interview Pending → Interview Passed → Admitted.\r\nDocument Vault: A place to view and download student-uploaded PDFs (Transcripts, Certificates).\r\nMarketing & Referrals\r\nData on how students found the site (e.g., \"Facebook Ads,\" \"Friend,\" \"Poster\").\r\n3. Communication & Feedback\r\nInquiries (Feedbacks)\r\nA log of messages sent from the \"Contact Us\" form.\r\nFields: Sender name, email, and the specific message/question.\r\n4. System Reports & Analytics\r\nVisual Dashboards\r\nCharts: Automated pie charts for Nationalities and Gender.\r\nTrends: Bar graphs showing age groups and application dates.\r\nData Exports\r\nA tool to generate Excel spreadsheets of all student data.\r\nA tool to generate PDF summary reports for faculty meetings.\r\n5. Security & User Roles\r\nStaff Accounts\r\nIndividual logins for different staff members (e.g., an \"Editor\" for news vs. an \"Admin\" for student data).\r\nAudit Logs\r\nA simple record of who changed what (to prevent losing data again)."
+max_cycles: 0
+
+
+# LLM config: set in .colony/config.json.
+# Currently configured for DeepSeek V4 Pro via Crush:
+#   {
+#     "llm": { "provider": "deepseek", "model": "deepseek-reasoner", "api_key_env": "DEEPSEEK_API_KEY" }
+#   }
+
+agents:
+  - id: analyst
+    role: business-analyst
+    interactive: true   # will ask user for clarification when input is vague
+  - id: estimator
+    role: estimator
+  - id: planner
+    role: project-manager
+  - id: reviewer
+    role: project-manager
+
+flow:
+  # analyst extracts requirements (may ask user questions first)
+  - from: __input__
+    to: analyst
+
+  # estimator breaks down effort and cost
+  - from: analyst
+    to: estimator
+
+  # planner builds timeline and milestone plan
+  - from: estimator
+    to: planner
+
+  # reviewer approves or sends back to estimator for revision
+  - from: planner
+    to: reviewer
+  - from: reviewer
+    on_approve: __output__
+    on_reject: estimator
+
