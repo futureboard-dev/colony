@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"time"
@@ -38,19 +39,27 @@ var missionAuditCmd = &cobra.Command{
 }
 
 var (
-	missionFile   string
-	missionInput  string
-	auditSession  string
-	auditDecision string
+	missionFile     string
+	missionInput    string
+	missionOutput   string
+	auditSession    string
+	auditDecision   string
+	auditStatus     string
+	auditPurge      bool
+	auditShowOutput bool
 )
 
 func init() {
 	missionRunCmd.Flags().StringVar(&missionFile, "mission", "", "Path to *.mission.yaml file (required)")
 	missionRunCmd.Flags().StringVar(&missionInput, "input", "", "Override the mission's input field (optional)")
+	missionRunCmd.Flags().StringVar(&missionOutput, "output", "", "Write final output to this file path (optional)")
 	_ = missionRunCmd.MarkFlagRequired("mission")
 
 	missionAuditCmd.Flags().StringVar(&auditSession, "session", "", "Filter by session ID")
 	missionAuditCmd.Flags().StringVar(&auditDecision, "decision", "", "Filter steps by decision (e.g. REJECTED)")
+	missionAuditCmd.Flags().StringVar(&auditStatus, "status", "", "Filter sessions by status (running, failed, completed)")
+	missionAuditCmd.Flags().BoolVar(&auditPurge, "purge", false, "Delete matching sessions and their steps")
+	missionAuditCmd.Flags().BoolVar(&auditShowOutput, "show-output", false, "Print each agent's output text below its step row")
 
 	missionCmd.AddCommand(missionRunCmd)
 	missionCmd.AddCommand(missionInitCmd)
@@ -112,7 +121,13 @@ func runMission(cmd *cobra.Command, args []string) error {
 	_ = store.UpdateSession(sessID, "completed", time.Now())
 
 	if out != nil {
-		fmt.Println(out.Envelope.Output)
+		fmt.Println(out.Envelope.OutputText())
+		if missionOutput != "" {
+			if err := os.WriteFile(missionOutput, []byte(out.Envelope.OutputText()), 0644); err != nil {
+				return fmt.Errorf("write output file: %w", err)
+			}
+			fmt.Fprintf(os.Stderr, "output written to %s\n", missionOutput)
+		}
 	}
 	return nil
 }
@@ -125,9 +140,21 @@ func runAudit(cmd *cobra.Command, args []string) error {
 	}
 	defer store.Close()
 
+	if auditPurge {
+		n, err := store.DeleteSessions(storage.SessionFilter{
+			SessionID: auditSession,
+			Status:    auditStatus,
+		})
+		if err != nil {
+			return err
+		}
+		fmt.Printf("deleted %d session(s)\n", n)
+		return nil
+	}
+
 	if auditSession == "" && auditDecision == "" {
-		// List all sessions.
-		sessions, err := store.QuerySessions(storage.SessionFilter{})
+		// List sessions, optionally filtered by status.
+		sessions, err := store.QuerySessions(storage.SessionFilter{Status: auditStatus})
 		if err != nil {
 			return err
 		}
@@ -158,6 +185,14 @@ func runAudit(cmd *cobra.Command, args []string) error {
 	for _, s := range steps {
 		fmt.Printf("%-4d %-4s %-20s %-16s %-10s %d\n",
 			s.StepNum, s.SubStep, s.AgentID, s.Role, s.Decision, s.DurationMS)
+		if auditShowOutput && s.OutputJSON != "" {
+			var env mission.Envelope
+			if err := json.Unmarshal([]byte(s.OutputJSON), &env); err == nil && env.OutputText() != "" {
+				fmt.Printf("    output: %s\n", env.OutputText())
+			} else {
+				fmt.Printf("    output: %s\n", s.OutputJSON)
+			}
+		}
 	}
 	return nil
 }

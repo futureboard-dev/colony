@@ -26,7 +26,7 @@ type Graph struct {
 	Nodes          map[string]Node
 	Agents         map[string]*Agent
 	OutEdges       map[string][]GraphEdge
-	StaticInDegree map[string]int // in-degree excluding back-edges
+	StaticInDegree map[string]int  // in-degree excluding back-edges
 	backEdges      map[string]bool // "from:to" → true
 }
 

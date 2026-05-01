@@ -130,9 +130,10 @@ func (r *defaultRunner) Run(ctx context.Context, m *Mission, g *Graph, sessionID
 	}
 
 	// Seed from __input__.
+	rawInput, _ := json.Marshal(m.Input)
 	inputOut := Output{
 		AgentID:  inputNode,
-		Envelope: Envelope{Decision: APPROVED, Output: m.Input},
+		Envelope: Envelope{Decision: APPROVED, Output: json.RawMessage(rawInput)},
 		Raw:      m.Input,
 	}
 	for _, e := range g.OutEdges[inputNode] {
@@ -329,12 +330,12 @@ func (r *defaultRunner) executeNode(
 // combineInputs merges multiple upstream outputs into a single input text.
 func combineInputs(inputs []Output) string {
 	if len(inputs) == 1 {
-		return inputs[0].Envelope.Output
+		return inputs[0].Envelope.OutputText()
 	}
 	parts := make([]string, 0, len(inputs))
 	for _, inp := range inputs {
-		if inp.Envelope.Output != "" {
-			parts = append(parts, inp.Envelope.Output)
+		if text := inp.Envelope.OutputText(); text != "" {
+			parts = append(parts, text)
 		} else if inp.Raw != "" {
 			parts = append(parts, inp.Raw)
 		}

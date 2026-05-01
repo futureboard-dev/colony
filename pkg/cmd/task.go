@@ -22,9 +22,9 @@ an interactive agent session (claude for anthropic, crush for all others).
 Subcommands:
   colony task done <branch>   clean up after review
   colony task list             list active agent worktrees`,
-	Args:                  cobra.ArbitraryArgs,
-	DisableFlagParsing:    false,
-	RunE:                  runTask,
+	Args:               cobra.ArbitraryArgs,
+	DisableFlagParsing: false,
+	RunE:               runTask,
 }
 
 var taskFrom string

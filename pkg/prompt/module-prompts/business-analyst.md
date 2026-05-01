@@ -38,10 +38,10 @@ All responses must be a JSON object matching this envelope:
 {
   "decision": "<APPROVED | CLARIFICATION>",
   "feedback": "<empty string when APPROVED; numbered questions when CLARIFICATION>",
-  "output": "<see below>"
+  "output": <see below>
 }
 
-When you have enough information (decision = "APPROVED"), set `output` to a JSON string containing:
+When you have enough information (decision = "APPROVED"), set `output` to a JSON object directly (NOT a string — embed the object as the value):
 
 {
   "client_request_summary": "1-2 sentence neutral restatement of what the client said.",
@@ -79,7 +79,7 @@ When you have enough information (decision = "APPROVED"), set `output` to a JSON
   ]
 }
 
-When the input is too vague or incomplete to write usable stories (decision = "CLARIFICATION"), set `output` to `""` and `feedback` to a numbered list of specific questions you need answered before you can proceed.
+When the input is too vague or incomplete to write usable stories (decision = "CLARIFICATION"), set `output` to `null` and `feedback` to a numbered list of specific questions you need answered before you can proceed.
 
 # RULES
 

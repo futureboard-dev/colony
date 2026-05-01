@@ -41,9 +41,9 @@ var (
 	bpResume   string
 	bpContinue string
 	bpBase     string
-	bpHeadless  bool
-	bpNoFormat  bool
-	bpLogFile   string // internal: set by headless re-exec
+	bpHeadless bool
+	bpNoFormat bool
+	bpLogFile  string // internal: set by headless re-exec
 )
 
 func init() {

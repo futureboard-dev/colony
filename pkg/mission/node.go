@@ -1,6 +1,9 @@
 package mission
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+)
 
 // Decision is the routing decision returned by a node.
 type Decision string
@@ -14,9 +17,22 @@ const (
 
 // Envelope is the fixed JSON schema every agent must return.
 type Envelope struct {
-	Decision Decision `json:"decision"`
-	Feedback string   `json:"feedback"`
-	Output   string   `json:"output"`
+	Decision Decision        `json:"decision"`
+	Feedback string          `json:"feedback"`
+	Output   json.RawMessage `json:"output"`
+}
+
+// OutputText returns the output as a plain string.
+// If the output is a JSON string value, it is unquoted; otherwise the raw JSON is returned.
+func (e Envelope) OutputText() string {
+	if len(e.Output) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(e.Output, &s); err == nil {
+		return s
+	}
+	return string(e.Output)
 }
 
 // Input is passed to a Node when it is executed.

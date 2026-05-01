@@ -52,6 +52,12 @@ func (n *LLMNode) Run(ctx context.Context, in Input) (Output, error) {
 	fmt.Fprintf(os.Stderr, "    %s │ <streaming…>\n", n.agentID)
 	if err := exec.RunHeadless(ctx, ".", combined, stream); err != nil {
 		raw := buf.String()
+		// Recover if the buffer contains a valid envelope despite the non-zero exit
+		// (e.g. claude CLI prints a warning to stderr and exits 1 after full output).
+		var env Envelope
+		if jsonErr := json.Unmarshal([]byte(extractJSON(raw)), &env); jsonErr == nil && env.Decision != "" {
+			return Output{AgentID: n.agentID, Envelope: env, Raw: raw}, nil
+		}
 		return Output{AgentID: n.agentID, Raw: raw}, fmt.Errorf("agent %q: llm call failed: %w\n--- agent output ---\n%s\n---", n.agentID, err, raw)
 	}
 

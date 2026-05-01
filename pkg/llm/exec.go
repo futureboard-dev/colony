@@ -43,7 +43,7 @@ func (e *Executor) RunHeadless(ctx context.Context, workdir, prompt string, out 
 	cmd.Dir = workdir
 	cmd.Env = os.Environ()
 	cmd.Stdout = out
-	cmd.Stderr = out
+	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
 

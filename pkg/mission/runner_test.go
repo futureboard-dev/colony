@@ -2,6 +2,7 @@ package mission
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -28,8 +29,9 @@ func (n *fakeNode) Run(ctx context.Context, in Input) (Output, error) {
 			return Output{}, ctx.Err()
 		}
 	}
+	rawOut, _ := json.Marshal(n.output)
 	return Output{
-		Envelope: Envelope{Decision: n.decision, Output: n.output},
+		Envelope: Envelope{Decision: n.decision, Output: json.RawMessage(rawOut)},
 		Raw:      fmt.Sprintf(`{"decision":%q,"feedback":"","output":%q}`, n.decision, n.output),
 	}, nil
 }
@@ -117,7 +119,7 @@ func TestLinearFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if out == nil || out.Envelope.Output != "out-c" {
+	if out == nil || out.Envelope.OutputText() != "out-c" {
 		t.Errorf("expected final output out-c, got %+v", out)
 	}
 
@@ -211,7 +213,7 @@ func TestFanIn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if out == nil || out.Envelope.Output != "out-d" {
+	if out == nil || out.Envelope.OutputText() != "out-d" {
 		t.Errorf("expected out-d as final output, got %+v", out)
 	}
 	if atomic.LoadInt64(&dStarted) == 0 {
@@ -326,7 +328,7 @@ func TestCyclicApproveSkipsBackEdge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if out == nil || out.Envelope.Output != "final draft" {
+	if out == nil || out.Envelope.OutputText() != "final draft" {
 		t.Errorf("expected approved output, got %+v", out)
 	}
 }
@@ -379,12 +381,13 @@ func (n *clarifyNode) Run(_ context.Context, in Input) (Output, error) {
 	n.calls = append(n.calls, in.Text)
 	if len(n.calls) == 1 {
 		return Output{
-			Envelope: Envelope{Decision: CLARIFICATION, Feedback: "What is the budget?", Output: ""},
+			Envelope: Envelope{Decision: CLARIFICATION, Feedback: "What is the budget?"},
 			Raw:      `{"decision":"CLARIFICATION","feedback":"What is the budget?","output":""}`,
 		}, nil
 	}
+	rawOut, _ := json.Marshal("final stories")
 	return Output{
-		Envelope: Envelope{Decision: APPROVED, Output: "final stories"},
+		Envelope: Envelope{Decision: APPROVED, Output: json.RawMessage(rawOut)},
 		Raw:      `{"decision":"APPROVED","feedback":"","output":"final stories"}`,
 	}, nil
 }
@@ -421,7 +424,7 @@ func TestClarificationInteractiveAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if out == nil || out.Envelope.Output != "final stories" {
+	if out == nil || out.Envelope.OutputText() != "final stories" {
 		t.Errorf("expected final output 'final stories', got %+v", out)
 	}
 
@@ -479,7 +482,7 @@ func TestClarificationNonInteractiveAgent(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	// CLARIFICATION was downgraded to REJECTED → fallback ran.
-	if out == nil || out.Envelope.Output != "fallback ran" {
+	if out == nil || out.Envelope.OutputText() != "fallback ran" {
 		t.Errorf("expected fallback output, got %+v", out)
 	}
 	// analyst node should only have been called once (no clarification loop).

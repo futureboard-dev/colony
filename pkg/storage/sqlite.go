@@ -45,10 +45,11 @@ type StepFilter struct {
 	Decision  string
 }
 
-// SessionFilter controls which sessions to return from QuerySessions.
+// SessionFilter controls which sessions to return from QuerySessions or DeleteSessions.
 type SessionFilter struct {
 	MissionName string
 	SessionID   string
+	Status      string
 }
 
 // Store is the persistence interface for mission runs.
@@ -58,6 +59,7 @@ type Store interface {
 	InsertStep(s Step) error
 	QuerySessions(f SessionFilter) ([]Session, error)
 	QuerySteps(f StepFilter) ([]Step, error)
+	DeleteSessions(f SessionFilter) (int64, error)
 	Close() error
 }
 
@@ -139,6 +141,10 @@ func (s *SQLiteStore) QuerySessions(f SessionFilter) ([]Session, error) {
 		query += " AND id=?"
 		args = append(args, f.SessionID)
 	}
+	if f.Status != "" {
+		query += " AND status=?"
+		args = append(args, f.Status)
+	}
 	query += " ORDER BY started_at ASC"
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
@@ -162,6 +168,36 @@ func (s *SQLiteStore) QuerySessions(f SessionFilter) ([]Session, error) {
 		sessions = append(sessions, sess)
 	}
 	return sessions, rows.Err()
+}
+
+func (s *SQLiteStore) DeleteSessions(f SessionFilter) (int64, error) {
+	where := "WHERE 1=1"
+	args := []any{}
+	if f.MissionName != "" {
+		where += " AND mission_name=?"
+		args = append(args, f.MissionName)
+	}
+	if f.SessionID != "" {
+		where += " AND id=?"
+		args = append(args, f.SessionID)
+	}
+	if f.Status != "" {
+		where += " AND status=?"
+		args = append(args, f.Status)
+	}
+	// Delete steps first to satisfy the foreign key constraint.
+	if _, err := s.db.Exec(
+		fmt.Sprintf("DELETE FROM steps WHERE session_id IN (SELECT id FROM sessions %s)", where),
+		args...,
+	); err != nil {
+		return 0, err
+	}
+	res, err := s.db.Exec(fmt.Sprintf("DELETE FROM sessions %s", where), args...)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
 }
 
 func (s *SQLiteStore) QuerySteps(f StepFilter) ([]Step, error) {

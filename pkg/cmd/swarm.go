@@ -229,8 +229,8 @@ func runSwarm(cmd *cobra.Command, args []string) error {
 		var reviewOut bytes.Buffer
 		reviewExec.RunHeadless(ctx, root, reviewP, io.MultiWriter(&reviewOut, out)) //nolint:errcheck
 		decision := parseDecision(reviewOut.String())
-		os.WriteFile(filepath.Join(swarmDir, "reviews", fmt.Sprintf("subtask-%s-review.md", b.id)), reviewOut.Bytes(), 0644)    //nolint:errcheck
-		os.WriteFile(filepath.Join(swarmDir, "reviews", fmt.Sprintf("subtask-%s.decision", b.id)), []byte(decision), 0644) //nolint:errcheck
+		os.WriteFile(filepath.Join(swarmDir, "reviews", fmt.Sprintf("subtask-%s-review.md", b.id)), reviewOut.Bytes(), 0644) //nolint:errcheck
+		os.WriteFile(filepath.Join(swarmDir, "reviews", fmt.Sprintf("subtask-%s.decision", b.id)), []byte(decision), 0644)   //nolint:errcheck
 		results = append(results, result{b.id, b.branch, decision})
 		if decision != "APPROVED" {
 			allApproved = false
