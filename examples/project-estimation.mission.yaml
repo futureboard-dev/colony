@@ -6,16 +6,16 @@ max_cycles: 3
 # params: Optional per-client overrides injected into every agent as "## Client Config".
 # The estimator reads daily_rates, markup_percent, currency, and ai_tooling_per_engineer_per_day.
 #
-# params:
-#   daily_rates:
-#     senior: 1200        # override default $800/day
-#     mid: 800
-#     junior: 500
-#     qa: 600
-#     devops: 900
-#   markup_percent: 30    # charge = cost × 1.30 — what you bill the client
-#   currency: "USD"       # symbol shown in all cost tables
-#   ai_tooling_per_engineer_per_day: 50
+params:
+  daily_rates:
+    senior: 1200        # override default $800/day
+    mid: 800
+    junior: 500
+    qa: 600
+    devops: 900
+  markup_percent: 30    # charge = cost × 1.30 — what you bill the client
+  currency: "USD"       # symbol shown in all cost tables
+  ai_tooling_per_engineer_per_day: 50
 
 # LLM config: set in .colony/config.json.
 # Currently configured for DeepSeek V4 Pro via Crush:
