@@ -40,8 +40,13 @@ func (n *LLMNode) Run(ctx context.Context, in Input) (Output, error) {
 		return Output{}, fmt.Errorf("agent %q: load prompt for role %q: %w", n.agentID, n.role, err)
 	}
 
-	// Inject input text under the # INPUT section.
-	combined := injectInput(promptText, in.Text)
+	// Inject client config (if provided) then input text.
+	combined := promptText
+	if len(in.Params) > 0 {
+		b, _ := json.MarshalIndent(in.Params, "", "  ")
+		combined = injectClientConfig(combined, string(b))
+	}
+	combined = injectInput(combined, in.Text)
 
 	// Run LLM headless. Tee CLI output to stderr (with an agent prefix) so the
 	// user sees live progress instead of staring at a frozen terminal while the
@@ -165,6 +170,17 @@ func matchingBrace(s string, pos int) int {
 		}
 	}
 	return -1
+}
+
+// injectClientConfig inserts a ## Client Config section (JSON) just before the # INPUT marker.
+func injectClientConfig(promptText, configJSON string) string {
+	const marker = "\n# INPUT"
+	section := "\n\n## Client Config\n\n```json\n" + configJSON + "\n```"
+	idx := strings.Index(promptText, marker)
+	if idx < 0 {
+		return promptText + section
+	}
+	return promptText[:idx] + section + promptText[idx:]
 }
 
 // injectInput replaces the content after "# INPUT" in the prompt with the actual input.

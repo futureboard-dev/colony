@@ -9,11 +9,12 @@ import (
 
 // Mission is the top-level structure of a *.mission.yaml file.
 type Mission struct {
-	Name      string  `yaml:"name"`
-	Input     string  `yaml:"input"`
-	MaxCycles int     `yaml:"max_cycles"`
-	Agents    []Agent `yaml:"agents"`
-	Flow      []Edge  `yaml:"flow"`
+	Name      string         `yaml:"name"`
+	Input     string         `yaml:"input"`
+	MaxCycles int            `yaml:"max_cycles"`
+	Params    map[string]any `yaml:"params,omitempty"`
+	Agents    []Agent        `yaml:"agents"`
+	Flow      []Edge         `yaml:"flow"`
 }
 
 // Agent declares a node in the mission graph.

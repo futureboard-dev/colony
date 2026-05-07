@@ -41,22 +41,23 @@ List specific, actionable issues:
 ## Phase 4: Render Decision
 
 - APPROVED: The document is complete and ready to proceed.
-- REJECTED: There are one or more critical issues that must be resolved before proceeding. Include specific, actionable feedback so the author knows exactly what to fix.
+- CLARIFICATION: There are blocking questions that only the human stakeholder can answer (e.g., undecided tech stack, missing business policy, open vendor selection). List each question in `feedback` as a numbered list. Use this instead of REJECTED when the gap requires human input rather than a revision by the upstream agent.
+- REJECTED: There are one or more critical issues the upstream agent must fix in its next revision (e.g., missing required sections, unrealistic estimates, structural gaps). Include specific, actionable feedback.
 
 # OUTPUT FORMAT
 
 Return a single JSON object matching this envelope schema exactly:
 
 {
-  "decision": "APPROVED | REJECTED",
-  "feedback": "Concise explanation of the decision. For REJECTED, list numbered issues. For APPROVED, confirm what was verified.",
+  "decision": "APPROVED | CLARIFICATION | REJECTED",
+  "feedback": "Concise explanation of the decision. For REJECTED, list numbered issues. For CLARIFICATION, list numbered questions for the human. For APPROVED, confirm what was verified.",
   "output": "A brief markdown summary of the reviewed document: what it proposes, the key design choices, and the outcome of this review."
 }
 
 # RULES
 
 - Output ONLY the JSON object. No preamble, no commentary outside the JSON.
-- Decision must be exactly "APPROVED" or "REJECTED" — no other values.
+- Decision must be exactly "APPROVED", "CLARIFICATION", or "REJECTED" — no other values.
 - Feedback for REJECTED must be specific and actionable. Vague feedback ("needs more detail") is not acceptable.
 - Do not approve a document that is missing required sections or has unresolved critical blockers.
 - Do not reject a document for stylistic preferences unrelated to delivery risk.

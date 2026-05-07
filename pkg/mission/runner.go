@@ -232,7 +232,7 @@ func (r *defaultRunner) Run(ctx context.Context, m *Mission, g *Graph, sessionID
 
 func (r *defaultRunner) executeNode(
 	ctx context.Context,
-	_ *Mission,
+	m *Mission,
 	g *Graph,
 	nodeID string,
 	inputs []Output,
@@ -250,22 +250,17 @@ func (r *defaultRunner) executeNode(
 	var out Output
 	var execErr error
 
-	out, execErr = node.Run(ctx, Input{Text: currentInput})
+	out, execErr = node.Run(ctx, Input{Text: currentInput, Params: m.Params})
 
-	// Clarification loop: only fires for interactive agents that return CLARIFICATION.
-	for execErr == nil && out.Envelope.Decision == CLARIFICATION && agent.Interactive {
+	// Clarification loop: any agent returning CLARIFICATION prompts the user.
+	for execErr == nil && out.Envelope.Decision == CLARIFICATION {
 		answer, err := r.clarify(nodeID, out.Envelope.Feedback)
 		if err != nil {
 			execErr = fmt.Errorf("agent %q: clarify: %w", nodeID, err)
 			break
 		}
 		currentInput = currentInput + "\n\n## User Clarification\n\n" + answer
-		out, execErr = node.Run(ctx, Input{Text: currentInput})
-	}
-
-	// Non-interactive agent returning CLARIFICATION is treated as REJECTED.
-	if execErr == nil && out.Envelope.Decision == CLARIFICATION && !agent.Interactive {
-		out.Envelope.Decision = REJECTED
+		out, execErr = node.Run(ctx, Input{Text: currentInput, Params: m.Params})
 	}
 
 	finishedAt := time.Now()

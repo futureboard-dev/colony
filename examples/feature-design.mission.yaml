@@ -2,6 +2,20 @@ name: feature-design
 input: "Design a user authentication feature with OAuth2 support for a web application. The system must support Google and GitHub as identity providers, issue short-lived JWTs, and allow seamless integration with an existing REST API."
 max_cycles: 3
 
+# params: Optional per-client overrides. Injected into every agent as "## Client Config".
+# The estimator reads daily_rates, markup_percent, currency, and ai_tooling_per_engineer_per_day.
+#
+# params:
+#   daily_rates:
+#     senior: 700
+#     mid: 476
+#     junior: 300
+#     qa: 400
+#     devops: 700
+#   markup_percent: 30    # charge = cost × 1.30 — what you bill the client
+#   currency: "USD"
+#   ai_tooling_per_engineer_per_day: 50
+
 agents:
   - id: analyst
     role: business-analyst

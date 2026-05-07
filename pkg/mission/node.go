@@ -37,7 +37,8 @@ func (e Envelope) OutputText() string {
 
 // Input is passed to a Node when it is executed.
 type Input struct {
-	Text string
+	Text   string
+	Params map[string]any
 }
 
 // Output holds the result of a Node execution.

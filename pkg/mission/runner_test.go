@@ -449,31 +449,29 @@ func TestClarificationInteractiveAgent(t *testing.T) {
 	}
 }
 
-// TestClarificationNonInteractiveAgent: non-interactive agent returning CLARIFICATION
-// is downgraded to REJECTED and routed accordingly.
-func TestClarificationNonInteractiveAgent(t *testing.T) {
+// TestClarificationAllAgents: any agent returning CLARIFICATION (regardless of the
+// interactive field) prompts the user and loops until a terminal decision is reached.
+func TestClarificationAllAgents(t *testing.T) {
 	node := &clarifyNode{}
 	m := buildTestMission("clarify-non-interactive", []Agent{
-		{ID: "analyst"}, // interactive: false (default)
-		{ID: "fallback"},
+		{ID: "analyst"}, // interactive: false (default) — clarification still fires
 	}, []Edge{
 		{From: "__input__", To: "analyst"},
-		{From: "analyst", OnApprove: "__output__", OnReject: "fallback"},
-		{From: "fallback", To: "__output__"},
+		{From: "analyst", OnApprove: "__output__"},
 	}, 0)
 
 	g := buildTestGraph(t, m, map[string]Node{
-		"analyst":  node,
-		"fallback": &fakeNode{decision: APPROVED, output: "fallback ran"},
+		"analyst": node,
 	})
 
 	store := openTestStore(t)
 	sessID := "clarify-non-interactive-test"
 	seedSession(t, store, sessID, m.Name)
 
+	called := 0
 	clarifyFn := func(_, _ string) (string, error) {
-		t.Error("clarify should not be called for non-interactive agent")
-		return "", nil
+		called++
+		return "user answer", nil
 	}
 
 	runner := newRunnerWithClarify(clarifyFn)
@@ -481,12 +479,14 @@ func TestClarificationNonInteractiveAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	// CLARIFICATION was downgraded to REJECTED → fallback ran.
-	if out == nil || out.Envelope.OutputText() != "fallback ran" {
-		t.Errorf("expected fallback output, got %+v", out)
+	// CLARIFICATION triggered the clarify loop; analyst ran twice (clarify + approved).
+	if out == nil || out.Envelope.OutputText() != "final stories" {
+		t.Errorf("expected final stories, got %+v", out)
 	}
-	// analyst node should only have been called once (no clarification loop).
-	if len(node.calls) != 1 {
-		t.Errorf("expected 1 analyst call, got %d", len(node.calls))
+	if called != 1 {
+		t.Errorf("expected clarify called once, got %d", called)
+	}
+	if len(node.calls) != 2 {
+		t.Errorf("expected 2 analyst calls, got %d", len(node.calls))
 	}
 }
