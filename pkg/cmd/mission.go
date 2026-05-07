@@ -19,9 +19,10 @@ var missionCmd = &cobra.Command{
 }
 
 var missionRunCmd = &cobra.Command{
-	Use:   "run",
-	Short: "Execute a mission from a *.mission.yaml file",
-	RunE:  runMission,
+	Use:          "run",
+	Short:        "Execute a mission from a *.mission.yaml file",
+	RunE:         runMission,
+	SilenceUsage: true,
 }
 
 var missionInitCmd = &cobra.Command{
@@ -115,6 +116,11 @@ func runMission(cmd *cobra.Command, args []string) error {
 
 	if runErr != nil {
 		_ = store.UpdateSession(sessID, "failed", time.Now())
+		if out != nil && missionOutput != "" && out.Raw != "" {
+			if writeErr := os.WriteFile(missionOutput, []byte(out.Raw), 0644); writeErr == nil {
+				fmt.Fprintf(os.Stderr, "raw output written to %s (run failed — JSON envelope missing)\n", missionOutput)
+			}
+		}
 		return runErr
 	}
 

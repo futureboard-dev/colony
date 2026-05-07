@@ -177,7 +177,7 @@ func (r *defaultRunner) Run(ctx context.Context, m *Mission, g *Graph, sessionID
 					<-resultCh
 					active--
 				}
-				return nil, runErr
+				return &nr.output, runErr
 			}
 
 			decision := nr.output.Envelope.Decision

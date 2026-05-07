@@ -1,0 +1,41 @@
+name: tennis-court-estimation
+input: "Tennis Court Booking Platform — Feature Requirements (English, High-Level)\nStack Context: LINE OA + LIFF + Web Admin Dashboard\n\nFeature 1 — Court Booking via LINE\nUsers book courts through a LIFF (LINE Front-end Framework) mini-app embedded inside LINE. The booking flow includes: selecting a date, time slot, and court. Payment is completed via PromptPay QR code generation. After payment, users upload a payment slip image to confirm the booking. Booking status updates are sent back to the user via LINE messaging.\n\nFeature 2 — Connected / Paired Courts\nThe system supports linking two or more adjacent courts so they can be booked together as a single unit. Admins can define which courts are connected. When a paired booking is made, all linked courts are reserved simultaneously and treated as one booking entity.\n\nFeature 3 — Pre-paid Credit Package / Tier Membership\nUsers can purchase credit packages in advance. Packages are structured as tier-based memberships (e.g. Bronze, Silver, Gold) with different credit values and pricing. Credits are stored in the user's account and deducted per booking. Each tier may have different benefits such as discounts, priority booking, or bonus credits.\n\nFeature 4 — Automated Slip Verification\nPayment slip images are automatically verified using the Slip2go API. The system checks: slip authenticity, payment amount, payment date, and whether the slip has already been used (duplicate detection). Bookings are only confirmed after successful slip verification. Failed or duplicate slips trigger rejection with a user notification.\n\nFeature 5 — Admin Dashboard\nA web-based admin dashboard with real-time statistics including: total revenue, booking counts, court utilization rates, and most popular courts. Full management capabilities for bookings, courts, and users. All data updates in real-time without manual refresh.\n\nFeature 6 — Booking Management\nAdmins can create, edit, reschedule, and cancel bookings. Includes the ability to manually verify payment slips, manage check-in PINs (generated per booking for court access), and view full booking history per user or court.\n\nFeature 7 — Flexible / Dynamic Pricing\nAdmins can define custom pricing rules based on: time slots (peak vs off-peak hours), specific dates (holidays, special events), and promotional campaigns. Special pricing periods are visually highlighted on the LIFF booking interface so users can see deals at a glance.\n\nFeature 8 — Court Closure / Maintenance Mode\nAdmins can block out courts for full days or specific time ranges for maintenance or closures. When a closure affects existing bookings, the system automatically notifies impacted users via LINE and offers rescheduling options.\n\nFeature 9 — Role-Based Admin Access Control\nThe admin system supports multiple admin accounts with role-based permissions. Different roles have access to different features (e.g. a staff role can manage bookings but not change pricing or access financial reports). Permissions are configurable per role.\n\nFeature 10 — Automated Notifications\nThe system sends automated LINE messages for: booking reminders before the session starts, booking expiration warnings (when unpaid bookings are about to auto-cancel), auto-cancellation confirmations, and court owner alerts for new bookings, cancellations, and payment events.\n\nFeature 11 — User Satisfaction Survey System\nAfter a completed booking session, users automatically receive a LINE notification prompting them to complete a satisfaction survey. Survey responses are collected and accessible in the admin dashboard for review and analysis.\n\nFeature 12 — Coach Management System\nAdmins and coaches can manage coach availability schedules through the platform. The system handles revenue sharing between the court operator and coaches — defining split percentages per booking or per coach. Coaches may have their own profile and availability visible during the user booking flow.\n\nFeature 13 — Equipment / Add-on Management\nThe platform supports add-on items that users can optionally include with their court booking (e.g. racket rental, ball cans, towels). Admins manage the inventory, pricing, and availability of add-on items. Add-ons are selectable during the LIFF booking flow and added to the total booking cost.\n\nFeature 14 — Custom Branded Website\nThe platform supports white-label theming — court operators can customize the booking website with their brand colors and logo. A landing page is presented to users before they enter the booking system. The landing page is customizable and serves as a marketing entry point before the LIFF booking flow begins."
+max_cycles: 0
+
+
+# LLM config: set in .colony/config.json.
+# Currently configured for DeepSeek V4 Pro via Crush:
+#   {
+#     "llm": { "provider": "deepseek", "model": "deepseek-reasoner", "api_key_env": "DEEPSEEK_API_KEY" }
+#   }
+
+agents:
+  - id: analyst
+    role: business-analyst
+    interactive: true   # will ask user for clarification when input is vague
+  - id: estimator
+    role: estimator
+  - id: planner
+    role: project-manager
+  - id: reviewer
+    role: project-manager
+
+flow:
+  # analyst extracts requirements (may ask user questions first)
+  - from: __input__
+    to: analyst
+
+  # estimator breaks down effort and cost
+  - from: analyst
+    to: estimator
+
+  # planner builds timeline and milestone plan
+  - from: estimator
+    to: planner
+
+  # reviewer approves or sends back to estimator for revision
+  - from: planner
+    to: reviewer
+  - from: reviewer
+    on_approve: __output__
+    on_reject: estimator
