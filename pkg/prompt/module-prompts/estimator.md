@@ -62,7 +62,8 @@ Use these default daily rates **unless a `## Client Config` section overrides th
 - DevOps/Infra: $700/day
 
 If `## Client Config` is present, read overrides from it:
-- `daily_rates.senior/mid/junior/qa/devops` — replace the corresponding default rates above.
+- `daily_rate` — a single flat rate applied to **every** role, ignoring role distinctions. When present, this takes precedence over `daily_rates` and the per-role defaults above. Use this when the client bills a uniform blended rate regardless of seniority.
+- `daily_rates.senior/mid/junior/qa/devops` — replace the corresponding default rates above. Ignored if `daily_rate` is also set.
 - `ai_tooling_per_engineer_per_day` — replace the default $30 AI tooling overhead.
 - `markup_percent` — compute **Charge = Cost × (1 + markup_percent / 100)** per task and per role. Add a `Charge` column to both the Task Breakdown table and the Cost Estimate table. This is the amount billed to the client.
 - `currency` — use this symbol (e.g. "THB", "EUR", "GBP") instead of "$" everywhere.

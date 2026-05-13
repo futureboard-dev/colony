@@ -1,0 +1,188 @@
+name: pool-villa-hotel-estimation
+input: |
+  Project: SweetStay — Accommodation Booking Website
+  Type: Single-team managed platform (no multi-host/marketplace). One internal team manages all properties.
+
+  ─────────────────────────────────────────
+  PHASE 1 — CORE BOOKING
+  ─────────────────────────────────────────
+
+  1. Project Setup
+     - Project architecture design
+     - Database schema design
+     - Infrastructure setup
+     Priority: MUST
+
+  2. Search & Discovery
+     - Search by location, check-in/check-out date, number of guests
+     - Filters: price range, property type, amenities (pool, pet-friendly, etc.)
+     - Sort: lowest price, highest rated, recommended
+     Priority: MUST
+
+  3. Listing Detail Page
+     - High-quality photo gallery
+     - Room details: size, bed configuration
+     - Amenities list
+     - Policies: cancellation, check-in/check-out times
+     - Reviews and ratings display
+     Priority: MUST
+
+  4. Availability Calendar
+     - Real-time availability check
+     - Prevent double-booking (lock baseline)
+     Priority: MUST
+
+  5. Booking Flow
+     - Room selection and number of nights
+     - Clear price breakdown (inclusions/exclusions)
+     - Promo code / discount support
+     Priority: MUST
+
+  6. Payment Integration
+     - Credit/debit card
+     - Bank transfer
+     - e-Wallet: LINE Pay, TrueMoney Wallet
+     Priority: MUST
+
+  7. Invoice & Receipt Generation
+     - Auto-generate receipt/invoice post-payment
+     Priority: SHOULD
+
+  8. Booking Confirmation Notifications
+     - Email, SMS, and push notification on booking confirmation
+     Priority: SHOULD
+
+  9. QA / UAT / Bug Fixing
+     - Full QA coverage for all Phase 1 core flows
+     Priority: MUST
+
+  ─────────────────────────────────────────
+  PHASE 2 — USER OPS
+  ─────────────────────────────────────────
+  Note: Host-side features are EXCLUDED. One internal team manages all properties via admin panel.
+
+  10. User Authentication & Profile
+      - Register, login, forgot password
+      - Profile management
+      Priority: MUST
+
+  11. Booking Management (User)
+      - Booking history
+      - Modify booking (policy-based)
+      - Cancel booking (policy-based)
+      Priority: MUST
+
+  12. Wishlist / Favorites
+      - Save and manage favorite properties
+      Priority: SHOULD
+
+  13. Promo Code & Discount Engine
+      - Create, apply, and validate promo codes
+      - Discount rules management
+      Priority: SHOULD
+
+  14. CMS — Content & Policy Management
+      - Manage website content (banners, pages, FAQs)
+      - Manage cancellation and booking policies
+      Priority: MUST
+
+  ─────────────────────────────────────────
+  PHASE 3 — ADMIN & RISK
+  ─────────────────────────────────────────
+
+  15. Admin Panel — Property & Room Management
+      - Add/edit/remove properties and rooms
+      - Manage pricing and availability
+      - View and manage all bookings
+      Priority: MUST
+
+  16. Dispute & Refund Workflow
+      - Handle customer disputes
+      - Process refunds with approval flow
+      Priority: MUST
+
+  17. Fraud Detection (Baseline)
+      - Rule-based fraud flags
+      - Suspicious activity detection
+      Priority: MUST
+
+  18. Full Notification Engine
+      - Pre-check-in reminders
+      - Booking change/update alerts
+      - System-wide push/email/SMS triggers
+      Priority: SHOULD
+
+  19. Reports — Revenue Dashboard
+      - Total revenue by date range, property, room type
+      Priority: MUST
+
+  20. Reports — Occupancy Rate Dashboard
+      - Occupancy rate by property and date range
+      Priority: MUST
+
+  21. Customer Behavior Analytics Dashboard
+      - Booking funnel drop-off
+      - Popular properties and search trends
+      Priority: SHOULD
+
+  22. Security Hardening, Deployment & Monitoring
+      - Security audit and hardening
+      - Production deployment
+      - Uptime and error monitoring setup
+      Priority: MUST
+
+  ─────────────────────────────────────────
+  OUT OF SCOPE (Confirmed)
+  ─────────────────────────────────────────
+  - Host/property owner portal or login
+  - Multi-tenant host dashboard
+  - Host-side revenue or occupancy reports
+  - Host onboarding flow
+  All property management is handled by a single internal admin team.
+
+max_cycles: 2
+
+params:
+  daily_rate: 248       # applies to senior, mid, junior, qa, devops — all the same
+  markup_percent: 10
+  currency: "USD"
+  ai_tooling_per_engineer_per_day: 20
+
+
+
+# LLM config: set in .colony/config.json.
+# Currently configured for DeepSeek V4 Pro via Crush:
+#   {
+#     "llm": { "provider": "deepseek", "model": "deepseek-reasoner", "api_key_env": "DEEPSEEK_API_KEY" }
+#   }
+
+agents:
+  - id: analyst
+    role: business-analyst
+    interactive: true   # will ask user for clarification when input is vague
+  - id: estimator
+    role: estimator
+  - id: planner
+    role: project-manager
+  - id: reviewer
+    role: project-manager
+
+flow:
+  # analyst extracts requirements (may ask user questions first)
+  - from: __input__
+    to: analyst
+
+  # estimator breaks down effort and cost
+  - from: analyst
+    to: estimator
+
+  # planner builds timeline and milestone plan
+  - from: estimator
+    to: planner
+
+  # reviewer approves or sends back to estimator for revision
+  - from: planner
+    to: reviewer
+  - from: reviewer
+    on_approve: __output__
+    on_reject: estimator

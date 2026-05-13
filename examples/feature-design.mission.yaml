@@ -3,7 +3,21 @@ input: "Design a user authentication feature with OAuth2 support for a web appli
 max_cycles: 3
 
 # params: Optional per-client overrides. Injected into every agent as "## Client Config".
-# The estimator reads daily_rates, markup_percent, currency, and ai_tooling_per_engineer_per_day.
+# The estimator reads daily_rate OR daily_rates, markup_percent, currency, and ai_tooling_per_engineer_per_day.
+#
+# Two ways to set rates — pick ONE:
+#
+# (A) Flat blended rate — same $/day for every role, regardless of seniority.
+#     Use this when the client bills a single uniform rate.
+#
+# params:
+#   daily_rate: 500       # applies to senior, mid, junior, qa, devops — all the same
+#   markup_percent: 30
+#   currency: "USD"
+#   ai_tooling_per_engineer_per_day: 50
+#
+# (B) Per-role rates — different $/day per seniority.
+#     Use this when the client distinguishes between roles in their pricing.
 #
 # params:
 #   daily_rates:
@@ -15,6 +29,8 @@ max_cycles: 3
 #   markup_percent: 30    # charge = cost × 1.30 — what you bill the client
 #   currency: "USD"
 #   ai_tooling_per_engineer_per_day: 50
+#
+# Note: if both daily_rate and daily_rates are set, daily_rate wins and daily_rates is ignored.
 
 agents:
   - id: analyst

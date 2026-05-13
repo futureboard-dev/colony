@@ -333,6 +333,94 @@ func TestCyclicApproveSkipsBackEdge(t *testing.T) {
 	}
 }
 
+// recordingNode captures every input.Text it receives, then returns a scripted
+// sequence of decisions/outputs (one per call). If calls exceed the script,
+// the last entry repeats.
+type recordingNode struct {
+	calls  []string
+	script []struct {
+		dec Decision
+		out string
+	}
+}
+
+func (n *recordingNode) Run(_ context.Context, in Input) (Output, error) {
+	n.calls = append(n.calls, in.Text)
+	idx := len(n.calls) - 1
+	if idx >= len(n.script) {
+		idx = len(n.script) - 1
+	}
+	step := n.script[idx]
+	rawOut, _ := json.Marshal(step.out)
+	return Output{
+		Envelope: Envelope{Decision: step.dec, Output: json.RawMessage(rawOut)},
+		Raw:      fmt.Sprintf(`{"decision":%q,"feedback":"","output":%q}`, step.dec, step.out),
+	}, nil
+}
+
+// TestBackEdgeMergesPriorContext: when a reviewer rejects back to an earlier
+// node, that node should see its prior input merged with the reviewer's
+// feedback — not just the feedback alone. This prevents context loss in
+// reject loops (e.g. estimator losing the original spec when reviewer rejects).
+func TestBackEdgeMergesPriorContext(t *testing.T) {
+	estimator := &recordingNode{script: []struct {
+		dec Decision
+		out string
+	}{
+		{dec: APPROVED, out: "estimate-v1"}, // first run
+		{dec: APPROVED, out: "estimate-v2"}, // second run after reject
+	}}
+	reviewer := &recordingNode{script: []struct {
+		dec Decision
+		out string
+	}{
+		{dec: REJECTED, out: "needs more detail"}, // first review
+		{dec: APPROVED, out: "looks good"},        // second review approves
+	}}
+
+	m := buildTestMission("back-edge-merge", []Agent{
+		{ID: "estimator"}, {ID: "reviewer"},
+	}, []Edge{
+		{From: "__input__", To: "estimator"},
+		{From: "estimator", To: "reviewer"},
+		{From: "reviewer", OnApprove: "__output__", OnReject: "estimator"},
+	}, 5)
+	m.Input = "original spec"
+
+	g := buildTestGraph(t, m, map[string]Node{
+		"estimator": estimator,
+		"reviewer":  reviewer,
+	})
+
+	store := openTestStore(t)
+	sessID := "back-edge-merge-test"
+	seedSession(t, store, sessID, m.Name)
+
+	runner := NewRunner()
+	out, err := runner.Run(context.Background(), m, g, sessID, store)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if out == nil || out.Envelope.OutputText() != "looks good" {
+		t.Fatalf("expected final output 'looks good', got %+v", out)
+	}
+
+	if len(estimator.calls) != 2 {
+		t.Fatalf("expected estimator called twice, got %d", len(estimator.calls))
+	}
+	// First call: just the original input.
+	if !strings.Contains(estimator.calls[0], "original spec") {
+		t.Errorf("first estimator call should contain original spec, got: %s", estimator.calls[0])
+	}
+	// Second call: original spec PLUS reviewer's rejection output.
+	if !strings.Contains(estimator.calls[1], "original spec") {
+		t.Errorf("second estimator call should still contain original spec, got: %s", estimator.calls[1])
+	}
+	if !strings.Contains(estimator.calls[1], "needs more detail") {
+		t.Errorf("second estimator call should contain reviewer feedback, got: %s", estimator.calls[1])
+	}
+}
+
 // TestMalformedEnvelope: bad JSON from node causes run to fail, step persisted with raw text.
 func TestMalformedEnvelope(t *testing.T) {
 	m := buildTestMission("bad-json", []Agent{

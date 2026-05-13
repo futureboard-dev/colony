@@ -99,6 +99,10 @@ func (r *defaultRunner) Run(ctx context.Context, m *Mission, g *Graph, sessionID
 	runCount := make(map[string]int)
 	pendingCount := make(map[string]int)
 	collected := make(map[string][]Output)
+	// lastInputs caches the most recent input set each node was dispatched with.
+	// Used on back-edges so a rejecting upstream's feedback is merged with the
+	// node's prior context, instead of replacing it.
+	lastInputs := make(map[string][]Output)
 	stepNum := 0
 	active := 0
 	var finalOutput *Output
@@ -115,6 +119,7 @@ func (r *defaultRunner) Run(ctx context.Context, m *Mission, g *Graph, sessionID
 		stepNum++
 		thisStep := stepNum
 		active++
+		lastInputs[nodeID] = inputs
 
 		role := g.Agents[nodeID].Role
 		if m.MaxCycles > 0 {
@@ -205,7 +210,14 @@ func (r *defaultRunner) Run(ctx context.Context, m *Mission, g *Graph, sessionID
 						}
 						return nil, cycErr
 					}
-					dispatchNode(nextID, []Output{nr.output})
+					// Merge the rejecting upstream's output with whatever inputs
+					// the target last ran with, so the target sees its prior
+					// context (e.g. the original spec) plus the new feedback.
+					prior := lastInputs[nextID]
+					merged := make([]Output, 0, len(prior)+1)
+					merged = append(merged, prior...)
+					merged = append(merged, nr.output)
+					dispatchNode(nextID, merged)
 				} else {
 					collected[nextID] = append(collected[nextID], nr.output)
 					pendingCount[nextID]--

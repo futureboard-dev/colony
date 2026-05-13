@@ -4,7 +4,12 @@ input: "i need a estimate for a project,"
 max_cycles: 3
 
 # params: Optional per-client overrides injected into every agent as "## Client Config".
-# The estimator reads daily_rates, markup_percent, currency, and ai_tooling_per_engineer_per_day.
+# The estimator reads daily_rate OR daily_rates, markup_percent, currency, and ai_tooling_per_engineer_per_day.
+#
+# Rates can be set two ways — pick ONE:
+#   (A) daily_rate: <N>           — flat blended rate for all roles (simpler)
+#   (B) daily_rates: { senior, mid, junior, qa, devops } — per-role rates
+# If both are set, daily_rate wins and daily_rates is ignored.
 #
 params:
   daily_rates:
@@ -16,6 +21,13 @@ params:
   markup_percent: 30    # charge = cost × 1.30 — what you bill the client
   currency: "USD"       # symbol shown in all cost tables
   ai_tooling_per_engineer_per_day: 50
+
+# Alternative — flat blended rate (uncomment to use, and comment out daily_rates above):
+# params:
+#   daily_rate: 800       # applies to every role
+#   markup_percent: 30
+#   currency: "USD"
+#   ai_tooling_per_engineer_per_day: 50
 
 # LLM config: set in .colony/config.json.
 # Currently configured for DeepSeek V4 Pro via Crush:
