@@ -49,6 +49,10 @@ func (e *Executor) RunHeadless(ctx context.Context, workdir, prompt string, out 
 
 // RunAgent runs a prompt as an autonomous coding agent with file tools.
 // Output streams to out. Used for build and fix steps.
+//
+// For claude, stdout is the stream-json event feed and is rendered through
+// streamClaude into a compact one-line-per-action view. For crush (which has
+// no structured stream format) output is passed through raw with --verbose.
 func (e *Executor) RunAgent(ctx context.Context, workdir, prompt string, out io.Writer) error {
 	if err := e.validateKeyIfNeeded(); err != nil {
 		return err
@@ -60,13 +64,30 @@ func (e *Executor) RunAgent(ctx context.Context, workdir, prompt string, out io.
 	cmd := exec.CommandContext(ctx, cli, e.agentArgs(prompt)...)
 	cmd.Dir = workdir
 	cmd.Env = os.Environ()
-	if out != nil {
-		cmd.Stdout = out
-		cmd.Stderr = out
-	} else {
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
+
+	stdoutW, stderrW := out, out
+	if out == nil {
+		stdoutW, stderrW = os.Stdout, os.Stderr
 	}
+
+	if cli == "claude" {
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			return err
+		}
+		cmd.Stderr = stderrW
+		if err := cmd.Start(); err != nil {
+			return err
+		}
+		streamErr := streamClaude(stdout, stdoutW)
+		if waitErr := cmd.Wait(); waitErr != nil {
+			return waitErr
+		}
+		return streamErr
+	}
+
+	cmd.Stdout = stdoutW
+	cmd.Stderr = stderrW
 	return cmd.Run()
 }
 
@@ -160,9 +181,12 @@ func (e *Executor) headlessArgs(prompt string) []string {
 func (e *Executor) agentArgs(prompt string) []string {
 	switch e.CLI() {
 	case "claude":
+		// stream-json emits an event per message/tool call as it happens;
+		// --verbose is required by claude to enable it under -p.
 		args := []string{
 			"-p", prompt,
-			"--output-format", "text",
+			"--output-format", "stream-json",
+			"--verbose",
 			"--allowedTools", "Write,Edit,Bash,Read,Glob,Grep",
 		}
 		if e.cfg.Model != "" {
@@ -170,7 +194,9 @@ func (e *Executor) agentArgs(prompt string) []string {
 		}
 		return args
 	default:
-		args := []string{"run"}
+		// crush has no structured stream format; --verbose surfaces its
+		// activity logs so the run isn't a silent black box.
+		args := []string{"run", "--verbose"}
 		if e.cfg.Model != "" {
 			args = append(args, "-m", e.cfg.Model)
 		}

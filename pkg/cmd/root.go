@@ -39,7 +39,17 @@ var versionCmd = &cobra.Command{
 	},
 }
 
+const banner = `
+  ○         ○
+   ╲       ╱
+○───●─────●───○      C o l o n y
+   ╱       ╲
+  ○         ○
+
+`
+
 func Execute() {
+	fmt.Print(banner)
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}

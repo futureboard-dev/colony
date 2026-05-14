@@ -24,10 +24,14 @@ Examples:
 	RunE: runSpecFeature,
 }
 
-var sfFile string
+var (
+	sfFile        string
+	sfInteractive bool
+)
 
 func init() {
 	specFeatureCmd.Flags().StringVar(&sfFile, "file", "", "read requirements from this file instead of inline text")
+	specFeatureCmd.Flags().BoolVar(&sfInteractive, "interactive", false, "collaborate on the spec in a live agent session instead of one-shot generation")
 	rootCmd.AddCommand(specFeatureCmd)
 }
 
@@ -73,8 +77,28 @@ func runSpecFeature(cmd *cobra.Command, args []string) error {
 	}
 
 	ex := llm.New(cfg.Role("engineer"))
-
 	taskFile := filepath.Join(featureDir, "TASK.md")
+
+	// Interactive: launch a live agent session (claude or crush) and let the
+	// agent write the spec itself, so the user can steer it and answer questions.
+	if sfInteractive {
+		interactivePrompt := fmt.Sprintf(
+			"%s\n\n---\n\nWrite the completed spec to %s, starting with a \"# Feature: %s\" heading. Ask me clarifying questions before writing if anything is ambiguous.",
+			p, taskFile, slugName)
+		fmt.Printf("%sLaunching interactive spec session for %q...%s\n", ansiCyan, slugName, ansiReset)
+		if err := ex.RunInteractive(root, interactivePrompt); err != nil {
+			os.RemoveAll(featureDir)
+			return fmt.Errorf("interactive session: %w", err)
+		}
+		if _, err := os.Stat(taskFile); err != nil {
+			os.RemoveAll(featureDir)
+			return fmt.Errorf("interactive session ended without writing %s", taskFile)
+		}
+		fmt.Printf("%s✓ Created feature: %s%s\n", ansiGreen, slugName, ansiReset)
+		fmt.Printf("  Task file: %s\n", taskFile)
+		return nil
+	}
+
 	f, err := os.Create(taskFile)
 	if err != nil {
 		return fmt.Errorf("create TASK.md: %w", err)

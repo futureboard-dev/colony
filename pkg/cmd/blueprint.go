@@ -35,15 +35,16 @@ interrupted codegen). Use --headless to run in the background.`,
 }
 
 var (
-	bpSpec     string
-	bpLang     string
-	bpModel    string
-	bpResume   string
-	bpContinue string
-	bpBase     string
-	bpHeadless bool
-	bpNoFormat bool
-	bpLogFile  string // internal: set by headless re-exec
+	bpSpec        string
+	bpLang        string
+	bpModel       string
+	bpResume      string
+	bpContinue    string
+	bpBase        string
+	bpHeadless    bool
+	bpNoFormat    bool
+	bpInteractive bool
+	bpLogFile     string // internal: set by headless re-exec
 )
 
 func init() {
@@ -55,6 +56,7 @@ func init() {
 	blueprintCmd.Flags().StringVar(&bpBase, "base", "", "base branch (must not be main/master)")
 	blueprintCmd.Flags().BoolVar(&bpHeadless, "headless", false, "run in background, tail log for output")
 	blueprintCmd.Flags().BoolVar(&bpNoFormat, "no-format", false, "skip the format gate")
+	blueprintCmd.Flags().BoolVar(&bpInteractive, "interactive", false, "run the codegen step as a live agent session you can watch and steer")
 	blueprintCmd.Flags().StringVar(&bpLogFile, "_log", "", "")
 	blueprintCmd.Flags().MarkHidden("_log") //nolint:errcheck
 }
@@ -75,6 +77,14 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 	}
 	if bpBase == "main" || bpBase == "master" {
 		return fmt.Errorf("--base cannot be 'main' or 'master' — agents must target feature branches")
+	}
+	if bpInteractive {
+		if bpHeadless {
+			return fmt.Errorf("--interactive cannot be combined with --headless (interactive needs a terminal)")
+		}
+		if bpResume != "" {
+			return fmt.Errorf("--interactive has no effect with --resume (resume only re-runs gates)")
+		}
 	}
 
 	// ── Load config ────────────────────────────────────────────────────────────
@@ -147,7 +157,7 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		if err := ex.RunAgent(ctx, bpContinue, contPrompt, out); err != nil {
+		if err := runCodegen(ctx, ex, bpContinue, contPrompt, out); err != nil {
 			return fmt.Errorf("continue agent failed: %w", err)
 		}
 		fmt.Fprintf(out, "%s✓ Agent finished continuing code%s\n", ansiGreen, ansiReset)
@@ -202,7 +212,7 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := ex.RunAgent(ctx, worktreePath, writePrompt, out); err != nil {
+	if err := runCodegen(ctx, ex, worktreePath, writePrompt, out); err != nil {
 		return fmt.Errorf("agent failed: %w", err)
 	}
 	fmt.Fprintf(out, "%s✓ Agent finished writing code%s\n", ansiGreen, ansiReset)
@@ -229,6 +239,17 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(out, "  Cleanup: colony task done %s\n", branch)
 	fmt.Fprintf(out, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 	return nil
+}
+
+// runCodegen runs the code-writing agent step. With --interactive it launches a
+// live agent session (claude or crush) the user can watch and steer; that output
+// goes to the terminal, not the log file. Otherwise it runs headless via RunAgent.
+func runCodegen(ctx context.Context, ex *llm.Executor, workdir, agentPrompt string, out io.Writer) error {
+	if bpInteractive {
+		fmt.Fprintf(out, "%s   --interactive: launching live agent session (terminal only, not captured to log)%s\n", ansiYellow, ansiReset)
+		return ex.RunInteractive(workdir, agentPrompt)
+	}
+	return ex.RunAgent(ctx, workdir, agentPrompt, out)
 }
 
 // runGates runs format → typecheck (with fix) → tests (with fix).
