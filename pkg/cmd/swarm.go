@@ -217,7 +217,8 @@ func runSwarm(cmd *cobra.Command, args []string) error {
 	for _, b := range builtList {
 		fmt.Fprintf(out, "  🔎 Reviewing subtask %s (%s)...\n", b.id, b.branch)
 		specForReview := filepath.Join(swarmDir, "subtasks", fmt.Sprintf("subtask-%s.md", b.id))
-		if sp := filepath.Join(swarmDir, "scouted", fmt.Sprintf("subtask-%s-scouted.md", b.id)); fileExists(sp) {
+		sp := filepath.Join(swarmDir, "scouted", fmt.Sprintf("subtask-%s-scouted.md", b.id))
+		if _, err := os.Stat(sp); err == nil {
 			specForReview = sp
 		}
 		stData, _ := os.ReadFile(specForReview)
@@ -348,9 +349,4 @@ func subtaskID(path string) string {
 	base = strings.TrimSuffix(base, ".md")
 	base = strings.TrimSuffix(base, "-scouted")
 	return strings.TrimPrefix(base, "subtask-")
-}
-
-func fileExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
 }

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/jirateep/colony/pkg/llm"
+	"github.com/jirateep/colony/pkg/module"
 	"github.com/jirateep/colony/pkg/prompt"
 	"github.com/spf13/cobra"
 )
@@ -61,7 +62,10 @@ func runSpecFeature(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	slugName := slugify(featureName)
+	slugName := module.Slugify(featureName)
+	if slugName == "" {
+		slugName = "feature"
+	}
 	featureDir := filepath.Join(root, ".colony", "specs", slugName)
 
 	if _, err := os.Stat(featureDir); err == nil {
@@ -116,32 +120,4 @@ func runSpecFeature(cmd *cobra.Command, args []string) error {
 	fmt.Printf("%s✓ Created feature: %s%s\n", ansiGreen, slugName, ansiReset)
 	fmt.Printf("  Task file: %s\n", taskFile)
 	return nil
-}
-
-func slugify(s string) string {
-	s = strings.ToLower(s)
-	s = strings.ReplaceAll(s, " ", "-")
-	s = strings.ReplaceAll(s, "_", "-")
-
-	var result strings.Builder
-	var lastChar rune
-	for i, r := range s {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
-			if r == '-' && lastChar == '-' {
-				continue
-			}
-			result.WriteRune(r)
-			lastChar = r
-		}
-		if i == len(s)-1 && r == '-' {
-			break
-		}
-	}
-
-	slug := result.String()
-	slug = strings.Trim(slug, "-")
-	if slug == "" {
-		return "feature"
-	}
-	return slug
 }

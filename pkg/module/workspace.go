@@ -46,8 +46,13 @@ func DefaultBranch() string {
 	return parts[len(parts)-1]
 }
 
-func CurrentBranch() (string, error) {
-	out, err := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD").Output()
+// CurrentBranch returns the branch checked out in dir. Pass "" for the CWD.
+func CurrentBranch(dir string) (string, error) {
+	args := []string{"rev-parse", "--abbrev-ref", "HEAD"}
+	if dir != "" {
+		args = append([]string{"-C", dir}, args...)
+	}
+	out, err := exec.Command("git", args...).Output()
 	if err != nil {
 		return "", err
 	}
@@ -57,4 +62,19 @@ func CurrentBranch() (string, error) {
 func RemoteBranchExists(branch string) bool {
 	err := exec.Command("git", "rev-parse", "origin/"+branch).Run()
 	return err == nil
+}
+
+// RemoteURL returns the origin remote URL for dir, normalized to https://.
+// Returns "" if there is no origin or the command fails.
+func RemoteURL(dir string) string {
+	out, err := exec.Command("git", "-C", dir, "remote", "get-url", "origin").Output()
+	if err != nil {
+		return ""
+	}
+	url := strings.TrimSpace(string(out))
+	if strings.HasPrefix(url, "git@") {
+		url = strings.Replace(url, ":", "/", 1)
+		url = strings.Replace(url, "git@", "https://", 1)
+	}
+	return strings.TrimSuffix(url, ".git")
 }

@@ -40,7 +40,7 @@ func CommandsFor(lang string) (LangCommands, error) {
 
 // RunFormat runs the format command, treating failures as non-fatal warnings.
 func RunFormat(command, workdir string, out io.Writer) {
-	if err := runCmd(command, workdir, out); err != nil {
+	if err := RunShell(command, workdir, out); err != nil {
 		fmt.Fprintf(out, "⚠ format had warnings (non-fatal)\n")
 	}
 }
@@ -48,17 +48,11 @@ func RunFormat(command, workdir string, out io.Writer) {
 // RunGateCapture runs a gate command and returns (combined output, error).
 func RunGateCapture(command, workdir string) (string, error) {
 	parts := strings.Fields(command)
+	if len(parts) == 0 {
+		return "", nil
+	}
 	cmd := exec.Command(parts[0], parts[1:]...)
 	cmd.Dir = workdir
 	out, err := cmd.CombinedOutput()
 	return string(out), err
-}
-
-func runCmd(command, workdir string, out io.Writer) error {
-	parts := strings.Fields(command)
-	cmd := exec.Command(parts[0], parts[1:]...)
-	cmd.Dir = workdir
-	cmd.Stdout = out
-	cmd.Stderr = out
-	return cmd.Run()
 }

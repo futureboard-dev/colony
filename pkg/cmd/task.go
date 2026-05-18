@@ -45,7 +45,7 @@ func runTask(cmd *cobra.Command, args []string) error {
 	}
 	projectName := module.ProjectName(root)
 	defaultBranch := module.DefaultBranch()
-	currentBranch, _ := module.CurrentBranch()
+	currentBranch, _ := module.CurrentBranch("")
 
 	// Determine base branch
 	baseBranch := defaultBranch

@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/jirateep/colony/pkg/llm"
@@ -135,7 +134,7 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 
 	// ── RESUME MODE ────────────────────────────────────────────────────────────
 	if bpResume != "" {
-		branch, _ := gitBranch(bpResume)
+		branch, _ := module.CurrentBranch(bpResume)
 		bpBanner(out, "🔄 BLUEPRINT RESUME", map[string]string{
 			"Worktree": bpResume, "Branch": branch, "Language": bpLang,
 		})
@@ -148,7 +147,7 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 
 	// ── CONTINUE MODE ──────────────────────────────────────────────────────────
 	if bpContinue != "" {
-		branch, _ := gitBranch(bpContinue)
+		branch, _ := module.CurrentBranch(bpContinue)
 		bpBanner(out, "🔄 BLUEPRINT CONTINUE", map[string]string{
 			"Worktree": bpContinue, "Branch": branch, "Language": bpLang,
 		})
@@ -228,7 +227,7 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	remoteURL := gitRemoteURL(worktreePath)
+	remoteURL := module.RemoteURL(worktreePath)
 	fmt.Fprintf(out, "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 	fmt.Fprintf(out, "%s✅ BLUEPRINT COMPLETE\n\nBranch:   %s\nWorktree: %s\n%s", ansiGreen, branch, worktreePath, ansiReset)
 	fmt.Fprintf(out, "Next:\n  Review:  git diff %s..%s\n", baseBranch, branch)
@@ -348,25 +347,4 @@ func bpRunHeadless(logPath string) error {
 	fmt.Printf("   PID:  %d\n   Log:  tail -f %s\n   Stop: kill %d\n", cmd.Process.Pid, logPath, cmd.Process.Pid)
 	fmt.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
 	return nil
-}
-
-func gitBranch(dir string) (string, error) {
-	out, err := exec.Command("git", "-C", dir, "rev-parse", "--abbrev-ref", "HEAD").Output()
-	if err != nil {
-		return "unknown", err
-	}
-	return strings.TrimSpace(string(out)), nil
-}
-
-func gitRemoteURL(dir string) string {
-	out, err := exec.Command("git", "-C", dir, "remote", "get-url", "origin").Output()
-	if err != nil {
-		return ""
-	}
-	url := strings.TrimSpace(string(out))
-	if strings.HasPrefix(url, "git@") {
-		url = strings.Replace(url, ":", "/", 1)
-		url = strings.Replace(url, "git@", "https://", 1)
-	}
-	return strings.TrimSuffix(url, ".git")
 }
