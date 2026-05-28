@@ -14,6 +14,7 @@ import (
 	"github.com/jirateep/colony/pkg/config"
 	"github.com/jirateep/colony/pkg/llm"
 	"github.com/jirateep/colony/pkg/module"
+	"github.com/jirateep/colony/pkg/output"
 	"github.com/jirateep/colony/pkg/prompt"
 	"github.com/spf13/cobra"
 )
@@ -77,7 +78,12 @@ func runSwarm(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer logFile.Close()
-	out := io.MultiWriter(os.Stdout, logFile)
+	heatmap := output.NewHeatmapWriter(os.Stdout)
+	statusLine = output.NewStatusLine(os.Stdout, heatmap)
+	defer statusLine.Close()
+	statusLine.SetState(output.StateWorking)
+	statusLine.SetMessage("swarm starting")
+	out := io.MultiWriter(statusLine, logFile)
 
 	specData, err := os.ReadFile(swarmSpec)
 	if err != nil {
@@ -99,6 +105,8 @@ func runSwarm(cmd *cobra.Command, args []string) error {
 
 	// ── QUICK MODE ─────────────────────────────────────────────────────────────
 	if swarmMode == "quick" {
+		statusLine.SetState(output.StateWorking)
+		statusLine.SetMessage("quick build")
 		fmt.Fprintf(out, "▶ QUICK MODE: single build agent\n")
 		subtaskFile := filepath.Join(swarmDir, "subtasks", "subtask-1.md")
 		if err := module.CopyFile(swarmSpec, subtaskFile); err != nil {
@@ -110,11 +118,15 @@ func runSwarm(cmd *cobra.Command, args []string) error {
 		}
 		fmt.Fprintf(out, "\n✅ Quick build complete\n  Branch: %s\n  Review: git diff %s..%s\n  Cleanup: colony task done %s\n",
 			branch, baseBranch, branch, branch)
+		statusLine.SetState(output.StateIdle)
+		statusLine.SetMessage("")
 		return nil
 	}
 
 	// ── STEP 1: Coordinator (full mode only) ───────────────────────────────────
 	if swarmMode == "full" {
+		statusLine.SetState(output.StateThinking)
+		statusLine.SetMessage("coordinator decomposing")
 		fmt.Fprintf(out, "▶ STEP 1/4  Coordinator: decomposing task\n")
 		coordExec := llm.New(cfg.Role("coordinator"))
 		coordP, err := prompt.Coordinator(specContent)
@@ -138,6 +150,8 @@ func runSwarm(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(out, "✓ Coordinator produced %d subtask(s)\n", len(subtasks))
 	} else {
 		// standard: treat whole spec as subtask-1
+		statusLine.SetState(output.StateWorking)
+		statusLine.SetMessage("preparing subtasks")
 		if err := module.CopyFile(swarmSpec, filepath.Join(swarmDir, "subtasks", "subtask-1.md")); err != nil {
 			return err
 		}
@@ -158,6 +172,8 @@ func runSwarm(cmd *cobra.Command, args []string) error {
 	}
 
 	// ── Scout ──────────────────────────────────────────────────────────────────
+	statusLine.SetState(output.StateThinking)
+	statusLine.SetMessage("scouting specs")
 	fmt.Fprintf(out, "\n▶ STEP %d/%d  Scout: enriching specs\n", step, total)
 	scoutExec := llm.New(cfg.Role("scout"))
 	for _, sf := range subtaskFiles {
@@ -182,12 +198,15 @@ func runSwarm(cmd *cobra.Command, args []string) error {
 	step++
 
 	// ── Build ──────────────────────────────────────────────────────────────────
+	statusLine.SetState(output.StateWorking)
+	statusLine.SetMessage("building subtasks")
 	fmt.Fprintf(out, "\n▶ STEP %d/%d  Build: implementing subtasks\n", step, total)
 	type built struct{ id, branch string }
 	var builtList []built
 
 	for _, sf := range subtaskFiles {
 		id := subtaskID(sf)
+		statusLine.SetMessage("building subtask " + id)
 		fmt.Fprintf(out, "\n  🔨 Building subtask %s...\n", id)
 
 		buildSpec := sf
@@ -208,6 +227,8 @@ func runSwarm(cmd *cobra.Command, args []string) error {
 	step++
 
 	// ── Review ─────────────────────────────────────────────────────────────────
+	statusLine.SetState(output.StateThinking)
+	statusLine.SetMessage("reviewing builds")
 	fmt.Fprintf(out, "\n▶ STEP %d/%d  Review: checking all builds\n", step, total)
 	reviewExec := llm.New(cfg.Role("reviewer"))
 	allApproved := true
@@ -215,6 +236,7 @@ func runSwarm(cmd *cobra.Command, args []string) error {
 	var results []result
 
 	for _, b := range builtList {
+		statusLine.SetMessage("reviewing subtask " + b.id)
 		fmt.Fprintf(out, "  🔎 Reviewing subtask %s (%s)...\n", b.id, b.branch)
 		specForReview := filepath.Join(swarmDir, "subtasks", fmt.Sprintf("subtask-%s.md", b.id))
 		sp := filepath.Join(swarmDir, "scouted", fmt.Sprintf("subtask-%s-scouted.md", b.id))
@@ -242,6 +264,8 @@ func runSwarm(cmd *cobra.Command, args []string) error {
 	}
 
 	// ── Summary ────────────────────────────────────────────────────────────────
+	statusLine.SetState(output.StateIdle)
+	statusLine.SetMessage("")
 	fmt.Fprintf(out, "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 	fmt.Fprintf(out, "🐝 SWARM COMPLETE\nMode: %s | Subtasks: %d | Language: %s\n\n", swarmMode, len(subtaskFiles), swarmLang)
 	for _, r := range results {

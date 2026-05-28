@@ -11,6 +11,7 @@ import (
 
 	"github.com/jirateep/colony/pkg/llm"
 	"github.com/jirateep/colony/pkg/module"
+	"github.com/jirateep/colony/pkg/output"
 	"github.com/jirateep/colony/pkg/prompt"
 	"github.com/spf13/cobra"
 )
@@ -23,17 +24,19 @@ const (
 	ansiYellow = "\033[33m"
 )
 
-var blueprintCmd = &cobra.Command{
-	Use:   "blueprint",
-	Short: "Run an agent pipeline to implement a spec in an isolated worktree",
-	Long: `Runs a strict pipeline: setup worktree → agent writes code → quality gates → commit.
+var (
+	statusLine *output.StatusLine
+
+	blueprintCmd = &cobra.Command{
+		Use:   "blueprint",
+		Short: "Run an agent pipeline to implement a spec in an isolated worktree",
+		Long: `Runs a strict pipeline: setup worktree → agent writes code → quality gates → commit.
 
 Supports --resume (re-run gates on existing worktree) and --continue (continue
 interrupted codegen). Use --headless to run in the background.`,
-	RunE: runBlueprint,
-}
+		RunE: runBlueprint,
+	}
 
-var (
 	bpSpec        string
 	bpLang        string
 	bpModel       string
@@ -123,7 +126,10 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("open log file: %w", err)
 	}
 	defer logFile.Close()
-	out := io.MultiWriter(os.Stdout, logFile)
+	heatmap := output.NewHeatmapWriter(os.Stdout)
+	statusLine = output.NewStatusLine(os.Stdout, heatmap)
+	defer statusLine.Close()
+	out := io.MultiWriter(statusLine, logFile)
 
 	langs, err := module.CommandsFor(bpLang)
 	if err != nil {
@@ -134,6 +140,8 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 
 	// ── RESUME MODE ────────────────────────────────────────────────────────────
 	if bpResume != "" {
+		statusLine.SetState(output.StateWorking)
+		statusLine.SetMessage("resuming gates")
 		branch, _ := module.CurrentBranch(bpResume)
 		bpBanner(out, "🔄 BLUEPRINT RESUME", map[string]string{
 			"Worktree": bpResume, "Branch": branch, "Language": bpLang,
@@ -147,6 +155,8 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 
 	// ── CONTINUE MODE ──────────────────────────────────────────────────────────
 	if bpContinue != "" {
+		statusLine.SetState(output.StateWorking)
+		statusLine.SetMessage("continuing codegen")
 		branch, _ := module.CurrentBranch(bpContinue)
 		bpBanner(out, "🔄 BLUEPRINT CONTINUE", map[string]string{
 			"Worktree": bpContinue, "Branch": branch, "Language": bpLang,
@@ -165,6 +175,9 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 		}
 		return bpCommit(bpContinue, branch, "feat: continue after interruption — gates passed", out)
 	}
+
+	statusLine.SetState(output.StateWorking)
+	statusLine.SetMessage("starting pipeline")
 
 	// ── NORMAL MODE ────────────────────────────────────────────────────────────
 	if err := ex.Preflight(); err != nil {
@@ -191,6 +204,8 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 	})
 
 	// Step 1: Setup worktree
+	statusLine.SetState(output.StateWorking)
+	statusLine.SetMessage("setting up worktree")
 	fmt.Fprintf(out, "%s▶ STEP 1/4  Setup isolated worktree%s\n", ansiCyan, ansiReset)
 	worktreePath, err := module.SetupWorktree(root, projectName, branch, baseBranch)
 	if err != nil {
@@ -206,6 +221,8 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(out, "%s✓ Worktree ready: %s%s\n", ansiGreen, worktreePath, ansiReset)
 
 	// Step 2: Agent writes code
+	statusLine.SetState(output.StateThinking)
+	statusLine.SetMessage("agent writing code")
 	fmt.Fprintf(out, "\n%s▶ STEP 2/4  Agent: write code%s\n", ansiCyan, ansiReset)
 	writePrompt, err := prompt.Build(bpLang)
 	if err != nil {
@@ -214,6 +231,8 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 	if err := runCodegen(ctx, ex, worktreePath, writePrompt, out); err != nil {
 		return fmt.Errorf("agent failed: %w", err)
 	}
+	statusLine.SetState(output.StateWorking)
+	statusLine.SetMessage("running quality gates")
 	fmt.Fprintf(out, "%s✓ Agent finished writing code%s\n", ansiGreen, ansiReset)
 
 	// Steps 3–4: Quality gates
@@ -223,10 +242,14 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 
 	commitMsg := fmt.Sprintf("feat: %s\n\nBlueprint: %s\nLanguage: %s\nGates: format, typecheck, tests\nLog: %s",
 		taskDesc, branch, bpLang, logPath)
+	statusLine.SetState(output.StateWorking)
+	statusLine.SetMessage("committing")
 	if err := bpCommit(worktreePath, branch, commitMsg, out); err != nil {
 		return err
 	}
 
+	statusLine.SetState(output.StateIdle)
+	statusLine.SetMessage("")
 	remoteURL := module.RemoteURL(worktreePath)
 	fmt.Fprintf(out, "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 	fmt.Fprintf(out, "%s✅ BLUEPRINT COMPLETE\n\nBranch:   %s\nWorktree: %s\n%s", ansiGreen, branch, worktreePath, ansiReset)
@@ -244,6 +267,8 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 // live agent session (claude or crush) the user can watch and steer; that output
 // goes to the terminal, not the log file. Otherwise it runs headless via RunAgent.
 func runCodegen(ctx context.Context, ex *llm.Executor, workdir, agentPrompt string, out io.Writer) error {
+	statusLine.SetState(output.StateThinking)
+	statusLine.SetMessage("agent working")
 	if bpInteractive {
 		fmt.Fprintf(out, "%s   --interactive: launching live agent session (terminal only, not captured to log)%s\n", ansiYellow, ansiReset)
 		return ex.RunInteractive(workdir, agentPrompt)
@@ -254,6 +279,8 @@ func runCodegen(ctx context.Context, ex *llm.Executor, workdir, agentPrompt stri
 // runGates runs format → typecheck (with fix) → tests (with fix).
 // Exported so swarm.go can reuse it.
 func runGates(ctx context.Context, worktreePath string, langs module.LangCommands, ex *llm.Executor, out io.Writer, skipFormat bool) error {
+	statusLine.SetState(output.StateWorking)
+	statusLine.SetMessage("running gates")
 	const maxAttempts = 2
 	fmt.Fprintf(out, "\n%s▶ GATES  format → typecheck → tests%s\n", ansiCyan, ansiReset)
 	if !skipFormat {
@@ -267,6 +294,9 @@ func runGates(ctx context.Context, worktreePath string, langs module.LangCommand
 
 func gateWithFix(ctx context.Context, name, gateCmd, workdir string, maxAttempts int, ex *llm.Executor, out io.Writer) error {
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if attempt > 1 {
+			statusLine.SetMessage("self-correcting " + name)
+		}
 		fmt.Fprintf(out, "   %s (attempt %d/%d): %s\n", name, attempt, maxAttempts, gateCmd)
 		errOut, err := module.RunGateCapture(gateCmd, workdir)
 		if err == nil {
@@ -280,10 +310,13 @@ func gateWithFix(ctx context.Context, name, gateCmd, workdir string, maxAttempts
 			if ferr != nil {
 				return ferr
 			}
+			statusLine.SetState(output.StateThinking)
+			statusLine.SetMessage("fixing " + name + " errors")
 			fmt.Fprintf(out, "   Asking agent to fix %s errors...\n", name)
 			if rerr := ex.RunAgent(ctx, workdir, fixP, out); rerr != nil {
 				fmt.Fprintf(out, "%s⚠ fix agent error: %v%s\n", ansiYellow, rerr, ansiReset)
 			}
+			statusLine.SetState(output.StateWorking)
 		}
 	}
 	return fmt.Errorf("%s failed after %d attempts — human review required\n  Resume: colony blueprint --resume %s --lang <lang>",
@@ -291,6 +324,8 @@ func gateWithFix(ctx context.Context, name, gateCmd, workdir string, maxAttempts
 }
 
 func bpCommit(worktreePath, branch, msg string, out io.Writer) error {
+	statusLine.SetState(output.StateWorking)
+	statusLine.SetMessage("committing")
 	fmt.Fprintf(out, "\n▶ COMMIT\n")
 	add := exec.Command("git", "add", "-A")
 	add.Dir = worktreePath
@@ -310,6 +345,8 @@ func bpCommit(worktreePath, branch, msg string, out io.Writer) error {
 }
 
 func bpBlocked(worktreePath, logPath string, err error, out io.Writer) error {
+	statusLine.SetState(output.StateIdle)
+	statusLine.SetMessage("")
 	fmt.Fprintf(out, "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 	fmt.Fprintf(out, "%s🚫 BLUEPRINT BLOCKED\n%v\nWorktree: %s\nLog:      %s%s\n", ansiRed, err, worktreePath, logPath, ansiReset)
 	fmt.Fprintf(out, "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
@@ -317,6 +354,7 @@ func bpBlocked(worktreePath, logPath string, err error, out io.Writer) error {
 }
 
 func bpBanner(out io.Writer, title string, fields map[string]string) {
+	statusLine.SetMessage(title)
 	fmt.Fprintf(out, "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n%s\n", title)
 	for k, v := range fields {
 		fmt.Fprintf(out, "%-10s %s\n", k+":", v)
