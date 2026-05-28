@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -33,10 +32,11 @@ Each role can use a different model. Configure in .colony/config.json:
 }
 
 var (
-	swarmSpec     string
-	swarmLang     string
-	swarmMode     string
-	swarmNoFormat bool
+	swarmSpec        string
+	swarmLang        string
+	swarmMode        string
+	swarmNoFormat    bool
+	swarmReviewDepth string
 )
 
 func init() {
@@ -44,6 +44,7 @@ func init() {
 	swarmCmd.Flags().StringVar(&swarmLang, "lang", "", "language: typescript, python, go")
 	swarmCmd.Flags().StringVar(&swarmMode, "mode", "standard", "quick | standard | full")
 	swarmCmd.Flags().BoolVar(&swarmNoFormat, "no-format", false, "skip the format gate")
+	swarmCmd.Flags().StringVar(&swarmReviewDepth, "review-depth", "deep", "fast (1 LLM call/subtask) | deep (4 lenses + synth)")
 }
 
 func runSwarm(cmd *cobra.Command, args []string) error {
@@ -55,6 +56,9 @@ func runSwarm(cmd *cobra.Command, args []string) error {
 	}
 	if swarmMode != "quick" && swarmMode != "standard" && swarmMode != "full" {
 		return fmt.Errorf("--mode must be quick, standard, or full")
+	}
+	if swarmReviewDepth != "fast" && swarmReviewDepth != "deep" {
+		return fmt.Errorf("--review-depth must be fast or deep")
 	}
 
 	cfg, root, err := loadConfig()
@@ -133,7 +137,7 @@ func runSwarm(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		var coordOut bytes.Buffer
+		var coordOut strings.Builder
 		if err := coordExec.RunHeadless(ctx, root, coordP, io.MultiWriter(&coordOut, out)); err != nil {
 			return fmt.Errorf("coordinator failed: %w", err)
 		}
@@ -187,13 +191,13 @@ func runSwarm(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		var scoutOut bytes.Buffer
+		var scoutOut strings.Builder
 		if err := scoutExec.RunHeadless(ctx, root, scoutP, io.MultiWriter(&scoutOut, out)); err != nil {
 			fmt.Fprintf(out, "  ⚠ scout failed for subtask %s — using original spec\n", id)
 			continue
 		}
 		scoutedPath := filepath.Join(swarmDir, "scouted", fmt.Sprintf("subtask-%s-scouted.md", id))
-		os.WriteFile(scoutedPath, scoutOut.Bytes(), 0644) //nolint:errcheck
+		os.WriteFile(scoutedPath, []byte(scoutOut.String()), 0644) //nolint:errcheck
 	}
 	step++
 
@@ -230,35 +234,42 @@ func runSwarm(cmd *cobra.Command, args []string) error {
 	statusLine.SetState(output.StateThinking)
 	statusLine.SetMessage("reviewing builds")
 	fmt.Fprintf(out, "\n▶ STEP %d/%d  Review: checking all builds\n", step, total)
-	reviewExec := llm.New(cfg.Role("reviewer"))
 	allApproved := true
 	type result struct{ id, branch, decision string }
 	var results []result
 
+	fmt.Fprintf(out, "  (review-depth=%s)\n", swarmReviewDepth)
+	reviewExec := llm.New(cfg.Role("reviewer"))
+
 	for _, b := range builtList {
 		statusLine.SetMessage("reviewing subtask " + b.id)
 		fmt.Fprintf(out, "  🔎 Reviewing subtask %s (%s)...\n", b.id, b.branch)
-		specForReview := filepath.Join(swarmDir, "subtasks", fmt.Sprintf("subtask-%s.md", b.id))
-		sp := filepath.Join(swarmDir, "scouted", fmt.Sprintf("subtask-%s-scouted.md", b.id))
-		if _, err := os.Stat(sp); err == nil {
-			specForReview = sp
-		}
-		stData, _ := os.ReadFile(specForReview)
 		diff, _ := module.GitDiff(root, baseBranch, b.branch)
-		reviewP, err := prompt.Review(string(stData), diff)
-		if err != nil {
-			return err
-		}
-		var reviewOut bytes.Buffer
-		reviewExec.RunHeadless(ctx, root, reviewP, io.MultiWriter(&reviewOut, out)) //nolint:errcheck
-		decision := parseDecision(reviewOut.String())
-		os.WriteFile(filepath.Join(swarmDir, "reviews", fmt.Sprintf("subtask-%s-review.md", b.id)), reviewOut.Bytes(), 0644) //nolint:errcheck
-		os.WriteFile(filepath.Join(swarmDir, "reviews", fmt.Sprintf("subtask-%s.decision", b.id)), []byte(decision), 0644)   //nolint:errcheck
-		results = append(results, result{b.id, b.branch, decision})
-		if decision != "APPROVED" {
-			allApproved = false
-			fmt.Fprintf(out, "  ✗ Subtask %s REJECTED\n    Review: %s/reviews/subtask-%s-review.md\n", b.id, swarmDir, b.id)
+
+		var decision, verdict, reviewPath string
+		var reviewErr error
+
+		if swarmReviewDepth == "fast" {
+			decision, verdict, reviewPath, reviewErr = swarmReviewFast(ctx, reviewExec, root, swarmDir, b.id, diff, out)
 		} else {
+			decision, verdict, reviewPath, reviewErr = swarmReviewDeep(ctx, cfg, swarmDir, b.id, diff, statusLine)
+		}
+
+		if reviewErr != nil {
+			fmt.Fprintf(out, "  ✗ Subtask %s ERROR: %v\n", b.id, reviewErr)
+			allApproved = false
+			continue
+		}
+
+		_ = os.WriteFile(filepath.Join(swarmDir, "reviews", fmt.Sprintf("subtask-%s.decision", b.id)), []byte(decision), 0644)
+		results = append(results, result{b.id, b.branch, decision})
+		switch {
+		case decision != "APPROVED":
+			allApproved = false
+			fmt.Fprintf(out, "  ✗ Subtask %s REJECTED (verdict=%s)\n    Review: %s\n", b.id, verdict, reviewPath)
+		case verdict == "WARN":
+			fmt.Fprintf(out, "  ⚠ Subtask %s APPROVED with warnings\n    Review: %s\n", b.id, reviewPath)
+		default:
 			fmt.Fprintf(out, "  ✓ Subtask %s APPROVED\n", b.id)
 		}
 	}
@@ -373,4 +384,52 @@ func subtaskID(path string) string {
 	base = strings.TrimSuffix(base, ".md")
 	base = strings.TrimSuffix(base, "-scouted")
 	return strings.TrimPrefix(base, "subtask-")
+}
+
+// swarmReviewFast runs the legacy single-prompt reviewer (1 LLM call/subtask).
+// Returns (decision, verdict, reviewArtifactPath, error).
+func swarmReviewFast(ctx context.Context, exec *llm.Executor, root, swarmDir, id, diff string, out io.Writer) (string, string, string, error) {
+	specForReview := filepath.Join(swarmDir, "subtasks", fmt.Sprintf("subtask-%s.md", id))
+	if sp := filepath.Join(swarmDir, "scouted", fmt.Sprintf("subtask-%s-scouted.md", id)); fileExists(sp) {
+		specForReview = sp
+	}
+	stData, _ := os.ReadFile(specForReview)
+	reviewP, err := prompt.Review(string(stData), diff)
+	if err != nil {
+		return "", "", "", fmt.Errorf("render review prompt: %w", err)
+	}
+	var reviewOut strings.Builder
+	if err := exec.RunHeadless(ctx, root, reviewP, io.MultiWriter(&reviewOut, out)); err != nil {
+		return "", "", "", fmt.Errorf("run reviewer: %w", err)
+	}
+	decision := parseDecision(reviewOut.String())
+	path := filepath.Join(swarmDir, "reviews", fmt.Sprintf("subtask-%s-review.md", id))
+	_ = os.WriteFile(path, []byte(reviewOut.String()), 0644)
+	verdict := decision // fast path doesn't produce PASS/WARN/FAIL — mirror the decision
+	return decision, verdict, path, nil
+}
+
+// swarmReviewDeep runs the multi-lens reviewer + synthesizer (5 LLM calls/subtask).
+func swarmReviewDeep(ctx context.Context, cfg *config.Config, swarmDir, id, diff string, statusLine *output.StatusLine) (string, string, string, error) {
+	lenses := []string{"bugs", "slop", "duplication", "security"}
+	rawReports, err := runReviewLenses(ctx, cfg, diff, lenses, statusLine, nil, true)
+	if err != nil {
+		return "", "", "", err
+	}
+	synthReport, rawSynth, err := synthesizeReview(ctx, cfg, rawReports, statusLine)
+	if err != nil {
+		return "", "", "", fmt.Errorf("synthesis: %w", err)
+	}
+	decision := "APPROVED"
+	if synthReport.Verdict == "FAIL" {
+		decision = "REJECTED"
+	}
+	path := filepath.Join(swarmDir, "reviews", fmt.Sprintf("subtask-%s-review.json", id))
+	_ = os.WriteFile(path, []byte(rawSynth), 0644)
+	return decision, synthReport.Verdict, path, nil
+}
+
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
 }

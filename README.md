@@ -363,10 +363,70 @@ colony init                                        # create .colony/config.json
 colony blueprint "a URL shortener in Go"           # generate a project blueprint
 colony log                                         # summarise git log
 colony swarm "add rate limiting to the API"        # run the swarm planner
+colony review --branch feat/auth                   # multi-lens AI code review
 colony task add "write unit tests for auth"        # create a task
 colony task list                                   # list tasks
 colony task done <id>                              # mark task complete
 ```
+
+### Code review (`colony review`)
+
+Multi-lens AI code review. Each diff is analysed by four specialised lenses in
+parallel, then merged by a synthesiser into a single verdict (`PASS`, `WARN`,
+or `FAIL`).
+
+| Lens         | What it looks for                                              |
+| ------------ | -------------------------------------------------------------- |
+| `bugs`       | logic errors, nil derefs, races, off-by-one, edge cases        |
+| `slop`       | AI-generated filler, obvious comments, boilerplate, stubs      |
+| `duplication`| copy-paste, near-duplicates, missing abstractions              |
+| `security`   | secrets, injection, XSS/CSRF, auth bypass, IDOR                |
+
+```bash
+# Review a branch against main
+colony review --branch feat/auth --base main
+
+# Review a patch file (or stdin)
+colony review --diff changes.patch
+git diff main | colony review --diff -
+
+# Pick a subset of lenses
+colony review --branch feat/auth --lens bugs,security
+
+# CI mode: JSON to stdout, exit 0/1/2 for PASS/WARN/FAIL
+colony review --branch feat/auth --ci
+
+# One-liner summary
+colony review --branch feat/auth --summary
+```
+
+Reports and raw lens output are persisted under `.colony/logs/reviews/review-<ts>/`:
+
+```
+review-20260528-104530/
+├── diff.patch
+├── raw/
+│   ├── bugs.json
+│   ├── slop.json
+│   ├── duplication.json
+│   └── security.json
+├── report.json     # synthesised verdict + findings
+└── decision.txt    # PASS | WARN | FAIL
+```
+
+#### In the swarm (`colony swarm --review-depth`)
+
+The swarm's reviewer step uses the same engine. Toggle cost vs. depth per run:
+
+```bash
+colony swarm --spec X.md --lang go                       # deep (default): 5 LLM calls/subtask
+colony swarm --spec X.md --lang go --review-depth fast   # fast: 1 LLM call/subtask
+```
+
+- `deep` runs all four lenses + synthesiser. `FAIL` blocks the swarm; `PASS`
+  and `WARN` approve (a `WARN` is logged as "APPROVED with warnings").
+- `fast` runs the legacy single-prompt reviewer — cheap for large swarms where
+  the per-subtask diff is small.
 
 ### Switching LLM provider
 

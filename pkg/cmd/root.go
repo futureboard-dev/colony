@@ -61,6 +61,7 @@ func init() {
 	rootCmd.AddCommand(blueprintCmd)
 	rootCmd.AddCommand(swarmCmd)
 	rootCmd.AddCommand(logCmd)
+	rootCmd.AddCommand(reviewCmd)
 
 	taskCmd.AddCommand(taskDoneCmd)
 	taskCmd.AddCommand(taskListCmd)

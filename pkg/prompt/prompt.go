@@ -42,6 +42,24 @@ func LoadModulePrompt(role string) (string, error) {
 	return string(data), nil
 }
 
+// RenderLens renders a specific review lens prompt with the provided diff.
+func RenderLens(name, diff string) (string, error) {
+	tmplStr, err := LoadModulePrompt("review-" + name)
+	if err != nil {
+		return "", err
+	}
+	return render(tmplStr, map[string]any{"Diff": diff})
+}
+
+// RenderSynthesize renders the synthesizer prompt with the collected reports.
+func RenderSynthesize(reports string) (string, error) {
+	tmplStr, err := LoadModulePrompt("review-synthesize")
+	if err != nil {
+		return "", err
+	}
+	return render(tmplStr, map[string]any{"Reports": reports})
+}
+
 func render(tmpl string, data any) (string, error) {
 	t, err := template.New("").Parse(tmpl)
 	if err != nil {
