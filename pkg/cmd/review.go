@@ -49,7 +49,8 @@ Examples:
   colony review --diff changes.patch
   git diff main | colony review --diff -
   colony review --branch feat/auth --lens bugs,security
-  colony review --branch feat/auth --ci`,
+  colony review --branch feat/auth --ci
+  colony review --resume .colony/logs/reviews/review-20260602-133833`,
 	RunE: runReview,
 }
 
@@ -60,6 +61,7 @@ var (
 	reviewLenses  string
 	reviewCI      bool
 	reviewSummary bool
+	reviewResume  string
 )
 
 func init() {
@@ -69,9 +71,14 @@ func init() {
 	reviewCmd.Flags().StringVar(&reviewLenses, "lens", "bugs,slop,duplication,security", "comma-separated list of lenses to run")
 	reviewCmd.Flags().BoolVar(&reviewCI, "ci", false, "CI mode: outputs JSON and sets exit code based on verdict")
 	reviewCmd.Flags().BoolVar(&reviewSummary, "summary", false, "output summary only")
+	reviewCmd.Flags().StringVar(&reviewResume, "resume", "", "review dir from a prior run: re-run synthesis only on saved lens reports")
 }
 
 func runReview(cmd *cobra.Command, args []string) error {
+	if reviewResume != "" {
+		return runReviewResume(cmd, reviewResume)
+	}
+
 	if reviewBranch == "" && reviewDiff == "" {
 		return fmt.Errorf("must specify either --branch or --diff")
 	}
@@ -143,9 +150,79 @@ func runReview(cmd *cobra.Command, args []string) error {
 
 	synthReport, rawSynth, err := synthesizeReview(cmd.Context(), cfg, rawReports, statusLine)
 	if err != nil {
+		return fmt.Errorf("synthesis failed: %w\nRaw output:\n%s\n\nLens reports were saved — resume synthesis with:\n  colony review --resume %s", err, rawSynth, reviewDir)
+	}
+
+	return emitReviewReport(out, reviewDir, synthReport, rawSynth)
+}
+
+// runReviewResume re-runs only the synthesis step using lens reports saved by a
+// prior run. reviewDir is the review-<ts> directory containing a raw/ subdir.
+func runReviewResume(cmd *cobra.Command, reviewDir string) error {
+	cfg, _, err := loadConfig()
+	if err != nil {
+		return err
+	}
+
+	rawReports, err := loadRawReports(reviewDir)
+	if err != nil {
+		return err
+	}
+
+	var statusLine *output.StatusLine
+	var out io.Writer = os.Stdout
+
+	if !reviewCI {
+		heatmap := output.NewHeatmapWriter(os.Stdout)
+		statusLine = output.NewStatusLine(os.Stdout, heatmap)
+		defer statusLine.Close()
+		statusLine.SetState(output.StateWorking)
+		out = statusLine
+	}
+
+	if !reviewCI && !reviewSummary {
+		fmt.Fprintf(out, "▶ Resuming review synthesis from: %s\n", reviewDir)
+	}
+
+	synthReport, rawSynth, err := synthesizeReview(cmd.Context(), cfg, rawReports, statusLine)
+	if err != nil {
 		return fmt.Errorf("synthesis failed: %w\nRaw output:\n%s", err, rawSynth)
 	}
 
+	return emitReviewReport(out, reviewDir, synthReport, rawSynth)
+}
+
+// loadRawReports reads the saved per-lens JSON reports from <reviewDir>/raw.
+func loadRawReports(reviewDir string) (map[string]string, error) {
+	rawDir := filepath.Join(reviewDir, "raw")
+	entries, err := os.ReadDir(rawDir)
+	if err != nil {
+		return nil, fmt.Errorf("read lens reports from %s: %w", rawDir, err)
+	}
+
+	reports := make(map[string]string)
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(rawDir, name))
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", name, err)
+		}
+		lens := strings.TrimSuffix(name, ".json")
+		reports[lens] = string(b)
+	}
+
+	if len(reports) == 0 {
+		return nil, fmt.Errorf("no lens reports found in %s", rawDir)
+	}
+	return reports, nil
+}
+
+// emitReviewReport saves the synthesized report and renders output per the
+// active mode (CI / summary / rich terminal).
+func emitReviewReport(out io.Writer, reviewDir string, synthReport *synthesizedReport, rawSynth string) error {
 	// Save final report
 	_ = os.WriteFile(filepath.Join(reviewDir, "report.json"), []byte(rawSynth), 0644)
 	_ = os.WriteFile(filepath.Join(reviewDir, "decision.txt"), []byte(synthReport.Verdict), 0644)
