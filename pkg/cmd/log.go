@@ -5,7 +5,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/jirateep/colony/pkg/module"
 	"github.com/spf13/cobra"
@@ -55,15 +57,19 @@ func runLog(cmd *cobra.Command, args []string) error {
 				os.WriteFile(f, nil, 0644) //nolint:errcheck
 			}
 		}
-		// find latest blueprint log if any
+		// follow every blueprint log touched recently — one per active agent
 		tailFiles := []string{cmdLog, fileLog}
-		if bp := latestBlueprint(logDir); bp != "" {
-			tailFiles = append(tailFiles, bp)
-		}
+		active := activeBlueprints(logDir, 15*time.Minute)
+		tailFiles = append(tailFiles, active...)
 		fmt.Printf("\n📡 LIVE — %s\n", project)
-		fmt.Printf("Watching commands + file changes. Ctrl+C to stop.\n")
+		if len(active) > 0 {
+			fmt.Printf("Following %d active agent log(s) + commands + file changes. Ctrl+C to stop.\n", len(active))
+		} else {
+			fmt.Printf("Watching commands + file changes (no active agents yet). Ctrl+C to stop.\n")
+		}
 		divider()
-		c := exec.Command("tail", append([]string{"-f"}, tailFiles...)...)
+		// -F keeps following across truncation/rotation
+		c := exec.Command("tail", append([]string{"-F"}, tailFiles...)...)
 		c.Stdout = os.Stdout
 		c.Stderr = os.Stderr
 		return c.Run()
@@ -200,14 +206,32 @@ func showProjectRuns(logDir string) {
 	}
 }
 
-func latestBlueprint(logDir string) string {
+// activeBlueprints returns blueprint logs modified within the given window,
+// sorted oldest→newest, so live mode follows every agent currently running.
+func activeBlueprints(logDir string, window time.Duration) []string {
 	entries, _ := os.ReadDir(logDir)
-	for i := len(entries) - 1; i >= 0; i-- {
-		if !entries[i].IsDir() && strings.HasPrefix(entries[i].Name(), "blueprint-") {
-			return filepath.Join(logDir, entries[i].Name())
-		}
+	type bp struct {
+		path string
+		mod  time.Time
 	}
-	return ""
+	var found []bp
+	cutoff := time.Now().Add(-window)
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasPrefix(e.Name(), "blueprint-") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || info.ModTime().Before(cutoff) {
+			continue
+		}
+		found = append(found, bp{filepath.Join(logDir, e.Name()), info.ModTime()})
+	}
+	sort.Slice(found, func(i, j int) bool { return found[i].mod.Before(found[j].mod) })
+	paths := make([]string, len(found))
+	for i, b := range found {
+		paths[i] = b.path
+	}
+	return paths
 }
 
 func logField(file, field string) string {
