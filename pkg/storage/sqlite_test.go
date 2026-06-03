@@ -149,6 +149,80 @@ func TestAuditQueryBySessionID(t *testing.T) {
 	}
 }
 
+func TestInsertUpdateRunRoundTrip(t *testing.T) {
+	db := openTestDB(t)
+
+	start := time.Now().Truncate(time.Second).UTC()
+	run := Run{
+		ID: "blueprint-20260429-023036", Kind: "blueprint", Project: "colony",
+		Language: "go", Model: "claude-opus-4-8", Status: "running",
+		LogPath: ".colony/logs/blueprint-20260429-023036.log", StartedAt: start,
+	}
+	if err := db.InsertRun(run); err != nil {
+		t.Fatalf("InsertRun: %v", err)
+	}
+
+	finish := start.Add(90 * time.Second)
+	if err := db.UpdateRun(Run{
+		ID: run.ID, Status: "complete", Branch: "feat/widget", FinishedAt: &finish,
+	}); err != nil {
+		t.Fatalf("UpdateRun: %v", err)
+	}
+
+	runs, err := db.QueryRuns(RunFilter{Kind: "blueprint"})
+	if err != nil {
+		t.Fatalf("QueryRuns: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("expected 1 run, got %d", len(runs))
+	}
+	got := runs[0]
+	if got.Status != "complete" {
+		t.Errorf("expected status complete, got %s", got.Status)
+	}
+	if got.Branch != "feat/widget" {
+		t.Errorf("expected branch feat/widget, got %s", got.Branch)
+	}
+	if got.Language != "go" || got.Model != "claude-opus-4-8" {
+		t.Errorf("unexpected language/model: %s / %s", got.Language, got.Model)
+	}
+	if got.FinishedAt == nil {
+		t.Error("expected FinishedAt to be set")
+	}
+}
+
+func TestQueryRunsFilterByKindAndProject(t *testing.T) {
+	db := openTestDB(t)
+
+	now := time.Now()
+	seed := []Run{
+		{ID: "blueprint-1", Kind: "blueprint", Project: "alpha", Status: "complete", StartedAt: now},
+		{ID: "swarm-1", Kind: "swarm", Project: "alpha", Mode: "full", Approved: 2, Rejected: 1, Status: "complete", StartedAt: now},
+		{ID: "blueprint-2", Kind: "blueprint", Project: "beta", Status: "blocked", StartedAt: now},
+	}
+	for _, r := range seed {
+		if err := db.InsertRun(r); err != nil {
+			t.Fatalf("InsertRun %s: %v", r.ID, err)
+		}
+	}
+
+	swarms, err := db.QueryRuns(RunFilter{Kind: "swarm"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(swarms) != 1 || swarms[0].Approved != 2 || swarms[0].Rejected != 1 {
+		t.Errorf("expected 1 swarm with 2/1 tally, got %+v", swarms)
+	}
+
+	alpha, err := db.QueryRuns(RunFilter{Project: "alpha"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(alpha) != 2 {
+		t.Errorf("expected 2 alpha runs, got %d", len(alpha))
+	}
+}
+
 func TestDefaultDBPathEnvOverride(t *testing.T) {
 	t.Setenv("COLONY_DB_PATH", "/tmp/override.db")
 	if got := DefaultDBPath(); got != "/tmp/override.db" {

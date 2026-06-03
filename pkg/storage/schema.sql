@@ -21,3 +21,21 @@ CREATE TABLE IF NOT EXISTS steps (
     finished_at DATETIME,
     FOREIGN KEY (session_id) REFERENCES sessions(id)
 );
+
+-- runs holds the structured facts for blueprint/swarm pipeline runs.
+-- The raw streaming output stays in .colony/logs/; log_path points to it.
+CREATE TABLE IF NOT EXISTS runs (
+    id          TEXT     PRIMARY KEY,
+    kind        TEXT     NOT NULL,
+    project     TEXT     NOT NULL,
+    language    TEXT     NOT NULL DEFAULT '',
+    model       TEXT     NOT NULL DEFAULT '',
+    mode        TEXT     NOT NULL DEFAULT '',
+    branch      TEXT     NOT NULL DEFAULT '',
+    status      TEXT     NOT NULL DEFAULT 'running',
+    approved    INTEGER  NOT NULL DEFAULT 0,
+    rejected    INTEGER  NOT NULL DEFAULT 0,
+    log_path    TEXT     NOT NULL DEFAULT '',
+    started_at  DATETIME NOT NULL,
+    finished_at DATETIME
+);

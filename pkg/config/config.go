@@ -98,6 +98,14 @@ func Init(projectRoot string) error {
 			Provider: "anthropic",
 			Model:    "claude-sonnet-4-6",
 		},
+		Roles: map[string]LLMConfig{
+			// lens_reviewer uses Haiku for cheaper, faster per-lens analysis.
+			// synthesis (verdict + dedup) stays on Sonnet via the default LLM.
+			"lens_reviewer": {
+				Provider: "anthropic",
+				Model:    "claude-haiku-4-5-20251001",
+			},
+		},
 	}
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {

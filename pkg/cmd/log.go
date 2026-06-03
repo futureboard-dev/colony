@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jirateep/colony/pkg/module"
+	"github.com/jirateep/colony/pkg/storage"
 	"github.com/spf13/cobra"
 )
 
@@ -108,7 +109,7 @@ func runLog(cmd *cobra.Command, args []string) error {
 		divider()
 		fmt.Printf("\n  📁 %s\n", project)
 		miniDivider()
-		showProjectRuns(logDir)
+		showProjectRuns(filepath.Join(root, ".colony", "missions.db"))
 
 		worktreeBase := module.WorktreeBase()
 		entries, _ := os.ReadDir(worktreeBase)
@@ -116,11 +117,11 @@ func runLog(cmd *cobra.Command, args []string) error {
 			if !e.IsDir() || e.Name() == project {
 				continue
 			}
-			projLog := filepath.Join(worktreeBase, "..", e.Name(), ".colony", "logs")
-			if _, err := os.Stat(projLog); err == nil {
+			projDB := filepath.Join(worktreeBase, "..", e.Name(), ".colony", "missions.db")
+			if _, err := os.Stat(projDB); err == nil {
 				fmt.Printf("\n  📁 %s\n", e.Name())
 				miniDivider()
-				showProjectRuns(projLog)
+				showProjectRuns(projDB)
 			}
 		}
 	} else {
@@ -129,7 +130,7 @@ func runLog(cmd *cobra.Command, args []string) error {
 		divider()
 		fmt.Printf("  🤖 AGENT HISTORY — %s\n", project)
 		divider()
-		showProjectRuns(logDir)
+		showProjectRuns(filepath.Join(root, ".colony", "missions.db"))
 	}
 
 	fmt.Println()
@@ -142,67 +143,55 @@ func runLog(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func showProjectRuns(logDir string) {
-	if _, err := os.Stat(logDir); os.IsNotExist(err) {
-		fmt.Printf("  No logs yet.\n")
+func showProjectRuns(dbPath string) {
+	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+		fmt.Printf("  No runs yet. Try: colony blueprint --spec SPEC.md --lang typescript\n")
+		return
+	}
+	store, err := storage.Open(dbPath)
+	if err != nil {
+		fmt.Printf("  Could not open run history: %v\n", err)
+		return
+	}
+	defer store.Close()
+
+	runs, err := store.QueryRuns(storage.RunFilter{})
+	if err != nil {
+		fmt.Printf("  Could not read run history: %v\n", err)
+		return
+	}
+	if len(runs) == 0 {
+		fmt.Printf("  No runs yet. Try: colony blueprint --spec SPEC.md --lang typescript\n")
 		return
 	}
 
-	entries, _ := os.ReadDir(logDir)
-	found := false
-
-	for _, e := range entries {
-		if !e.IsDir() || !strings.HasPrefix(e.Name(), "swarm-") {
-			continue
+	for _, r := range runs {
+		ts := r.StartedAt.Local().Format("2006-01-02 15:04")
+		switch r.Kind {
+		case "swarm":
+			status := "○ BUILT"
+			if r.Rejected > 0 {
+				status = "⚠ NEEDS REVIEW"
+			} else if r.Approved > 0 {
+				status = "✓ APPROVED"
+			}
+			fmt.Printf("\n  🐝 SWARM  %s  [%s · %s]  %s\n", ts, r.Mode, r.Language, status)
+			fmt.Printf("    Approved: %d  Rejected: %d\n", r.Approved, r.Rejected)
+			fmt.Printf("    Logs: %s\n", r.LogPath)
+		case "blueprint":
+			status := "? INCOMPLETE"
+			switch r.Status {
+			case "complete":
+				status = "✓ COMPLETE"
+			case "blocked":
+				status = "✗ BLOCKED"
+			}
+			fmt.Printf("\n  ⚙  BLUEPRINT  %s  [%s · %s]  %s\n", ts, r.Language, r.Model, status)
+			if r.Branch != "" {
+				fmt.Printf("    Branch: %s\n", r.Branch)
+			}
+			fmt.Printf("    Log: %s\n", r.LogPath)
 		}
-		found = true
-		ts := strings.TrimPrefix(e.Name(), "swarm-")
-		swarmLog := filepath.Join(logDir, e.Name(), "swarm.log")
-		mode := logField(swarmLog, "Mode:")
-		lang := logField(swarmLog, "Language:")
-
-		approved := countDecision(filepath.Join(logDir, e.Name(), "reviews"), "APPROVED")
-		rejected := countDecision(filepath.Join(logDir, e.Name(), "reviews"), "REJECTED")
-
-		status := "○ BUILT"
-		if rejected > 0 {
-			status = "⚠ NEEDS REVIEW"
-		} else if approved > 0 {
-			status = "✓ APPROVED"
-		}
-		fmt.Printf("\n  🐝 SWARM  %s  [%s · %s]  %s\n", formatTS(ts), mode, lang, status)
-		fmt.Printf("    Approved: %d  Rejected: %d\n", approved, rejected)
-		fmt.Printf("    Logs: %s\n", filepath.Join(logDir, e.Name()))
-	}
-
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasPrefix(e.Name(), "blueprint-") {
-			continue
-		}
-		found = true
-		ts := strings.TrimPrefix(strings.TrimSuffix(e.Name(), ".log"), "blueprint-")
-		bpLog := filepath.Join(logDir, e.Name())
-		lang := logField(bpLog, "Language:")
-		model := logField(bpLog, "Model:")
-
-		status := "? INCOMPLETE"
-		branch := "—"
-		if grepFile(bpLog, "Committed on branch") {
-			status = "✓ COMPLETE"
-			branch = lastMatch(bpLog, "Committed on branch")
-		} else if grepFile(bpLog, "BLUEPRINT BLOCKED") {
-			status = "✗ BLOCKED"
-		}
-
-		fmt.Printf("\n  ⚙  BLUEPRINT  %s  [%s · %s]  %s\n", formatTS(ts), lang, model, status)
-		if branch != "—" {
-			fmt.Printf("    Branch: %s\n", branch)
-		}
-		fmt.Printf("    Log: %s\n", bpLog)
-	}
-
-	if !found {
-		fmt.Printf("  No runs yet. Try: colony blueprint --spec SPEC.md --lang typescript\n")
 	}
 }
 
@@ -232,58 +221,6 @@ func activeBlueprints(logDir string, window time.Duration) []string {
 		paths[i] = b.path
 	}
 	return paths
-}
-
-func logField(file, field string) string {
-	data, err := os.ReadFile(file)
-	if err != nil {
-		return "?"
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		if strings.HasPrefix(line, field) {
-			return strings.TrimSpace(strings.TrimPrefix(line, field))
-		}
-	}
-	return "?"
-}
-
-func grepFile(file, pattern string) bool {
-	data, err := os.ReadFile(file)
-	if err != nil {
-		return false
-	}
-	return strings.Contains(string(data), pattern)
-}
-
-func lastMatch(file, pattern string) string {
-	data, err := os.ReadFile(file)
-	if err != nil {
-		return ""
-	}
-	last := ""
-	for _, line := range strings.Split(string(data), "\n") {
-		if strings.Contains(line, pattern) {
-			parts := strings.Fields(line)
-			if len(parts) > 0 {
-				last = parts[len(parts)-1]
-			}
-		}
-	}
-	return last
-}
-
-func countDecision(reviewDir, decision string) int {
-	entries, _ := os.ReadDir(reviewDir)
-	n := 0
-	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".decision") {
-			data, _ := os.ReadFile(filepath.Join(reviewDir, e.Name()))
-			if strings.TrimSpace(string(data)) == decision {
-				n++
-			}
-		}
-	}
-	return n
 }
 
 func lastSessionID(sessionLog string) string {
@@ -320,16 +257,6 @@ func printSessionLines(file, session, prefix, indent string) {
 	if !found {
 		fmt.Printf("%snone\n", indent)
 	}
-}
-
-func formatTS(ts string) string {
-	// 20260425-143022 → 2026-04-25 14:30
-	if len(ts) < 13 {
-		return ts
-	}
-	d := ts[:8]
-	t := ts[9:13]
-	return fmt.Sprintf("%s-%s-%s %s:%s", d[:4], d[4:6], d[6:8], t[:2], t[2:4])
 }
 
 func divider() {

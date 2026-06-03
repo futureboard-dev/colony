@@ -15,6 +15,7 @@ import (
 	"github.com/jirateep/colony/pkg/module"
 	"github.com/jirateep/colony/pkg/output"
 	"github.com/jirateep/colony/pkg/prompt"
+	"github.com/jirateep/colony/pkg/storage"
 	"github.com/spf13/cobra"
 )
 
@@ -102,6 +103,18 @@ func runSwarm(cmd *cobra.Command, args []string) error {
 	}
 	ctx := cmd.Context()
 
+	// ── Record run facts (status/tally in SQLite; raw output stays in swarmDir) ──
+	runID := "swarm-" + ts
+	store := openRunStore(root, out)
+	if store != nil {
+		defer store.Close()
+		_ = store.InsertRun(storage.Run{
+			ID: runID, Kind: "swarm", Project: projectName,
+			Language: swarmLang, Mode: swarmMode, Status: "running",
+			LogPath: swarmDir, StartedAt: time.Now(),
+		})
+	}
+
 	fmt.Fprintf(out, "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 	fmt.Fprintf(out, "🐝 SWARM STARTING\nProject: %s | Language: %s | Mode: %s\nSpec: %s | Base: %s\nLog dir: %s\n",
 		projectName, swarmLang, swarmMode, swarmSpec, baseBranch, swarmDir)
@@ -122,6 +135,7 @@ func runSwarm(cmd *cobra.Command, args []string) error {
 		}
 		fmt.Fprintf(out, "\n✅ Quick build complete\n  Branch: %s\n  Review: git diff %s..%s\n  Cleanup: colony task done %s\n",
 			branch, baseBranch, branch, branch)
+		finishRun(store, runID, "complete", branch)
 		statusLine.SetState(output.StateIdle)
 		statusLine.SetMessage("")
 		return nil
@@ -277,6 +291,20 @@ func runSwarm(cmd *cobra.Command, args []string) error {
 	// ── Summary ────────────────────────────────────────────────────────────────
 	statusLine.SetState(output.StateIdle)
 	statusLine.SetMessage("")
+	approved, rejected := 0, 0
+	for _, r := range results {
+		if r.decision == "APPROVED" {
+			approved++
+		} else {
+			rejected++
+		}
+	}
+	if store != nil {
+		now := time.Now()
+		_ = store.UpdateRun(storage.Run{
+			ID: runID, Status: "complete", Approved: approved, Rejected: rejected, FinishedAt: &now,
+		})
+	}
 	fmt.Fprintf(out, "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 	fmt.Fprintf(out, "🐝 SWARM COMPLETE\nMode: %s | Subtasks: %d | Language: %s\n\n", swarmMode, len(subtaskFiles), swarmLang)
 	for _, r := range results {

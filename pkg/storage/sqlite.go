@@ -39,10 +39,34 @@ type Session struct {
 	Status      string
 }
 
+// Run represents a blueprint or swarm pipeline run — the structured facts a
+// run produces (status, branch, review tally), as opposed to its streaming log.
+type Run struct {
+	ID         string
+	Kind       string // "blueprint" | "swarm"
+	Project    string
+	Language   string
+	Model      string
+	Mode       string // swarm mode; empty for blueprint
+	Branch     string
+	Status     string // running | complete | blocked
+	Approved   int
+	Rejected   int
+	LogPath    string
+	StartedAt  time.Time
+	FinishedAt *time.Time
+}
+
 // StepFilter controls which steps to return from QuerySteps.
 type StepFilter struct {
 	SessionID string
 	Decision  string
+}
+
+// RunFilter controls which runs to return from QueryRuns.
+type RunFilter struct {
+	Project string
+	Kind    string
 }
 
 // SessionFilter controls which sessions to return from QuerySessions or DeleteSessions.
@@ -60,6 +84,9 @@ type Store interface {
 	QuerySessions(f SessionFilter) ([]Session, error)
 	QuerySteps(f StepFilter) ([]Step, error)
 	DeleteSessions(f SessionFilter) (int64, error)
+	InsertRun(r Run) error
+	UpdateRun(r Run) error
+	QueryRuns(f RunFilter) ([]Run, error)
 	Close() error
 }
 
@@ -253,4 +280,69 @@ func (s *SQLiteStore) QuerySteps(f StepFilter) ([]Step, error) {
 		steps = append(steps, step)
 	}
 	return steps, rows.Err()
+}
+
+// InsertRun records a new pipeline run, typically with status "running".
+func (s *SQLiteStore) InsertRun(r Run) error {
+	_, err := s.db.Exec(
+		`INSERT INTO runs
+		 (id, kind, project, language, model, mode, branch, status, approved, rejected, log_path, started_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		r.ID, r.Kind, r.Project, r.Language, r.Model, r.Mode, r.Branch, r.Status,
+		r.Approved, r.Rejected, r.LogPath, r.StartedAt.UTC().Format(time.RFC3339),
+	)
+	return err
+}
+
+// UpdateRun finalizes a run's mutable fields (status, branch, review tally) by ID.
+func (s *SQLiteStore) UpdateRun(r Run) error {
+	var finishedAt any
+	if r.FinishedAt != nil && !r.FinishedAt.IsZero() {
+		finishedAt = r.FinishedAt.UTC().Format(time.RFC3339)
+	}
+	_, err := s.db.Exec(
+		`UPDATE runs SET status=?, branch=?, approved=?, rejected=?, finished_at=? WHERE id=?`,
+		r.Status, r.Branch, r.Approved, r.Rejected, finishedAt, r.ID,
+	)
+	return err
+}
+
+func (s *SQLiteStore) QueryRuns(f RunFilter) ([]Run, error) {
+	query := `SELECT id, kind, project, language, model, mode, branch, status, approved, rejected, log_path, started_at, finished_at
+	          FROM runs WHERE 1=1`
+	args := []any{}
+	if f.Project != "" {
+		query += " AND project=?"
+		args = append(args, f.Project)
+	}
+	if f.Kind != "" {
+		query += " AND kind=?"
+		args = append(args, f.Kind)
+	}
+	query += " ORDER BY started_at ASC"
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var runs []Run
+	for rows.Next() {
+		var r Run
+		var startedStr string
+		var finishedStr *string
+		if err := rows.Scan(
+			&r.ID, &r.Kind, &r.Project, &r.Language, &r.Model, &r.Mode, &r.Branch,
+			&r.Status, &r.Approved, &r.Rejected, &r.LogPath, &startedStr, &finishedStr,
+		); err != nil {
+			return nil, err
+		}
+		r.StartedAt, _ = time.Parse(time.RFC3339, startedStr)
+		if finishedStr != nil {
+			t, _ := time.Parse(time.RFC3339, *finishedStr)
+			r.FinishedAt = &t
+		}
+		runs = append(runs, r)
+	}
+	return runs, rows.Err()
 }

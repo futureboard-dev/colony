@@ -7,12 +7,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/jirateep/colony/pkg/llm"
 	"github.com/jirateep/colony/pkg/module"
 	"github.com/jirateep/colony/pkg/output"
 	"github.com/jirateep/colony/pkg/prompt"
+	"github.com/jirateep/colony/pkg/storage"
 	"github.com/spf13/cobra"
 )
 
@@ -136,6 +138,18 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// ── Record run facts (status/branch in SQLite; raw output stays in logPath) ──
+	runID := strings.TrimSuffix(filepath.Base(logPath), ".log")
+	store := openRunStore(root, out)
+	if store != nil {
+		defer store.Close()
+		_ = store.InsertRun(storage.Run{
+			ID: runID, Kind: "blueprint", Project: module.ProjectName(root),
+			Language: bpLang, Model: llmCfg.Model, Status: "running",
+			LogPath: logPath, StartedAt: time.Now(),
+		})
+	}
+
 	ctx := cmd.Context()
 
 	// ── RESUME MODE ────────────────────────────────────────────────────────────
@@ -147,10 +161,14 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 			"Worktree": bpResume, "Branch": branch, "Language": bpLang,
 		})
 		if err := runGates(ctx, bpResume, langs, ex, out, bpNoFormat); err != nil {
-			return bpBlocked(bpResume, logPath, err, out)
+			return bpBlocked(bpResume, logPath, err, out, store, runID)
 		}
 		fmt.Fprintf(out, "%s✓ Resumed and passed gates on branch: %s%s\n", ansiGreen, branch, ansiReset)
-		return bpCommit(bpResume, branch, "fix: resume after manual review — gates passed", out)
+		if err := bpCommit(bpResume, branch, "fix: resume after manual review — gates passed", out); err != nil {
+			return err
+		}
+		finishRun(store, runID, "complete", branch)
+		return nil
 	}
 
 	// ── CONTINUE MODE ──────────────────────────────────────────────────────────
@@ -171,9 +189,13 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 		}
 		fmt.Fprintf(out, "%s✓ Agent finished continuing code%s\n", ansiGreen, ansiReset)
 		if err := runGates(ctx, bpContinue, langs, ex, out, bpNoFormat); err != nil {
-			return bpBlocked(bpContinue, logPath, err, out)
+			return bpBlocked(bpContinue, logPath, err, out, store, runID)
 		}
-		return bpCommit(bpContinue, branch, "feat: continue after interruption — gates passed", out)
+		if err := bpCommit(bpContinue, branch, "feat: continue after interruption — gates passed", out); err != nil {
+			return err
+		}
+		finishRun(store, runID, "complete", branch)
+		return nil
 	}
 
 	statusLine.SetState(output.StateWorking)
@@ -237,7 +259,7 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 
 	// Steps 3–4: Quality gates
 	if err := runGates(ctx, worktreePath, langs, ex, out, bpNoFormat); err != nil {
-		return bpBlocked(worktreePath, logPath, err, out)
+		return bpBlocked(worktreePath, logPath, err, out, store, runID)
 	}
 
 	commitMsg := fmt.Sprintf("feat: %s\n\nBlueprint: %s\nLanguage: %s\nGates: format, typecheck, tests\nLog: %s",
@@ -247,6 +269,7 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 	if err := bpCommit(worktreePath, branch, commitMsg, out); err != nil {
 		return err
 	}
+	finishRun(store, runID, "complete", branch)
 
 	statusLine.SetState(output.StateIdle)
 	statusLine.SetMessage("")
@@ -344,13 +367,35 @@ func bpCommit(worktreePath, branch, msg string, out io.Writer) error {
 	return nil
 }
 
-func bpBlocked(worktreePath, logPath string, err error, out io.Writer) error {
+func bpBlocked(worktreePath, logPath string, err error, out io.Writer, store *storage.SQLiteStore, runID string) error {
 	statusLine.SetState(output.StateIdle)
 	statusLine.SetMessage("")
+	finishRun(store, runID, "blocked", "")
 	fmt.Fprintf(out, "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 	fmt.Fprintf(out, "%s🚫 BLUEPRINT BLOCKED\n%v\nWorktree: %s\nLog:      %s%s\n", ansiRed, err, worktreePath, logPath, ansiReset)
 	fmt.Fprintf(out, "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 	return err
+}
+
+// openRunStore opens the project's missions.db for recording run facts.
+// Recording is best-effort: on failure it warns and returns nil so the
+// pipeline still runs.
+func openRunStore(root string, out io.Writer) *storage.SQLiteStore {
+	store, err := storage.Open(filepath.Join(root, ".colony", "missions.db"))
+	if err != nil {
+		fmt.Fprintf(out, "%s⚠ run not recorded: %v%s\n", ansiYellow, err, ansiReset)
+		return nil
+	}
+	return store
+}
+
+// finishRun marks a run's terminal status and branch. Safe with a nil store.
+func finishRun(store *storage.SQLiteStore, runID, status, branch string) {
+	if store == nil {
+		return
+	}
+	now := time.Now()
+	_ = store.UpdateRun(storage.Run{ID: runID, Status: status, Branch: branch, FinishedAt: &now})
 }
 
 func bpBanner(out io.Writer, title string, fields map[string]string) {

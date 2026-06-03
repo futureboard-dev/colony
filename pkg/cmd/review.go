@@ -55,13 +55,14 @@ Examples:
 }
 
 var (
-	reviewBranch  string
-	reviewBase    string
-	reviewDiff    string
-	reviewLenses  string
-	reviewCI      bool
-	reviewSummary bool
-	reviewResume  string
+	reviewBranch       string
+	reviewBase         string
+	reviewDiff         string
+	reviewLenses       string
+	reviewCI           bool
+	reviewSummary      bool
+	reviewResume       string
+	reviewMaxDiffLines int
 )
 
 func init() {
@@ -72,6 +73,7 @@ func init() {
 	reviewCmd.Flags().BoolVar(&reviewCI, "ci", false, "CI mode: outputs JSON and sets exit code based on verdict")
 	reviewCmd.Flags().BoolVar(&reviewSummary, "summary", false, "output summary only")
 	reviewCmd.Flags().StringVar(&reviewResume, "resume", "", "review dir from a prior run: re-run synthesis only on saved lens reports")
+	reviewCmd.Flags().IntVar(&reviewMaxDiffLines, "max-diff-lines", 800, "truncate diff sent to each lens (0 = no limit)")
 }
 
 func runReview(cmd *cobra.Command, args []string) error {
@@ -133,6 +135,15 @@ func runReview(cmd *cobra.Command, args []string) error {
 		out = statusLine
 	}
 
+	if reviewMaxDiffLines > 0 {
+		if tr, truncated := truncateDiff(diffContent, reviewMaxDiffLines); truncated {
+			if !reviewCI {
+				fmt.Fprintf(out, "⚠ Diff truncated to %d lines (use --max-diff-lines=0 to disable)\n", reviewMaxDiffLines)
+			}
+			diffContent = tr
+		}
+	}
+
 	if !reviewCI && !reviewSummary {
 		fmt.Fprintf(out, "▶ Starting review with lenses: %s\n", strings.Join(lenses, ", "))
 	}
@@ -148,9 +159,22 @@ func runReview(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("lens execution failed: %w", lensErr)
 	}
 
-	synthReport, rawSynth, err := synthesizeReview(cmd.Context(), cfg, rawReports, statusLine)
-	if err != nil {
-		return fmt.Errorf("synthesis failed: %w\nRaw output:\n%s\n\nLens reports were saved — resume synthesis with:\n  colony review --resume %s", err, rawSynth, reviewDir)
+	var (
+		synthReport *synthesizedReport
+		rawSynth    string
+	)
+	if len(lenses) == 1 {
+		sr, raw, err2 := singleLensReport(lenses[0], rawReports[lenses[0]])
+		if err2 != nil {
+			return fmt.Errorf("parse single lens report: %w", err2)
+		}
+		synthReport, rawSynth = sr, raw
+	} else {
+		var err2 error
+		synthReport, rawSynth, err2 = synthesizeReview(cmd.Context(), cfg, rawReports, statusLine)
+		if err2 != nil {
+			return fmt.Errorf("synthesis failed: %w\nRaw output:\n%s\n\nLens reports were saved — resume synthesis with:\n  colony review --resume %s", err2, rawSynth, reviewDir)
+		}
 	}
 
 	return emitReviewReport(out, reviewDir, synthReport, rawSynth)
@@ -279,7 +303,7 @@ func runReviewLenses(ctx context.Context, cfg *config.Config, diff string, lense
 				return
 			}
 
-			execAgent := llm.New(cfg.Role("reviewer"))
+			execAgent := llm.New(cfg.Role("lens_reviewer"))
 			var outBuf strings.Builder
 			err = execAgent.RunHeadless(ctx, ".", p, &outBuf)
 
@@ -348,6 +372,77 @@ func synthesizeReview(ctx context.Context, cfg *config.Config, rawReports map[st
 	}
 
 	return &report, rawOutput, nil
+}
+
+// truncateDiff caps a diff at maxLines lines, returning the truncated string and true if truncation occurred.
+func truncateDiff(diff string, maxLines int) (string, bool) {
+	lines := strings.Split(diff, "\n")
+	if len(lines) <= maxLines {
+		return diff, false
+	}
+	header := strings.Join(lines[:maxLines], "\n")
+	return header + fmt.Sprintf("\n\n[diff truncated: showing %d of %d lines — use --max-diff-lines=0 to disable]", maxLines, len(lines)), true
+}
+
+// lensRaw is the JSON schema returned by each individual lens prompt.
+type lensRaw struct {
+	Findings []struct {
+		Severity    string `json:"severity"`
+		File        string `json:"file"`
+		Line        int    `json:"line"`
+		Category    string `json:"category"`
+		Description string `json:"description"`
+		Suggestion  string `json:"suggestion"`
+	} `json:"findings"`
+	Summary string `json:"summary"`
+}
+
+// singleLensReport builds a synthesizedReport directly from one lens output,
+// skipping the synthesis LLM call when only one lens was requested.
+func singleLensReport(lens, rawJSON string) (*synthesizedReport, string, error) {
+	var lr lensRaw
+	if err := json.Unmarshal([]byte(rawJSON), &lr); err != nil {
+		return nil, rawJSON, fmt.Errorf("parse lens JSON: %w", err)
+	}
+
+	report := &synthesizedReport{
+		OverallSummary: lr.Summary,
+		FileSummary:    make(map[string]string),
+	}
+
+	hasCritOrHigh, hasMed := false, false
+	for _, f := range lr.Findings {
+		report.Findings = append(report.Findings, reviewFinding{
+			Severity:    f.Severity,
+			Lens:        lens,
+			File:        f.File,
+			Line:        f.Line,
+			Category:    f.Category,
+			Description: f.Description,
+			Suggestion:  f.Suggestion,
+		})
+		switch strings.ToLower(f.Severity) {
+		case "critical", "high":
+			hasCritOrHigh = true
+		case "medium":
+			hasMed = true
+		}
+	}
+
+	switch {
+	case hasCritOrHigh:
+		report.Verdict = "FAIL"
+	case hasMed:
+		report.Verdict = "WARN"
+	default:
+		report.Verdict = "PASS"
+	}
+
+	b, err := json.Marshal(report)
+	if err != nil {
+		return nil, "", fmt.Errorf("marshal single-lens report: %w", err)
+	}
+	return report, string(b), nil
 }
 
 // extractJSONForReview attempts to extract a JSON block from markdown-wrapped output.
