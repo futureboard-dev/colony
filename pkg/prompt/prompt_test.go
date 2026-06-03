@@ -89,3 +89,31 @@ func TestReviewContainsSpecAndDiff(t *testing.T) {
 		t.Error("Review prompt should mention REJECTED")
 	}
 }
+
+func TestSpecFeatureContainsInput(t *testing.T) {
+	input := "users log in with email and password"
+	p, err := SpecFeature(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(p, input) {
+		t.Error("SpecFeature prompt should embed the requirements input")
+	}
+	if !strings.Contains(p, "Agent Task Spec") {
+		t.Error("SpecFeature prompt should reference Agent Task Spec format")
+	}
+}
+
+func TestSpecFeatureReviseContainsSpec(t *testing.T) {
+	existing := "# Agent Task Spec\n\n## 1. Add login\n\n<!-- change to OAuth -->\n\nSome content."
+	p, err := SpecFeatureRevise(existing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(p, existing) {
+		t.Error("SpecFeatureRevise prompt should embed the existing spec")
+	}
+	if !strings.Contains(p, "feedback comments") {
+		t.Error("SpecFeatureRevise prompt should instruct on incorporating comments")
+	}
+}

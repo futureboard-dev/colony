@@ -303,7 +303,7 @@ func runReviewLenses(ctx context.Context, cfg *config.Config, diff string, lense
 				return
 			}
 
-			execAgent := llm.New(cfg.Role("lens_reviewer"))
+			execAgent := llm.New(cfg.LensRole(l))
 			var outBuf strings.Builder
 			err = execAgent.RunHeadless(ctx, ".", p, &outBuf)
 

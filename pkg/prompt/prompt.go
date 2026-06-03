@@ -28,6 +28,9 @@ var reviewTmpl string
 //go:embed spec_feature.md
 var specFeatureTmpl string
 
+//go:embed spec_feature_revise.md
+var specFeatureReviseTmpl string
+
 // ModulePrompts exposes the module-prompts directory as an embedded filesystem.
 //
 //go:embed module-prompts
@@ -103,6 +106,20 @@ func SpecFeature(input string) (string, error) {
 	}
 	var buf bytes.Buffer
 	if err := t.Execute(&buf, map[string]any{"Input": input}); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
+}
+
+// SpecFeatureRevise builds a prompt that asks the LLM to revise an existing
+// TASK.md, incorporating any inline feedback comments left by the human.
+func SpecFeatureRevise(existingSpec string) (string, error) {
+	t, err := template.New("").Delims("[[", "]]").Parse(specFeatureReviseTmpl)
+	if err != nil {
+		return "", err
+	}
+	var buf bytes.Buffer
+	if err := t.Execute(&buf, map[string]any{"Spec": existingSpec}); err != nil {
 		return "", err
 	}
 	return buf.String(), nil

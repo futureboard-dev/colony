@@ -64,6 +64,20 @@ func (c *Config) Role(name string) LLMConfig {
 	return c.LLM
 }
 
+// LensRole returns the LLMConfig for a specific lens, checking "<lens>_lens" first,
+// then the shared "lens_reviewer" role, then the default LLM config.
+func (c *Config) LensRole(lens string) LLMConfig {
+	if c.Roles != nil {
+		if cfg, ok := c.Roles[lens+"_lens"]; ok {
+			return cfg
+		}
+		if cfg, ok := c.Roles["lens_reviewer"]; ok {
+			return cfg
+		}
+	}
+	return c.LLM
+}
+
 func Load(projectRoot string) (*Config, error) {
 	path := filepath.Join(projectRoot, ".colony", "config.json")
 	data, err := os.ReadFile(path)
@@ -104,6 +118,11 @@ func Init(projectRoot string) error {
 			"lens_reviewer": {
 				Provider: "anthropic",
 				Model:    "claude-haiku-4-5-20251001",
+			},
+			// bugs_lens uses Sonnet for higher-accuracy bug detection.
+			"bugs_lens": {
+				Provider: "anthropic",
+				Model:    "claude-sonnet-4-6",
 			},
 		},
 	}
