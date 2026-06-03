@@ -29,64 +29,64 @@ const (
 var (
 	statusLine *output.StatusLine
 
-	blueprintCmd = &cobra.Command{
-		Use:   "blueprint",
+	craftCmd = &cobra.Command{
+		Use:   "craft",
 		Short: "Run an agent pipeline to implement a spec in an isolated worktree",
 		Long: `Runs a strict pipeline: setup worktree → agent writes code → quality gates → commit.
 
 Supports --resume (re-run gates on existing worktree) and --continue (continue
 interrupted codegen). Use --headless to run in the background.`,
-		RunE: runBlueprint,
+		RunE: runCraft,
 	}
 
-	bpSpec        string
-	bpLang        string
-	bpModel       string
-	bpResume      string
-	bpContinue    string
-	bpBase        string
-	bpHeadless    bool
-	bpNoFormat    bool
-	bpInteractive bool
-	bpLogFile     string // internal: set by headless re-exec
+	craftSpec        string
+	craftLang        string
+	craftModel       string
+	craftResume      string
+	craftContinue    string
+	craftBase        string
+	craftHeadless    bool
+	craftNoFormat    bool
+	craftInteractive bool
+	craftLogFile     string // internal: set by headless re-exec
 )
 
 func init() {
-	blueprintCmd.Flags().StringVar(&bpSpec, "spec", "", "spec markdown file")
-	blueprintCmd.Flags().StringVar(&bpLang, "lang", "", "language: typescript, python, go")
-	blueprintCmd.Flags().StringVar(&bpModel, "model", "", "override model from config")
-	blueprintCmd.Flags().StringVar(&bpResume, "resume", "", "worktree path: re-run gates only")
-	blueprintCmd.Flags().StringVar(&bpContinue, "continue", "", "worktree path: continue codegen then gates")
-	blueprintCmd.Flags().StringVar(&bpBase, "base", "", "base branch (must not be main/master)")
-	blueprintCmd.Flags().BoolVar(&bpHeadless, "headless", false, "run in background, tail log for output")
-	blueprintCmd.Flags().BoolVar(&bpNoFormat, "no-format", false, "skip the format gate")
-	blueprintCmd.Flags().BoolVar(&bpInteractive, "interactive", false, "run the codegen step as a live agent session you can watch and steer")
-	blueprintCmd.Flags().StringVar(&bpLogFile, "_log", "", "")
-	blueprintCmd.Flags().MarkHidden("_log") //nolint:errcheck
+	craftCmd.Flags().StringVar(&craftSpec, "spec", "", "spec markdown file")
+	craftCmd.Flags().StringVar(&craftLang, "lang", "", "language: typescript, python, go")
+	craftCmd.Flags().StringVar(&craftModel, "model", "", "override model from config")
+	craftCmd.Flags().StringVar(&craftResume, "resume", "", "worktree path: re-run gates only")
+	craftCmd.Flags().StringVar(&craftContinue, "continue", "", "worktree path: continue codegen then gates")
+	craftCmd.Flags().StringVar(&craftBase, "base", "", "base branch (must not be main/master)")
+	craftCmd.Flags().BoolVar(&craftHeadless, "headless", false, "run in background, tail log for output")
+	craftCmd.Flags().BoolVar(&craftNoFormat, "no-format", false, "skip the format gate")
+	craftCmd.Flags().BoolVar(&craftInteractive, "interactive", false, "run the codegen step as a live agent session you can watch and steer")
+	craftCmd.Flags().StringVar(&craftLogFile, "_log", "", "")
+	craftCmd.Flags().MarkHidden("_log") //nolint:errcheck
 }
 
-func runBlueprint(cmd *cobra.Command, args []string) error {
+func runCraft(cmd *cobra.Command, args []string) error {
 	// ── Validate args ──────────────────────────────────────────────────────────
-	if bpResume != "" || bpContinue != "" {
-		if bpLang == "" {
+	if craftResume != "" || craftContinue != "" {
+		if craftLang == "" {
 			return fmt.Errorf("--lang required with --resume / --continue")
 		}
 	} else {
-		if bpSpec == "" || bpLang == "" {
-			return fmt.Errorf("--spec and --lang required\n\nExample:\n  colony blueprint --spec SPEC.md --lang typescript")
+		if craftSpec == "" || craftLang == "" {
+			return fmt.Errorf("--spec and --lang required\n\nExample:\n  colony craft --spec SPEC.md --lang typescript")
 		}
-		if _, err := os.Stat(bpSpec); err != nil {
-			return fmt.Errorf("spec file not found: %s", bpSpec)
+		if _, err := os.Stat(craftSpec); err != nil {
+			return fmt.Errorf("spec file not found: %s", craftSpec)
 		}
 	}
-	if bpBase == "main" || bpBase == "master" {
+	if craftBase == "main" || craftBase == "master" {
 		return fmt.Errorf("--base cannot be 'main' or 'master' — agents must target feature branches")
 	}
-	if bpInteractive {
-		if bpHeadless {
+	if craftInteractive {
+		if craftHeadless {
 			return fmt.Errorf("--interactive cannot be combined with --headless (interactive needs a terminal)")
 		}
-		if bpResume != "" {
+		if craftResume != "" {
 			return fmt.Errorf("--interactive has no effect with --resume (resume only re-runs gates)")
 		}
 	}
@@ -97,8 +97,8 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	llmCfg := cfg.Role("engineer")
-	if bpModel != "" {
-		llmCfg.Model = bpModel
+	if craftModel != "" {
+		llmCfg.Model = craftModel
 	}
 	ex := llm.New(llmCfg)
 
@@ -107,20 +107,20 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 	if err := module.EnsureLogDir(root); err != nil {
 		return err
 	}
-	logPath := bpLogFile
+	logPath := craftLogFile
 	if logPath == "" {
-		prefix := "blueprint"
-		if bpResume != "" {
-			prefix = "blueprint-resume"
-		} else if bpContinue != "" {
-			prefix = "blueprint-continue"
+		prefix := "craft"
+		if craftResume != "" {
+			prefix = "craft-resume"
+		} else if craftContinue != "" {
+			prefix = "craft-continue"
 		}
 		logPath = filepath.Join(module.LogDir(root), fmt.Sprintf("%s-%s.log", prefix, ts))
 	}
 
 	// ── Headless mode: re-exec without --headless, pipe output to log ──────────
-	if bpHeadless {
-		return bpRunHeadless(logPath)
+	if craftHeadless {
+		return craftRunHeadless(logPath)
 	}
 
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
@@ -133,7 +133,7 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 	defer statusLine.Close()
 	out := io.MultiWriter(statusLine, logFile)
 
-	langs, err := module.CommandsFor(bpLang)
+	langs, err := module.CommandsFor(craftLang)
 	if err != nil {
 		return err
 	}
@@ -144,8 +144,8 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 	if store != nil {
 		defer store.Close()
 		_ = store.InsertRun(storage.Run{
-			ID: runID, Kind: "blueprint", Project: module.ProjectName(root),
-			Language: bpLang, Model: llmCfg.Model, Status: "running",
+			ID: runID, Kind: "craft", Project: module.ProjectName(root),
+			Language: craftLang, Model: llmCfg.Model, Status: "running",
 			LogPath: logPath, StartedAt: time.Now(),
 		})
 	}
@@ -153,18 +153,18 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 
 	// ── RESUME MODE ────────────────────────────────────────────────────────────
-	if bpResume != "" {
+	if craftResume != "" {
 		statusLine.SetState(output.StateWorking)
 		statusLine.SetMessage("resuming gates")
-		branch, _ := module.CurrentBranch(bpResume)
-		bpBanner(out, "🔄 BLUEPRINT RESUME", map[string]string{
-			"Worktree": bpResume, "Branch": branch, "Language": bpLang,
+		branch, _ := module.CurrentBranch(craftResume)
+		craftBanner(out, "🔄 CRAFT RESUME", map[string]string{
+			"Worktree": craftResume, "Branch": branch, "Language": craftLang,
 		})
-		if err := runGates(ctx, bpResume, langs, ex, out, bpNoFormat); err != nil {
-			return bpBlocked(bpResume, logPath, err, out, store, runID)
+		if err := runGates(ctx, craftResume, langs, ex, out, craftNoFormat); err != nil {
+			return craftBlocked(craftResume, logPath, err, out, store, runID)
 		}
 		fmt.Fprintf(out, "%s✓ Resumed and passed gates on branch: %s%s\n", ansiGreen, branch, ansiReset)
-		if err := bpCommit(bpResume, branch, "fix: resume after manual review — gates passed", out); err != nil {
+		if err := craftCommit(craftResume, branch, "fix: resume after manual review — gates passed", out); err != nil {
 			return err
 		}
 		finishRun(store, runID, "complete", branch)
@@ -172,26 +172,26 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 	}
 
 	// ── CONTINUE MODE ──────────────────────────────────────────────────────────
-	if bpContinue != "" {
+	if craftContinue != "" {
 		statusLine.SetState(output.StateWorking)
 		statusLine.SetMessage("continuing codegen")
-		branch, _ := module.CurrentBranch(bpContinue)
-		bpBanner(out, "🔄 BLUEPRINT CONTINUE", map[string]string{
-			"Worktree": bpContinue, "Branch": branch, "Language": bpLang,
+		branch, _ := module.CurrentBranch(craftContinue)
+		craftBanner(out, "🔄 CRAFT CONTINUE", map[string]string{
+			"Worktree": craftContinue, "Branch": branch, "Language": craftLang,
 		})
 		fmt.Fprintf(out, "\n%s▶ STEP 1/3  Agent: continue writing code%s\n", ansiCyan, ansiReset)
-		contPrompt, err := prompt.BuildContinue(bpLang)
+		contPrompt, err := prompt.BuildContinue(craftLang)
 		if err != nil {
 			return err
 		}
-		if err := runCodegen(ctx, ex, bpContinue, contPrompt, out); err != nil {
+		if err := runCodegen(ctx, ex, craftContinue, contPrompt, out); err != nil {
 			return fmt.Errorf("continue agent failed: %w", err)
 		}
 		fmt.Fprintf(out, "%s✓ Agent finished continuing code%s\n", ansiGreen, ansiReset)
-		if err := runGates(ctx, bpContinue, langs, ex, out, bpNoFormat); err != nil {
-			return bpBlocked(bpContinue, logPath, err, out, store, runID)
+		if err := runGates(ctx, craftContinue, langs, ex, out, craftNoFormat); err != nil {
+			return craftBlocked(craftContinue, logPath, err, out, store, runID)
 		}
-		if err := bpCommit(bpContinue, branch, "feat: continue after interruption — gates passed", out); err != nil {
+		if err := craftCommit(craftContinue, branch, "feat: continue after interruption — gates passed", out); err != nil {
 			return err
 		}
 		finishRun(store, runID, "complete", branch)
@@ -208,21 +208,21 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 
 	projectName := module.ProjectName(root)
 	baseBranch := module.DefaultBranch()
-	if bpBase != "" {
-		baseBranch = bpBase
+	if craftBase != "" {
+		baseBranch = craftBase
 	}
 
-	specData, err := os.ReadFile(bpSpec)
+	specData, err := os.ReadFile(craftSpec)
 	if err != nil {
 		return err
 	}
-	taskDesc := module.ExtractTaskDesc(string(specData), bpSpec)
+	taskDesc := module.ExtractTaskDesc(string(specData), craftSpec)
 	branch := module.NewBranch(taskDesc)
 
-	bpBanner(out, "🤖 BLUEPRINT PIPELINE STARTING", map[string]string{
-		"Project": projectName, "Language": bpLang,
+	craftBanner(out, "🤖 CRAFT PIPELINE STARTING", map[string]string{
+		"Project": projectName, "Language": craftLang,
 		"Model":  fmt.Sprintf("%s (%s)", llmCfg.Model, llmCfg.Provider),
-		"Branch": branch, "Spec": bpSpec, "Log": logPath,
+		"Branch": branch, "Spec": craftSpec, "Log": logPath,
 	})
 
 	// Step 1: Setup worktree
@@ -233,10 +233,10 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := module.CopyFile(bpSpec, filepath.Join(worktreePath, "SPEC.md")); err != nil {
+	if err := module.CopyFile(craftSpec, filepath.Join(worktreePath, "SPEC.md")); err != nil {
 		return err
 	}
-	if bpLang == "typescript" || bpLang == "ts" {
+	if craftLang == "typescript" || craftLang == "ts" {
 		fmt.Fprintf(out, "   Installing dependencies...\n")
 		module.RunShell("pnpm install --frozen-lockfile", worktreePath, out) //nolint:errcheck
 	}
@@ -246,7 +246,7 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 	statusLine.SetState(output.StateThinking)
 	statusLine.SetMessage("agent writing code")
 	fmt.Fprintf(out, "\n%s▶ STEP 2/4  Agent: write code%s\n", ansiCyan, ansiReset)
-	writePrompt, err := prompt.Build(bpLang)
+	writePrompt, err := prompt.Build(craftLang)
 	if err != nil {
 		return err
 	}
@@ -258,15 +258,15 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(out, "%s✓ Agent finished writing code%s\n", ansiGreen, ansiReset)
 
 	// Steps 3–4: Quality gates
-	if err := runGates(ctx, worktreePath, langs, ex, out, bpNoFormat); err != nil {
-		return bpBlocked(worktreePath, logPath, err, out, store, runID)
+	if err := runGates(ctx, worktreePath, langs, ex, out, craftNoFormat); err != nil {
+		return craftBlocked(worktreePath, logPath, err, out, store, runID)
 	}
 
-	commitMsg := fmt.Sprintf("feat: %s\n\nBlueprint: %s\nLanguage: %s\nGates: format, typecheck, tests\nLog: %s",
-		taskDesc, branch, bpLang, logPath)
+	commitMsg := fmt.Sprintf("feat: %s\n\nCraft: %s\nLanguage: %s\nGates: format, typecheck, tests\nLog: %s",
+		taskDesc, branch, craftLang, logPath)
 	statusLine.SetState(output.StateWorking)
 	statusLine.SetMessage("committing")
-	if err := bpCommit(worktreePath, branch, commitMsg, out); err != nil {
+	if err := craftCommit(worktreePath, branch, commitMsg, out); err != nil {
 		return err
 	}
 	finishRun(store, runID, "complete", branch)
@@ -275,7 +275,7 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 	statusLine.SetMessage("")
 	remoteURL := module.RemoteURL(worktreePath)
 	fmt.Fprintf(out, "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
-	fmt.Fprintf(out, "%s✅ BLUEPRINT COMPLETE\n\nBranch:   %s\nWorktree: %s\n%s", ansiGreen, branch, worktreePath, ansiReset)
+	fmt.Fprintf(out, "%s✅ CRAFT COMPLETE\n\nBranch:   %s\nWorktree: %s\n%s", ansiGreen, branch, worktreePath, ansiReset)
 	fmt.Fprintf(out, "Next:\n  Review:  git diff %s..%s\n", baseBranch, branch)
 	fmt.Fprintf(out, "  Push:    cd %s && git push -u origin %s\n", worktreePath, branch)
 	if remoteURL != "" {
@@ -292,7 +292,7 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
 func runCodegen(ctx context.Context, ex *llm.Executor, workdir, agentPrompt string, out io.Writer) error {
 	statusLine.SetState(output.StateThinking)
 	statusLine.SetMessage("agent working")
-	if bpInteractive {
+	if craftInteractive {
 		fmt.Fprintf(out, "%s   --interactive: launching live agent session (terminal only, not captured to log)%s\n", ansiYellow, ansiReset)
 		return ex.RunInteractive(workdir, agentPrompt)
 	}
@@ -342,11 +342,11 @@ func gateWithFix(ctx context.Context, name, gateCmd, workdir string, maxAttempts
 			statusLine.SetState(output.StateWorking)
 		}
 	}
-	return fmt.Errorf("%s failed after %d attempts — human review required\n  Resume: colony blueprint --resume %s --lang <lang>",
+	return fmt.Errorf("%s failed after %d attempts — human review required\n  Resume: colony craft --resume %s --lang <lang>",
 		name, maxAttempts, workdir)
 }
 
-func bpCommit(worktreePath, branch, msg string, out io.Writer) error {
+func craftCommit(worktreePath, branch, msg string, out io.Writer) error {
 	statusLine.SetState(output.StateWorking)
 	statusLine.SetMessage("committing")
 	fmt.Fprintf(out, "\n▶ COMMIT\n")
@@ -367,12 +367,12 @@ func bpCommit(worktreePath, branch, msg string, out io.Writer) error {
 	return nil
 }
 
-func bpBlocked(worktreePath, logPath string, err error, out io.Writer, store *storage.SQLiteStore, runID string) error {
+func craftBlocked(worktreePath, logPath string, err error, out io.Writer, store *storage.SQLiteStore, runID string) error {
 	statusLine.SetState(output.StateIdle)
 	statusLine.SetMessage("")
 	finishRun(store, runID, "blocked", "")
 	fmt.Fprintf(out, "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
-	fmt.Fprintf(out, "%s🚫 BLUEPRINT BLOCKED\n%v\nWorktree: %s\nLog:      %s%s\n", ansiRed, err, worktreePath, logPath, ansiReset)
+	fmt.Fprintf(out, "%s🚫 CRAFT BLOCKED\n%v\nWorktree: %s\nLog:      %s%s\n", ansiRed, err, worktreePath, logPath, ansiReset)
 	fmt.Fprintf(out, "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 	return err
 }
@@ -398,7 +398,7 @@ func finishRun(store *storage.SQLiteStore, runID, status, branch string) {
 	_ = store.UpdateRun(storage.Run{ID: runID, Status: status, Branch: branch, FinishedAt: &now})
 }
 
-func bpBanner(out io.Writer, title string, fields map[string]string) {
+func craftBanner(out io.Writer, title string, fields map[string]string) {
 	statusLine.SetMessage(title)
 	fmt.Fprintf(out, "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n%s\n", title)
 	for k, v := range fields {
@@ -407,7 +407,7 @@ func bpBanner(out io.Writer, title string, fields map[string]string) {
 	fmt.Fprintf(out, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
 }
 
-func bpRunHeadless(logPath string) error {
+func craftRunHeadless(logPath string) error {
 	var newArgs []string
 	for _, arg := range os.Args[1:] {
 		if arg != "--headless" && arg != "-headless" {
@@ -426,7 +426,7 @@ func bpRunHeadless(logPath string) error {
 		return err
 	}
 	fmt.Printf("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
-	fmt.Printf("%s🚀 BLUEPRINT RUNNING HEADLESS%s\n", ansiCyan, ansiReset)
+	fmt.Printf("%s🚀 CRAFT RUNNING HEADLESS%s\n", ansiCyan, ansiReset)
 	fmt.Printf("   PID:  %d\n   Log:  tail -f %s\n   Stop: kill %d\n", cmd.Process.Pid, logPath, cmd.Process.Pid)
 	fmt.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
 	return nil

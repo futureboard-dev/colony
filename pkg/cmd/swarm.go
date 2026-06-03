@@ -363,7 +363,7 @@ func swarmBuild(ctx context.Context, root, projectName, baseBranch, lang string,
 		return "", err
 	}
 	commitMsg := fmt.Sprintf("feat: %s\n\nSwarm subtask | Language: %s | Gates: format, typecheck, tests", taskDesc, lang)
-	if err := bpCommit(worktreePath, branch, commitMsg, out); err != nil {
+	if err := craftCommit(worktreePath, branch, commitMsg, out); err != nil {
 		return "", err
 	}
 	return branch, nil

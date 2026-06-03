@@ -4,7 +4,7 @@
 
 It is a CLI-first toolkit that drives an autonomous swarm of role-specialised
 agents — product manager, software engineer, designer, marketer, QA, reviewer —
-through the full lifecycle of a software project: ideation → blueprint →
+through the full lifecycle of a software project: ideation → craft →
 implementation → review → docs → release notes. Each role is a prompt persona
 backed by an LLM (currently external APIs, eventually local models), and each
 task is a Go subcommand that orchestrates one or more agents through Eino
@@ -24,7 +24,7 @@ chains/graphs.
 - **Markdown-first prompts.** Roles and tasks live as `.md` files under
   `pkg/prompt/`, embedded into the binary. Prompt iteration is a doc edit, not
   a Go change.
-- **Composable modules.** Each capability (`blueprint`, `swarm`, `task`,
+- **Composable modules.** Each capability (`craft`, `swarm`, `task`,
   `log`, …) is a self-contained subcommand + service package. New roles and
   new tasks plug in without touching unrelated code.
 - **Local-first ergonomics.** Project state lives in `.colony/` at the repo
@@ -41,7 +41,7 @@ colony/
 │   ├── cmd/                   # one file per subcommand (Cobra convention)
 │   │   ├── root.go            # rootCmd, version, init() registers subcommands
 │   │   ├── config.go          # .colony/config.json loader
-│   │   ├── blueprint.go       # `colony blueprint`
+│   │   ├── craft.go           # `colony craft`
 │   │   ├── log.go             # `colony log`
 │   │   ├── swarm.go           # `colony swarm`
 │   │   ├── task.go            # `colony task`
@@ -55,7 +55,7 @@ colony/
 │   │   └── ollama.go          # eino-ext/components/model/ollama (local)
 │   │
 │   ├── service/               # business logic — one package per capability
-│   │   ├── blueprint/         # used by `colony blueprint`
+│   │   ├── craft/             # used by `colony craft`
 │   │   │   ├── service.go     # type Service struct{ chat model.ChatModel }; New(...)
 │   │   │   └── service_test.go
 │   │   ├── log/               # used by `colony log`
@@ -70,7 +70,7 @@ colony/
 │   │   │   ├── product-manager.md
 │   │   │   └── critic.md
 │   │   └── tasks/             # per-subcommand task prompts
-│   │       ├── blueprint.md
+│   │       ├── craft.md
 │   │       ├── log-summarize.md
 │   │       └── swarm-plan.md
 │   │
@@ -90,14 +90,14 @@ Each subcommand file exposes exactly one `*cobra.Command` and is registered in
 hand them to a freshly-constructed Eino `ChatModel`, and render the result.
 
 ```go
-// pkg/cmd/blueprint.go
-var blueprintCmd = &cobra.Command{
-    Use:   "blueprint",
-    Short: "Generate a project blueprint",
-    RunE:  runBlueprint,
+// pkg/cmd/craft.go
+var craftCmd = &cobra.Command{
+    Use:   "craft",
+    Short: "Run an agent pipeline to implement a spec in an isolated worktree",
+    RunE:  runCraft,
 }
 
-func runBlueprint(cmd *cobra.Command, args []string) error {
+func runCraft(cmd *cobra.Command, args []string) error {
     cfg, err := loadConfig(".")
     if err != nil {
         return err
@@ -111,11 +111,11 @@ func runBlueprint(cmd *cobra.Command, args []string) error {
     }
 
     msg, err := chat.Generate(cmd.Context(), []*schema.Message{
-        schema.SystemMessage(blueprintSystemPrompt),
+        schema.SystemMessage(craftSystemPrompt),
         schema.UserMessage(strings.Join(args, " ")),
     })
     if err != nil {
-        return fmt.Errorf("blueprint: %w", err)
+        return fmt.Errorf("craft: %w", err)
     }
     fmt.Println(msg.Content)
     return nil
@@ -134,8 +134,8 @@ construction, Eino composition, and post-processing. This keeps subcommands
 trivial and makes services reusable (tests, future HTTP server, other CLIs).
 
 ```go
-// pkg/service/blueprint/service.go
-package blueprint
+// pkg/service/craft/service.go
+package craft
 
 type Service struct {
     chat   model.ChatModel
@@ -149,7 +149,7 @@ func New(chat model.ChatModel, role string) *Service {
 func (s *Service) Generate(ctx context.Context, idea string) (string, error) {
     sys, err := prompt.Render("roles/"+s.role, nil)
     if err != nil { return "", err }
-    task, err := prompt.Render("tasks/blueprint", map[string]any{"Idea": idea})
+    task, err := prompt.Render("tasks/craft", map[string]any{"Idea": idea})
     if err != nil { return "", err }
 
     msg, err := s.chat.Generate(ctx, []*schema.Message{
@@ -162,13 +162,13 @@ func (s *Service) Generate(ctx context.Context, idea string) (string, error) {
 ```
 
 ```go
-// pkg/cmd/blueprint.go — thin
-func runBlueprint(cmd *cobra.Command, args []string) error {
+// pkg/cmd/craft.go — thin
+func runCraft(cmd *cobra.Command, args []string) error {
     cfg, _ := loadConfig(".")
     chat, err := llm.NewChatModel(cmd.Context(), cfg.LLM)
     if err != nil { return err }
 
-    out, err := blueprint.New(chat, roleFlag).Generate(cmd.Context(), strings.Join(args, " "))
+    out, err := craft.New(chat, roleFlag).Generate(cmd.Context(), strings.Join(args, " "))
     if err != nil { return err }
     fmt.Println(out)
     return nil
@@ -182,7 +182,7 @@ via `//go:embed`. Two subdirectories:
 
 - **`roles/`** — persona system prompts (`marketing.md`, `software-engineer.md`,
   …). Pick one per invocation via `--role` or service config.
-- **`tasks/`** — per-subcommand user-message templates (`blueprint.md`,
+- **`tasks/`** — per-subcommand user-message templates (`craft.md`,
   `log-summarize.md`, …). Rendered with Go's `text/template` so flags / context
   can be interpolated.
 
@@ -223,10 +223,10 @@ You are a senior software engineer. Be concrete, cite tradeoffs, prefer the
 simplest design that solves the problem. Output runnable code, not pseudocode.
 ```
 
-Example `pkg/prompt/tasks/blueprint.md`:
+Example `pkg/prompt/tasks/craft.md`:
 
 ```markdown
-Produce a project blueprint for the following idea:
+Produce a project craft for the following idea:
 
 {{.Idea}}
 
@@ -360,7 +360,7 @@ colony version
 
 ```bash
 colony init                                        # create .colony/config.json
-colony blueprint "a URL shortener in Go"           # generate a project blueprint
+colony craft --spec SPEC.md --lang go              # run agent pipeline: spec → code → commit
 colony log                                         # summarise git log
 colony swarm "add rate limiting to the API"        # run the swarm planner
 colony review --branch feat/auth                   # multi-lens AI code review

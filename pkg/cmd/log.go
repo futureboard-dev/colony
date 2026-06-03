@@ -17,7 +17,7 @@ import (
 var logCmd = &cobra.Command{
 	Use:   "log",
 	Short: "Show agent run history for the current project",
-	Long: `Displays blueprint and swarm run history from .colony/logs/.
+	Long: `Displays craft and swarm run history from .colony/logs/.
 
 Flags:
   --all      show runs across all projects
@@ -58,9 +58,9 @@ func runLog(cmd *cobra.Command, args []string) error {
 				os.WriteFile(f, nil, 0644) //nolint:errcheck
 			}
 		}
-		// follow every blueprint log touched recently — one per active agent
+		// follow every craft log touched recently — one per active agent
 		tailFiles := []string{cmdLog, fileLog}
-		active := activeBlueprints(logDir, 15*time.Minute)
+		active := activeCrafts(logDir, 15*time.Minute)
 		tailFiles = append(tailFiles, active...)
 		fmt.Printf("\n📡 LIVE — %s\n", project)
 		if len(active) > 0 {
@@ -145,7 +145,7 @@ func runLog(cmd *cobra.Command, args []string) error {
 
 func showProjectRuns(dbPath string) {
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
-		fmt.Printf("  No runs yet. Try: colony blueprint --spec SPEC.md --lang typescript\n")
+		fmt.Printf("  No runs yet. Try: colony craft --spec SPEC.md --lang typescript\n")
 		return
 	}
 	store, err := storage.Open(dbPath)
@@ -161,7 +161,7 @@ func showProjectRuns(dbPath string) {
 		return
 	}
 	if len(runs) == 0 {
-		fmt.Printf("  No runs yet. Try: colony blueprint --spec SPEC.md --lang typescript\n")
+		fmt.Printf("  No runs yet. Try: colony craft --spec SPEC.md --lang typescript\n")
 		return
 	}
 
@@ -178,7 +178,7 @@ func showProjectRuns(dbPath string) {
 			fmt.Printf("\n  🐝 SWARM  %s  [%s · %s]  %s\n", ts, r.Mode, r.Language, status)
 			fmt.Printf("    Approved: %d  Rejected: %d\n", r.Approved, r.Rejected)
 			fmt.Printf("    Logs: %s\n", r.LogPath)
-		case "blueprint":
+		case "craft":
 			status := "? INCOMPLETE"
 			switch r.Status {
 			case "complete":
@@ -186,7 +186,7 @@ func showProjectRuns(dbPath string) {
 			case "blocked":
 				status = "✗ BLOCKED"
 			}
-			fmt.Printf("\n  ⚙  BLUEPRINT  %s  [%s · %s]  %s\n", ts, r.Language, r.Model, status)
+			fmt.Printf("\n  ⚙  CRAFT  %s  [%s · %s]  %s\n", ts, r.Language, r.Model, status)
 			if r.Branch != "" {
 				fmt.Printf("    Branch: %s\n", r.Branch)
 			}
@@ -195,9 +195,9 @@ func showProjectRuns(dbPath string) {
 	}
 }
 
-// activeBlueprints returns blueprint logs modified within the given window,
+// activeCrafts returns craft logs modified within the given window,
 // sorted oldest→newest, so live mode follows every agent currently running.
-func activeBlueprints(logDir string, window time.Duration) []string {
+func activeCrafts(logDir string, window time.Duration) []string {
 	entries, _ := os.ReadDir(logDir)
 	type bp struct {
 		path string
@@ -206,7 +206,7 @@ func activeBlueprints(logDir string, window time.Duration) []string {
 	var found []bp
 	cutoff := time.Now().Add(-window)
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasPrefix(e.Name(), "blueprint-") {
+		if e.IsDir() || !strings.HasPrefix(e.Name(), "craft-") {
 			continue
 		}
 		info, err := e.Info()

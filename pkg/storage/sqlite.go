@@ -39,15 +39,15 @@ type Session struct {
 	Status      string
 }
 
-// Run represents a blueprint or swarm pipeline run — the structured facts a
+// Run represents a craft or swarm pipeline run — the structured facts a
 // run produces (status, branch, review tally), as opposed to its streaming log.
 type Run struct {
 	ID         string
-	Kind       string // "blueprint" | "swarm"
+	Kind       string // "craft" | "swarm"
 	Project    string
 	Language   string
 	Model      string
-	Mode       string // swarm mode; empty for blueprint
+	Mode       string // swarm mode; empty for craft
 	Branch     string
 	Status     string // running | complete | blocked
 	Approved   int

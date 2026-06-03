@@ -154,9 +154,9 @@ func TestInsertUpdateRunRoundTrip(t *testing.T) {
 
 	start := time.Now().Truncate(time.Second).UTC()
 	run := Run{
-		ID: "blueprint-20260429-023036", Kind: "blueprint", Project: "colony",
+		ID: "craft-20260429-023036", Kind: "craft", Project: "colony",
 		Language: "go", Model: "claude-opus-4-8", Status: "running",
-		LogPath: ".colony/logs/blueprint-20260429-023036.log", StartedAt: start,
+		LogPath: ".colony/logs/craft-20260429-023036.log", StartedAt: start,
 	}
 	if err := db.InsertRun(run); err != nil {
 		t.Fatalf("InsertRun: %v", err)
@@ -169,7 +169,7 @@ func TestInsertUpdateRunRoundTrip(t *testing.T) {
 		t.Fatalf("UpdateRun: %v", err)
 	}
 
-	runs, err := db.QueryRuns(RunFilter{Kind: "blueprint"})
+	runs, err := db.QueryRuns(RunFilter{Kind: "craft"})
 	if err != nil {
 		t.Fatalf("QueryRuns: %v", err)
 	}
@@ -196,9 +196,9 @@ func TestQueryRunsFilterByKindAndProject(t *testing.T) {
 
 	now := time.Now()
 	seed := []Run{
-		{ID: "blueprint-1", Kind: "blueprint", Project: "alpha", Status: "complete", StartedAt: now},
+		{ID: "craft-1", Kind: "craft", Project: "alpha", Status: "complete", StartedAt: now},
 		{ID: "swarm-1", Kind: "swarm", Project: "alpha", Mode: "full", Approved: 2, Rejected: 1, Status: "complete", StartedAt: now},
-		{ID: "blueprint-2", Kind: "blueprint", Project: "beta", Status: "blocked", StartedAt: now},
+		{ID: "craft-2", Kind: "craft", Project: "beta", Status: "blocked", StartedAt: now},
 	}
 	for _, r := range seed {
 		if err := db.InsertRun(r); err != nil {

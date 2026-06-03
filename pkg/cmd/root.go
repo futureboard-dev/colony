@@ -27,7 +27,7 @@ Providers: anthropic → claude CLI, everything else → crush CLI.
 Quick start:
   colony init
   colony task "fix the login bug"
-  colony blueprint --spec SPEC.md --lang typescript
+  colony craft --spec SPEC.md --lang typescript
   colony swarm --spec SPEC.md --lang go --mode full`,
 }
 
@@ -58,7 +58,7 @@ func Execute() {
 func init() {
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(initCmd)
-	rootCmd.AddCommand(blueprintCmd)
+	rootCmd.AddCommand(craftCmd)
 	rootCmd.AddCommand(swarmCmd)
 	rootCmd.AddCommand(logCmd)
 	rootCmd.AddCommand(reviewCmd)
