@@ -28,6 +28,7 @@ type reviewFinding struct {
 	File        string `json:"file"`
 	Line        int    `json:"line"`
 	Category    string `json:"category"`
+	Evidence    string `json:"evidence"`
 	Description string `json:"description"`
 	Suggestion  string `json:"suggestion"`
 }
@@ -391,6 +392,7 @@ type lensRaw struct {
 		File        string `json:"file"`
 		Line        int    `json:"line"`
 		Category    string `json:"category"`
+		Evidence    string `json:"evidence"`
 		Description string `json:"description"`
 		Suggestion  string `json:"suggestion"`
 	} `json:"findings"`
@@ -418,6 +420,7 @@ func singleLensReport(lens, rawJSON string) (*synthesizedReport, string, error) 
 			File:        f.File,
 			Line:        f.Line,
 			Category:    f.Category,
+			Evidence:    f.Evidence,
 			Description: f.Description,
 			Suggestion:  f.Suggestion,
 		})
@@ -561,6 +564,9 @@ func printRichReport(w io.Writer, report *synthesizedReport, branch, base string
 			}
 
 			fmt.Fprintf(w, "  %s %s %s:%d — %s\n", icon, sev, f.File, f.Line, f.Description)
+			if f.Evidence != "" {
+				fmt.Fprintf(w, "    evidence: %s\n", f.Evidence)
+			}
 			if f.Suggestion != "" {
 				fmt.Fprintf(w, "    → %s\n", f.Suggestion)
 			}

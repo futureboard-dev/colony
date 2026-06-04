@@ -25,6 +25,7 @@ Respond in JSON ONLY, matching exactly this schema:
       "file": "path/to/file.go",
       "line": 42,
       "category": "string",
+      "evidence": "Exact quoted line(s) from the diff that confirm the issue.",
       "description": "Unified description of the issue",
       "suggestion": "Unified suggestion for fixing it"
     }
