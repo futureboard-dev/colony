@@ -42,6 +42,7 @@ interrupted codegen). Use --headless to run in the background.`,
 	craftSpec        string
 	craftLang        string
 	craftModel       string
+	craftProvider    string
 	craftResume      string
 	craftContinue    string
 	craftBase        string
@@ -55,6 +56,7 @@ func init() {
 	craftCmd.Flags().StringVar(&craftSpec, "spec", "", "spec markdown file")
 	craftCmd.Flags().StringVar(&craftLang, "lang", "", "language: typescript, python, go")
 	craftCmd.Flags().StringVar(&craftModel, "model", "", "override model from config")
+	craftCmd.Flags().StringVar(&craftProvider, "provider", "deepseek", "model provider: deepseek (default, deepseek-reasoner) or anthropic (engineer role, claude-sonnet-4-6)")
 	craftCmd.Flags().StringVar(&craftResume, "resume", "", "worktree path: re-run gates only")
 	craftCmd.Flags().StringVar(&craftContinue, "continue", "", "worktree path: continue codegen then gates")
 	craftCmd.Flags().StringVar(&craftBase, "base", "", "base branch (must not be main/master)")
@@ -67,6 +69,9 @@ func init() {
 
 func runCraft(cmd *cobra.Command, args []string) error {
 	// ── Validate args ──────────────────────────────────────────────────────────
+	if err := validateProvider(craftProvider); err != nil {
+		return err
+	}
 	if craftResume != "" || craftContinue != "" {
 		if craftLang == "" {
 			return fmt.Errorf("--lang required with --resume / --continue")
@@ -96,7 +101,7 @@ func runCraft(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	llmCfg := cfg.Role("engineer")
+	llmCfg := providerLLM(cfg, craftProvider, "engineer")
 	if craftModel != "" {
 		llmCfg.Model = craftModel
 	}

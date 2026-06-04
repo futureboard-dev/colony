@@ -31,16 +31,40 @@ var (
 	sfFile        string
 	sfInteractive bool
 	sfContinue    bool
+	sfProvider    string
 )
 
 func init() {
 	specFeatureCmd.Flags().StringVar(&sfFile, "file", "", "read requirements from this file instead of inline text")
 	specFeatureCmd.Flags().BoolVar(&sfInteractive, "interactive", false, "collaborate on the spec in a live agent session instead of one-shot generation")
 	specFeatureCmd.Flags().BoolVar(&sfContinue, "continue", false, "revise an existing TASK.md using inline comments you added to it")
+	specFeatureCmd.Flags().StringVar(&sfProvider, "provider", "deepseek", "model provider for spec generation: deepseek (default, deepseek-reasoner) or anthropic (claude-opus-4-8)")
 	rootCmd.AddCommand(specFeatureCmd)
 }
 
+// providerLLM selects the LLM config for a command's --provider flag:
+// "deepseek" (the default) uses the project's default LLM; "anthropic" uses
+// the given role.
+func providerLLM(cfg *config.Config, provider, anthropicRole string) config.LLMConfig {
+	if provider == "anthropic" {
+		return cfg.Role(anthropicRole)
+	}
+	return cfg.LLM
+}
+
+// validateProvider rejects unknown --provider values.
+func validateProvider(provider string) error {
+	if provider != "deepseek" && provider != "anthropic" {
+		return fmt.Errorf("invalid --provider %q: use \"deepseek\" or \"anthropic\"", provider)
+	}
+	return nil
+}
+
 func runSpecFeature(cmd *cobra.Command, args []string) error {
+	if err := validateProvider(sfProvider); err != nil {
+		return err
+	}
+
 	featureName := args[0]
 
 	var input string
@@ -89,7 +113,7 @@ func runSpecFeature(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("build prompt: %w", err)
 	}
 
-	ex := llm.New(cfg.Role("spec"))
+	ex := llm.New(providerLLM(cfg, sfProvider, "spec"))
 
 	// Interactive: launch a live agent session (claude or crush) and let the
 	// agent write the spec itself, so the user can steer it and answer questions.
@@ -168,7 +192,7 @@ func runSpecFeatureContinue(cmd *cobra.Command, cfg *config.Config, root, slugNa
 	tmpName := tmp.Name()
 	defer func() { os.Remove(tmpName) }()
 
-	ex := llm.New(cfg.Role("spec"))
+	ex := llm.New(providerLLM(cfg, sfProvider, "spec"))
 	fmt.Printf("%sRevising spec for %q...%s\n", ansiCyan, slugName, ansiReset)
 	if err := ex.RunHeadless(cmd.Context(), root, p, tmp); err != nil {
 		tmp.Close()
