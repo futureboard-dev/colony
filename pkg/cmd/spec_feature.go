@@ -89,7 +89,7 @@ func runSpecFeature(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("build prompt: %w", err)
 	}
 
-	ex := llm.New(cfg.Role("engineer"))
+	ex := llm.New(cfg.Role("spec"))
 
 	// Interactive: launch a live agent session (claude or crush) and let the
 	// agent write the spec itself, so the user can steer it and answer questions.
@@ -168,7 +168,7 @@ func runSpecFeatureContinue(cmd *cobra.Command, cfg *config.Config, root, slugNa
 	tmpName := tmp.Name()
 	defer func() { os.Remove(tmpName) }()
 
-	ex := llm.New(cfg.Role("engineer"))
+	ex := llm.New(cfg.Role("spec"))
 	fmt.Printf("%sRevising spec for %q...%s\n", ansiCyan, slugName, ansiReset)
 	if err := ex.RunHeadless(cmd.Context(), root, p, tmp); err != nil {
 		tmp.Close()
