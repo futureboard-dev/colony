@@ -3,7 +3,9 @@ package module
 import (
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -35,6 +37,35 @@ func CommandsFor(lang string) (LangCommands, error) {
 		}, nil
 	default:
 		return LangCommands{}, fmt.Errorf("unknown language %q — use: typescript, python, go", lang)
+	}
+}
+
+// InstallDeps installs project dependencies in the worktree for the given
+// language. It is best-effort: failures are non-fatal so the agent can still
+// run, and language-specific manifests (requirements.txt, go.mod) are skipped
+// when absent.
+func InstallDeps(lang, worktree string, out io.Writer) {
+	switch strings.ToLower(lang) {
+	case "typescript", "ts":
+		fmt.Fprintf(out, "   Installing dependencies (pnpm)...\n")
+		RunShell("pnpm install --frozen-lockfile", worktree, out) //nolint:errcheck
+	case "python", "py":
+		if _, err := os.Stat(filepath.Join(worktree, "requirements.txt")); err != nil {
+			return
+		}
+		// Equivalent to `python3 -m venv .venv && source .venv/bin/activate &&
+		// pip install -r requirements.txt`, but RunShell has no shell so we
+		// create the venv and invoke its pip by absolute path.
+		fmt.Fprintf(out, "   Installing dependencies (pip into .venv)...\n")
+		RunShell("python3 -m venv .venv", worktree, out) //nolint:errcheck
+		pip := filepath.Join(worktree, ".venv", "bin", "pip")
+		RunShell(pip+" install -r requirements.txt", worktree, out) //nolint:errcheck
+	case "go":
+		if _, err := os.Stat(filepath.Join(worktree, "go.mod")); err != nil {
+			return
+		}
+		fmt.Fprintf(out, "   Installing dependencies (go mod download)...\n")
+		RunShell("go mod download", worktree, out) //nolint:errcheck
 	}
 }
 

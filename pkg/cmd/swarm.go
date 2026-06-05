@@ -352,6 +352,7 @@ func swarmBuild(ctx context.Context, root, projectName, baseBranch, lang string,
 	if err := module.CopyFile(specFile, filepath.Join(worktreePath, "SPEC.md")); err != nil {
 		return "", err
 	}
+	module.InstallDeps(lang, worktreePath, out)
 	writePrompt, err := prompt.Build(lang)
 	if err != nil {
 		return "", err

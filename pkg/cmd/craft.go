@@ -241,10 +241,7 @@ func runCraft(cmd *cobra.Command, args []string) error {
 	if err := module.CopyFile(craftSpec, filepath.Join(worktreePath, "SPEC.md")); err != nil {
 		return err
 	}
-	if craftLang == "typescript" || craftLang == "ts" {
-		fmt.Fprintf(out, "   Installing dependencies...\n")
-		module.RunShell("pnpm install --frozen-lockfile", worktreePath, out) //nolint:errcheck
-	}
+	module.InstallDeps(craftLang, worktreePath, out)
 	fmt.Fprintf(out, "%s✓ Worktree ready: %s%s\n", ansiGreen, worktreePath, ansiReset)
 
 	// Step 2: Agent writes code
