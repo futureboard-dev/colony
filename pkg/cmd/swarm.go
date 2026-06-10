@@ -37,6 +37,7 @@ var (
 	swarmLang        string
 	swarmMode        string
 	swarmNoFormat    bool
+	swarmNoPR        bool
 	swarmReviewDepth string
 )
 
@@ -45,6 +46,7 @@ func init() {
 	swarmCmd.Flags().StringVar(&swarmLang, "lang", "", "language: typescript, python, go")
 	swarmCmd.Flags().StringVar(&swarmMode, "mode", "standard", "quick | standard | full")
 	swarmCmd.Flags().BoolVar(&swarmNoFormat, "no-format", false, "skip the format gate")
+	swarmCmd.Flags().BoolVar(&swarmNoPR, "no-pr", false, "skip push and PR creation after successful completion")
 	swarmCmd.Flags().StringVar(&swarmReviewDepth, "review-depth", "deep", "fast (1 LLM call/subtask) | deep (4 lenses + synth)")
 }
 
@@ -129,15 +131,21 @@ func runSwarm(cmd *cobra.Command, args []string) error {
 		if err := module.CopyFile(swarmSpec, subtaskFile); err != nil {
 			return err
 		}
-		branch, err := swarmBuild(ctx, root, projectName, baseBranch, swarmLang, langs, subtaskFile, cfg, out, swarmNoFormat)
+		branch, worktreePath, err := swarmBuild(ctx, root, projectName, baseBranch, swarmLang, langs, subtaskFile, cfg, out, swarmNoFormat)
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(out, "\n✅ Quick build complete\n  Branch: %s\n  Review: git diff %s..%s\n  Cleanup: colony task done %s\n",
-			branch, baseBranch, branch, branch)
+		prURL, prErr := pushAndCreatePR(worktreePath, branch, baseBranch, swarmNoPR, out)
 		finishRun(store, runID, "complete", branch)
 		statusLine.SetState(output.StateIdle)
 		statusLine.SetMessage("")
+		fmt.Fprintf(out, "\n✅ Quick build complete\n  Branch: %s\n", branch)
+		if prErr != nil {
+			fmt.Fprintf(out, "  %s⚠ push/PR failed: %v%s\n", ansiYellow, prErr, ansiReset)
+		} else if prURL != "" {
+			fmt.Fprintf(out, "  PR:      %s\n", prURL)
+		}
+		fmt.Fprintf(out, "  Cleanup: colony task done %s\n", branch)
 		return nil
 	}
 
@@ -219,7 +227,7 @@ func runSwarm(cmd *cobra.Command, args []string) error {
 	statusLine.SetState(output.StateWorking)
 	statusLine.SetMessage("building subtasks")
 	fmt.Fprintf(out, "\n▶ STEP %d/%d  Build: implementing subtasks\n", step, total)
-	type built struct{ id, branch string }
+	type built struct{ id, branch, worktreePath string }
 	var builtList []built
 
 	for _, sf := range subtaskFiles {
@@ -233,14 +241,14 @@ func runSwarm(cmd *cobra.Command, args []string) error {
 			buildSpec = scoutedPath
 		}
 
-		branch, err := swarmBuild(ctx, root, projectName, baseBranch, swarmLang, langs, buildSpec, cfg, out, swarmNoFormat)
+		branch, worktreePath, err := swarmBuild(ctx, root, projectName, baseBranch, swarmLang, langs, buildSpec, cfg, out, swarmNoFormat)
 		if err != nil {
 			fmt.Fprintf(out, "✗ Subtask %s FAILED: %v\n", id, err)
 			return err
 		}
 		statusFile := filepath.Join(swarmDir, fmt.Sprintf("build-subtask-%s.status", id))
 		os.WriteFile(statusFile, []byte("DONE:"+branch), 0644) //nolint:errcheck
-		builtList = append(builtList, built{id, branch})
+		builtList = append(builtList, built{id, branch, worktreePath})
 	}
 	step++
 
@@ -249,7 +257,7 @@ func runSwarm(cmd *cobra.Command, args []string) error {
 	statusLine.SetMessage("reviewing builds")
 	fmt.Fprintf(out, "\n▶ STEP %d/%d  Review: checking all builds\n", step, total)
 	allApproved := true
-	type result struct{ id, branch, decision string }
+	type result struct{ id, branch, worktreePath, decision string }
 	var results []result
 
 	fmt.Fprintf(out, "  (review-depth=%s)\n", swarmReviewDepth)
@@ -276,7 +284,7 @@ func runSwarm(cmd *cobra.Command, args []string) error {
 		}
 
 		_ = os.WriteFile(filepath.Join(swarmDir, "reviews", fmt.Sprintf("subtask-%s.decision", b.id)), []byte(decision), 0644)
-		results = append(results, result{b.id, b.branch, decision})
+		results = append(results, result{b.id, b.branch, b.worktreePath, decision})
 		switch {
 		case decision != "APPROVED":
 			allApproved = false
@@ -316,9 +324,12 @@ func runSwarm(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Fprintln(out)
 	if allApproved {
-		fmt.Fprintf(out, "All subtasks approved. Merge in order:\n")
 		for _, r := range results {
-			fmt.Fprintf(out, "  git merge %s\n", r.branch)
+			if prURL, prErr := pushAndCreatePR(r.worktreePath, r.branch, baseBranch, swarmNoPR, out); prErr != nil {
+				fmt.Fprintf(out, "  %s⚠ push/PR failed for %s: %v%s\n", ansiYellow, r.branch, prErr, ansiReset)
+			} else if prURL != "" {
+				fmt.Fprintf(out, "  PR: %s\n", prURL)
+			}
 		}
 		fmt.Fprintf(out, "\nClean up:\n")
 		for _, r := range results {
@@ -333,41 +344,42 @@ func runSwarm(cmd *cobra.Command, args []string) error {
 }
 
 // swarmBuild runs the build pipeline for one subtask spec file.
-func swarmBuild(ctx context.Context, root, projectName, baseBranch, lang string, langs module.LangCommands, specFile string, cfg *config.Config, out io.Writer, skipFormat bool) (string, error) {
+// Returns (branch, worktreePath, error).
+func swarmBuild(ctx context.Context, root, projectName, baseBranch, lang string, langs module.LangCommands, specFile string, cfg *config.Config, out io.Writer, skipFormat bool) (string, string, error) {
 	specData, err := os.ReadFile(specFile)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	taskDesc := module.ExtractTaskDesc(string(specData), specFile)
 	branch := module.NewBranch(taskDesc)
 	ex := llm.New(cfg.Role("engineer"))
 
 	if err := ex.Preflight(); err != nil {
-		return "", err
+		return "", "", err
 	}
 	worktreePath, err := module.SetupWorktree(root, projectName, branch, baseBranch)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if err := module.CopyFile(specFile, filepath.Join(worktreePath, "SPEC.md")); err != nil {
-		return "", err
+		return "", "", err
 	}
 	module.InstallDeps(lang, worktreePath, out)
 	writePrompt, err := prompt.Build(lang)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if err := ex.RunAgent(ctx, worktreePath, writePrompt, out); err != nil {
-		return "", fmt.Errorf("build agent: %w", err)
+		return "", "", fmt.Errorf("build agent: %w", err)
 	}
 	if err := runGates(ctx, worktreePath, langs, ex, out, skipFormat); err != nil {
-		return "", err
+		return "", "", err
 	}
 	commitMsg := fmt.Sprintf("feat: %s\n\nSwarm subtask | Language: %s | Gates: format, typecheck, tests", taskDesc, lang)
 	if err := craftCommit(worktreePath, branch, commitMsg, out); err != nil {
-		return "", err
+		return "", "", err
 	}
-	return branch, nil
+	return branch, worktreePath, nil
 }
 
 func parseSubtasks(output string) []string {

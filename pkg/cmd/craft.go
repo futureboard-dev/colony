@@ -32,7 +32,7 @@ var (
 	craftCmd = &cobra.Command{
 		Use:   "craft",
 		Short: "Run an agent pipeline to implement a spec in an isolated worktree",
-		Long: `Runs a strict pipeline: setup worktree → agent writes code → quality gates → commit.
+		Long: `Runs a strict pipeline: setup worktree → agent writes code → quality gates → commit → PR.
 
 Supports --resume (re-run gates on existing worktree) and --continue (continue
 interrupted codegen). Use --headless to run in the background.`,
@@ -49,6 +49,7 @@ interrupted codegen). Use --headless to run in the background.`,
 	craftHeadless    bool
 	craftNoFormat    bool
 	craftInteractive bool
+	craftNoPR        bool
 	craftLogFile     string // internal: set by headless re-exec
 )
 
@@ -63,6 +64,7 @@ func init() {
 	craftCmd.Flags().BoolVar(&craftHeadless, "headless", false, "run in background, tail log for output")
 	craftCmd.Flags().BoolVar(&craftNoFormat, "no-format", false, "skip the format gate")
 	craftCmd.Flags().BoolVar(&craftInteractive, "interactive", false, "run the codegen step as a live agent session you can watch and steer")
+	craftCmd.Flags().BoolVar(&craftNoPR, "no-pr", false, "skip push and PR creation after successful completion")
 	craftCmd.Flags().StringVar(&craftLogFile, "_log", "", "")
 	craftCmd.Flags().MarkHidden("_log") //nolint:errcheck
 }
@@ -157,6 +159,11 @@ func runCraft(cmd *cobra.Command, args []string) error {
 
 	ctx := cmd.Context()
 
+	baseBranch := module.DefaultBranch()
+	if craftBase != "" {
+		baseBranch = craftBase
+	}
+
 	// ── RESUME MODE ────────────────────────────────────────────────────────────
 	if craftResume != "" {
 		statusLine.SetState(output.StateWorking)
@@ -171,6 +178,9 @@ func runCraft(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(out, "%s✓ Resumed and passed gates on branch: %s%s\n", ansiGreen, branch, ansiReset)
 		if err := craftCommit(craftResume, branch, "fix: resume after manual review — gates passed", out); err != nil {
 			return err
+		}
+		if _, err := pushAndCreatePR(craftResume, branch, baseBranch, craftNoPR, out); err != nil {
+			fmt.Fprintf(out, "%s⚠ push/PR skipped: %v%s\n", ansiYellow, err, ansiReset)
 		}
 		finishRun(store, runID, "complete", branch)
 		return nil
@@ -199,6 +209,9 @@ func runCraft(cmd *cobra.Command, args []string) error {
 		if err := craftCommit(craftContinue, branch, "feat: continue after interruption — gates passed", out); err != nil {
 			return err
 		}
+		if _, err := pushAndCreatePR(craftContinue, branch, baseBranch, craftNoPR, out); err != nil {
+			fmt.Fprintf(out, "%s⚠ push/PR skipped: %v%s\n", ansiYellow, err, ansiReset)
+		}
 		finishRun(store, runID, "complete", branch)
 		return nil
 	}
@@ -212,10 +225,6 @@ func runCraft(cmd *cobra.Command, args []string) error {
 	}
 
 	projectName := module.ProjectName(root)
-	baseBranch := module.DefaultBranch()
-	if craftBase != "" {
-		baseBranch = craftBase
-	}
 
 	specData, err := os.ReadFile(craftSpec)
 	if err != nil {
@@ -271,17 +280,19 @@ func runCraft(cmd *cobra.Command, args []string) error {
 	if err := craftCommit(worktreePath, branch, commitMsg, out); err != nil {
 		return err
 	}
+
+	prURL, prErr := pushAndCreatePR(worktreePath, branch, baseBranch, craftNoPR, out)
 	finishRun(store, runID, "complete", branch)
 
 	statusLine.SetState(output.StateIdle)
 	statusLine.SetMessage("")
-	remoteURL := module.RemoteURL(worktreePath)
 	fmt.Fprintf(out, "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 	fmt.Fprintf(out, "%s✅ CRAFT COMPLETE\n\nBranch:   %s\nWorktree: %s\n%s", ansiGreen, branch, worktreePath, ansiReset)
-	fmt.Fprintf(out, "Next:\n  Review:  git diff %s..%s\n", baseBranch, branch)
-	fmt.Fprintf(out, "  Push:    cd %s && git push -u origin %s\n", worktreePath, branch)
-	if remoteURL != "" {
-		fmt.Fprintf(out, "  PR:      %s/compare/%s...%s?expand=1\n", remoteURL, baseBranch, branch)
+	if prErr != nil {
+		fmt.Fprintf(out, "%s⚠ push/PR failed: %v%s\n", ansiYellow, prErr, ansiReset)
+		fmt.Fprintf(out, "  Push:    cd %s && git push -u origin %s\n", worktreePath, branch)
+	} else if prURL != "" {
+		fmt.Fprintf(out, "  PR:      %s\n", prURL)
 	}
 	fmt.Fprintf(out, "  Cleanup: colony task done %s\n", branch)
 	fmt.Fprintf(out, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
@@ -352,6 +363,7 @@ func craftCommit(worktreePath, branch, msg string, out io.Writer) error {
 	statusLine.SetState(output.StateWorking)
 	statusLine.SetMessage("committing")
 	fmt.Fprintf(out, "\n▶ COMMIT\n")
+	os.Remove(filepath.Join(worktreePath, "SPEC.md")) //nolint:errcheck
 	add := exec.Command("git", "add", "-A")
 	add.Dir = worktreePath
 	if err := add.Run(); err != nil {
@@ -364,9 +376,93 @@ func craftCommit(worktreePath, branch, msg string, out io.Writer) error {
 	if err := commit.Run(); err != nil {
 		return fmt.Errorf("git commit: %w", err)
 	}
-	os.Remove(filepath.Join(worktreePath, "SPEC.md")) //nolint:errcheck
 	fmt.Fprintf(out, "✓ Committed on branch: %s\n", branch)
 	return nil
+}
+
+// pushAndCreatePR pushes branch to origin and opens a PR against baseBranch.
+// Returns the PR URL on success. Skips both operations when noPR is true.
+func pushAndCreatePR(worktreePath, branch, baseBranch string, noPR bool, out io.Writer) (string, error) {
+	if noPR {
+		return "", nil
+	}
+	statusLine.SetState(output.StateWorking)
+	statusLine.SetMessage("pushing branch")
+	fmt.Fprintf(out, "\n▶ PUSH\n")
+	push := exec.Command("git", "push", "-u", "origin", branch)
+	push.Dir = worktreePath
+	push.Stdout = out
+	push.Stderr = out
+	if err := push.Run(); err != nil {
+		return "", fmt.Errorf("git push: %w", err)
+	}
+	fmt.Fprintf(out, "✓ Pushed branch: %s\n", branch)
+
+	statusLine.SetMessage("creating PR")
+	fmt.Fprintf(out, "\n▶ PR\n")
+
+	// Extract OWNER/REPO from the remote URL so gh works even when the remote
+	// uses a custom SSH host alias (e.g. git@github.com-fraia:ORG/REPO.git).
+	repo := remoteRepo(worktreePath)
+	args := []string{
+		"pr", "create",
+		"--base", baseBranch,
+		"--head", branch,
+		"--title", branch,
+		"--body", fmt.Sprintf("Automated by colony craft.\n\nBranch: `%s`\nBase: `%s`", branch, baseBranch),
+	}
+	if repo != "" {
+		args = append(args, "--repo", repo)
+	}
+	gh := exec.Command("gh", args...)
+	gh.Dir = worktreePath
+	var prURL strings.Builder
+	var ghStderr strings.Builder
+	gh.Stdout = io.MultiWriter(out, &prURL)
+	gh.Stderr = io.MultiWriter(out, &ghStderr)
+	if err := gh.Run(); err != nil {
+		fmt.Fprintf(out, "%s✗ PR creation failed: %v%s\n", ansiRed, err, ansiReset)
+		if msg := strings.TrimSpace(ghStderr.String()); msg != "" {
+			fmt.Fprintf(out, "  gh said: %s\n", msg)
+		}
+		if repo != "" {
+			fmt.Fprintf(out, "  Open manually: https://github.com/%s/compare/%s...%s?expand=1\n", repo, baseBranch, branch)
+		}
+		return "", fmt.Errorf("gh pr create: %w", err)
+	}
+	url := strings.TrimSpace(prURL.String())
+	fmt.Fprintf(out, "✓ PR created: %s\n", url)
+	return url, nil
+}
+
+// remoteRepo returns "OWNER/REPO" extracted from the git origin remote URL.
+// Handles both SSH (git@<host>:OWNER/REPO.git) and HTTPS URLs.
+// Returns "" if the remote can't be read or parsed.
+func remoteRepo(dir string) string {
+	out, err := exec.Command("git", "-C", dir, "remote", "get-url", "origin").Output()
+	if err != nil {
+		return ""
+	}
+	raw := strings.TrimSpace(string(out))
+	// SSH: git@github.com-alias:OWNER/REPO.git or git@github.com:OWNER/REPO.git
+	if strings.HasPrefix(raw, "git@") {
+		idx := strings.Index(raw, ":")
+		if idx < 0 {
+			return ""
+		}
+		return strings.TrimSuffix(raw[idx+1:], ".git")
+	}
+	// HTTPS: https://github.com/OWNER/REPO.git
+	// Strip scheme and host, keep /OWNER/REPO
+	idx := strings.Index(raw, "//")
+	if idx >= 0 {
+		raw = raw[idx+2:]
+	}
+	slash := strings.Index(raw, "/")
+	if slash < 0 {
+		return ""
+	}
+	return strings.TrimSuffix(raw[slash+1:], ".git")
 }
 
 func craftBlocked(worktreePath, logPath string, err error, out io.Writer, store *storage.SQLiteStore, runID string) error {
