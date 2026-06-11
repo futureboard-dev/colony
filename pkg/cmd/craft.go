@@ -312,15 +312,25 @@ func runCodegen(ctx context.Context, ex *llm.Executor, workdir, agentPrompt stri
 	return ex.RunAgent(ctx, workdir, agentPrompt, out)
 }
 
-// runGates runs format → typecheck (with fix) → tests (with fix).
+// runGates runs format → lint (with fix) → typecheck (with fix) → tests (with fix).
+// Lint is skipped when its linter isn't installed, mirroring the CLI hook.
 // Exported so swarm.go can reuse it.
 func runGates(ctx context.Context, worktreePath string, langs module.LangCommands, ex *llm.Executor, out io.Writer, skipFormat bool) error {
 	statusLine.SetState(output.StateWorking)
 	statusLine.SetMessage("running gates")
 	const maxAttempts = 2
-	fmt.Fprintf(out, "\n%s▶ GATES  format → typecheck → tests%s\n", ansiCyan, ansiReset)
+	fmt.Fprintf(out, "\n%s▶ GATES  format → lint → typecheck → tests%s\n", ansiCyan, ansiReset)
 	if !skipFormat {
 		module.RunFormat(langs.Format, worktreePath, out)
+	}
+	if langs.Lint != "" {
+		if module.CommandAvailable(langs.Lint) {
+			if err := gateWithFix(ctx, "Lint", langs.Lint, worktreePath, maxAttempts, ex, out); err != nil {
+				return err
+			}
+		} else {
+			fmt.Fprintf(out, "%s⚠ Lint skipped — %q not installed%s\n", ansiYellow, strings.Fields(langs.Lint)[0], ansiReset)
+		}
 	}
 	if err := gateWithFix(ctx, "Type check", langs.TypeCheck, worktreePath, maxAttempts, ex, out); err != nil {
 		return err

@@ -11,6 +11,7 @@ import (
 
 type LangCommands struct {
 	Format    string
+	Lint      string
 	TypeCheck string
 	Test      string
 }
@@ -20,24 +21,39 @@ func CommandsFor(lang string) (LangCommands, error) {
 	case "typescript", "ts":
 		return LangCommands{
 			Format:    "pnpm prettier --write .",
+			Lint:      "pnpm eslint .",
 			TypeCheck: "pnpm tsc --noEmit",
 			Test:      "pnpm build",
 		}, nil
 	case "python", "py":
 		return LangCommands{
 			Format:    "ruff format .",
+			Lint:      "ruff check .",
 			TypeCheck: "mypy . --ignore-missing-imports",
 			Test:      "pytest --tb=short",
 		}, nil
 	case "go":
 		return LangCommands{
 			Format:    "gofmt -w ./...",
+			Lint:      "golangci-lint run ./...",
 			TypeCheck: "go build ./...",
 			Test:      "go test ./... -count=1",
 		}, nil
 	default:
 		return LangCommands{}, fmt.Errorf("unknown language %q — use: typescript, python, go", lang)
 	}
+}
+
+// CommandAvailable reports whether the first token of command resolves to a
+// binary on PATH. Used to skip optional gates (e.g. lint) when the underlying
+// tool isn't installed, mirroring the CLI quality-gate hook's behavior.
+func CommandAvailable(command string) bool {
+	parts := strings.Fields(command)
+	if len(parts) == 0 {
+		return false
+	}
+	_, err := exec.LookPath(parts[0])
+	return err == nil
 }
 
 // InstallDeps installs project dependencies in the worktree for the given

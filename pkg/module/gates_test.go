@@ -9,7 +9,7 @@ func TestCommandsForTypescript(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cmds.Format == "" || cmds.TypeCheck == "" || cmds.Test == "" {
+	if cmds.Format == "" || cmds.Lint == "" || cmds.TypeCheck == "" || cmds.Test == "" {
 		t.Errorf("missing commands: %+v", cmds)
 	}
 	// alias should resolve identically
@@ -24,7 +24,7 @@ func TestCommandsForPython(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cmds.Format == "" || cmds.TypeCheck == "" || cmds.Test == "" {
+	if cmds.Format == "" || cmds.Lint == "" || cmds.TypeCheck == "" || cmds.Test == "" {
 		t.Errorf("missing commands: %+v", cmds)
 	}
 	cmdsAlias, _ := CommandsFor("py")
@@ -38,7 +38,7 @@ func TestCommandsForGo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cmds.Format == "" || cmds.TypeCheck == "" || cmds.Test == "" {
+	if cmds.Format == "" || cmds.Lint == "" || cmds.TypeCheck == "" || cmds.Test == "" {
 		t.Errorf("missing commands: %+v", cmds)
 	}
 }
@@ -58,5 +58,18 @@ func TestCommandsForUnknown(t *testing.T) {
 	_, err := CommandsFor("ruby")
 	if err == nil {
 		t.Error("expected error for unknown language")
+	}
+}
+
+func TestCommandAvailable(t *testing.T) {
+	// "go" must be present — these tests run under it.
+	if !CommandAvailable("go build ./...") {
+		t.Error("expected 'go' to be available on PATH")
+	}
+	if CommandAvailable("definitely-not-a-real-binary-xyz check .") {
+		t.Error("expected missing binary to report unavailable")
+	}
+	if CommandAvailable("") {
+		t.Error("expected empty command to report unavailable")
 	}
 }
