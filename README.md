@@ -3,30 +3,40 @@
 **Colony is an agentic engineering toolkit.**
 
 It is a CLI-first toolkit that drives an autonomous swarm of role-specialised
-agents — product manager, software engineer, designer, marketer, QA, reviewer —
-through the full lifecycle of a software project: ideation → craft →
-implementation → review → docs → release notes. Each role is a prompt persona
-backed by an LLM (currently external APIs, eventually local models), and each
-task is a Go subcommand that orchestrates one or more agents through Eino
-chains/graphs.
+agents — coordinator, software engineer, reviewer, scout — through the full
+lifecycle of a software task: spec → craft → implementation → review → docs.
+Each role is a prompt persona, and each task is a Go subcommand that
+orchestrates one or more agents in isolated git worktrees.
+
+**Colony orchestrates; it is not itself the agent.** The actual agent loop —
+tool calls, file edits, MCP, retries — is delegated to a coding-agent CLI:
+
+- `provider: anthropic` → the **`claude`** CLI
+- any other provider → the **`crush`** CLI
+
+This is the key design choice. Colony owns the multi-step orchestration the
+CLIs don't do (swarm planning, multi-lens review, worktree lifecycle, task
+state); the CLI owns the hard part (the agent loop). Using `claude` also means
+the toolkit runs on a team's existing Claude subscription seats — no per-token
+API billing required for the default path.
 
 ## Objectives
 
 - **Fullstack coverage.** A single binary that owns every step of building
-  software, not just code generation. Frontend, backend, infra, copy, growth —
-  any role we can describe in a prompt is a first-class agent.
+  software, not just code generation — spec authoring, implementation, review,
+  and release docs are all first-class subcommands.
 - **Agentic, not chat.** Subcommands compose multi-step agent flows
-  (planner → executor → critic → writer) via Eino's `compose.Graph`. Humans
-  invoke a goal; colony runs the loop until the goal is verified or fails.
-- **Provider-agnostic.** External APIs today (Anthropic, OpenAI) with a clean
-  path to local models (Ollama, llama.cpp). Swapping is a config change, never
-  a code change — see "Service-per-call rule".
+  (coordinator → engineer → reviewer) in isolated worktrees. A human invokes a
+  goal; colony runs the loop until the goal is verified or fails.
+- **CLI-delegated execution.** Colony shells out to `claude` / `crush` for the
+  agent loop. Swapping the backend is a config change (`provider`), never a
+  code change. `claude` preserves Claude subscription usage; `crush` covers
+  OpenAI / DeepSeek / OpenRouter / local models via API key.
+- **Per-role models.** Different roles can run on different models — e.g.
+  cheap Haiku for review lenses, Sonnet for synthesis — set in config, no code.
 - **Markdown-first prompts.** Roles and tasks live as `.md` files under
-  `pkg/prompt/`, embedded into the binary. Prompt iteration is a doc edit, not
-  a Go change.
-- **Composable modules.** Each capability (`craft`, `swarm`, `task`,
-  `log`, …) is a self-contained subcommand + service package. New roles and
-  new tasks plug in without touching unrelated code.
+  `pkg/prompt/`, embedded into the binary via `//go:embed`. Prompt iteration is
+  a doc edit, not a Go change.
 - **Local-first ergonomics.** Project state lives in `.colony/` at the repo
   root. No SaaS, no account, no lock-in. Runs in CI the same way it runs on a
   laptop.
@@ -40,304 +50,155 @@ colony/
 ├── pkg/
 │   ├── cmd/                   # one file per subcommand (Cobra convention)
 │   │   ├── root.go            # rootCmd, version, init() registers subcommands
-│   │   ├── config.go          # .colony/config.json loader
+│   │   ├── config.go          # loadConfig helper
+│   │   ├── install.go         # `colony install` / `uninstall`
 │   │   ├── craft.go           # `colony craft`
-│   │   ├── log.go             # `colony log`
 │   │   ├── swarm.go           # `colony swarm`
+│   │   ├── review.go          # `colony review`
+│   │   ├── spec_feature.go    # spec authoring
+│   │   ├── log.go             # `colony log`
+│   │   ├── mission.go         # `colony mission`
 │   │   ├── task.go            # `colony task`
 │   │   ├── task_done.go       # `colony task done`
 │   │   └── task_list.go       # `colony task list`
 │   │
-│   ├── llm/                   # thin wrapper over Eino's ChatModel
-│   │   ├── factory.go         # NewChatModel(ctx, cfg) — returns model.ChatModel
-│   │   ├── anthropic.go       # eino-ext/components/model/claude
-│   │   ├── openai.go          # eino-ext/components/model/openai
-│   │   └── ollama.go          # eino-ext/components/model/ollama (local)
+│   ├── llm/                   # CLI delegation layer
+│   │   ├── exec.go            # Executor: shells out to claude / crush
+│   │   └── stream.go          # parses claude stream-json into a compact view
 │   │
-│   ├── service/               # business logic — one package per capability
-│   │   ├── craft/             # used by `colony craft`
-│   │   │   ├── service.go     # type Service struct{ chat model.ChatModel }; New(...)
-│   │   │   └── service_test.go
-│   │   ├── log/               # used by `colony log`
-│   │   ├── swarm/             # used by `colony swarm`
-│   │   └── task/              # used by `colony task*`
+│   ├── config/               # .colony/config.json loader
+│   │   └── config.go          # Config, LLMConfig, per-role resolution
 │   │
-│   ├── prompt/                # prompts as markdown, embedded via //go:embed
-│   │   ├── prompt.go          # Load(name) / Render(name, data) helpers
-│   │   ├── roles/             # persona system prompts
-│   │   │   ├── marketing.md
-│   │   │   ├── software-engineer.md
-│   │   │   ├── product-manager.md
-│   │   │   └── critic.md
-│   │   └── tasks/             # per-subcommand task prompts
-│   │       ├── craft.md
-│   │       ├── log-summarize.md
-│   │       └── swarm-plan.md
+│   ├── mission/              # multi-step orchestration graph
+│   │   ├── graph.go           # node/edge graph
+│   │   ├── runner.go          # executes the graph
+│   │   └── registry.go        # node registry
 │   │
-│   └── module/                # shared helpers used by multiple subcommands
-│       ├── workspace.go       # project-root + .colony/ resolution
-│       └── io.go              # stdin/stdout/file helpers
+│   ├── prompt/               # prompts as markdown, embedded via //go:embed
+│   │   ├── prompt.go          # Load / Render helpers
+│   │   ├── *.md               # role + task prompts (coordinator, build, fix, …)
+│   │   └── module-prompts/    # review lenses, architect, estimator, …
+│   │
+│   ├── module/               # shared helpers (workspace, worktree, gates, io)
+│   ├── storage/              # sqlite-backed task storage
+│   └── output/               # terminal output formatting
 │
-├── isolation/                 # legacy standalone binaries — being ported into pkg/cmd
-└── .colony/                   # per-project config (created by `colony init`)
+└── .colony/                  # per-project state (created by `colony init`)
     └── config.json
 ```
 
-## Module pattern (one subcommand = one module)
+## Execution model (`pkg/llm`)
 
-Each subcommand file exposes exactly one `*cobra.Command` and is registered in
-`root.go`'s `init()`. Subcommands stay thin — they parse flags, build messages,
-hand them to a freshly-constructed Eino `ChatModel`, and render the result.
-
-```go
-// pkg/cmd/craft.go
-var craftCmd = &cobra.Command{
-    Use:   "craft",
-    Short: "Run an agent pipeline to implement a spec in an isolated worktree",
-    RunE:  runCraft,
-}
-
-func runCraft(cmd *cobra.Command, args []string) error {
-    cfg, err := loadConfig(".")
-    if err != nil {
-        return err
-    }
-
-    // Fresh ChatModel per invocation — the Go way: no package-level
-    // singletons, no hidden global state, easy to swap, easy to test.
-    chat, err := llm.NewChatModel(cmd.Context(), cfg.LLM)
-    if err != nil {
-        return fmt.Errorf("init chat model: %w", err)
-    }
-
-    msg, err := chat.Generate(cmd.Context(), []*schema.Message{
-        schema.SystemMessage(craftSystemPrompt),
-        schema.UserMessage(strings.Join(args, " ")),
-    })
-    if err != nil {
-        return fmt.Errorf("craft: %w", err)
-    }
-    fmt.Println(msg.Content)
-    return nil
-}
-```
-
-For multi-step flows (planner → critic → writer) use Eino's `compose.Chain` /
-`compose.Graph` instead of hand-rolled orchestration — still constructed fresh
-inside `RunE`, never cached at package scope.
-
-## Services
-
-`pkg/service/<name>/` holds the actual work. The Cobra command in `pkg/cmd/`
-just parses flags and delegates; the service owns prompt selection, message
-construction, Eino composition, and post-processing. This keeps subcommands
-trivial and makes services reusable (tests, future HTTP server, other CLIs).
+Every agent call goes through `llm.Executor`, which selects a CLI from the
+provider and shells out to it. Colony never talks to an LLM API directly.
 
 ```go
-// pkg/service/craft/service.go
-package craft
-
-type Service struct {
-    chat   model.ChatModel
-    role   string // e.g. "software-engineer"
+// pkg/llm/exec.go
+type Executor struct {
+    cfg config.LLMConfig
 }
 
-func New(chat model.ChatModel, role string) *Service {
-    return &Service{chat: chat, role: role}
-}
+func New(cfg config.LLMConfig) *Executor { return &Executor{cfg: cfg} }
 
-func (s *Service) Generate(ctx context.Context, idea string) (string, error) {
-    sys, err := prompt.Render("roles/"+s.role, nil)
-    if err != nil { return "", err }
-    task, err := prompt.Render("tasks/craft", map[string]any{"Idea": idea})
-    if err != nil { return "", err }
-
-    msg, err := s.chat.Generate(ctx, []*schema.Message{
-        schema.SystemMessage(sys),
-        schema.UserMessage(task),
-    })
-    if err != nil { return "", err }
-    return msg.Content, nil
-}
-```
-
-```go
-// pkg/cmd/craft.go — thin
-func runCraft(cmd *cobra.Command, args []string) error {
-    cfg, _ := loadConfig(".")
-    chat, err := llm.NewChatModel(cmd.Context(), cfg.LLM)
-    if err != nil { return err }
-
-    out, err := craft.New(chat, roleFlag).Generate(cmd.Context(), strings.Join(args, " "))
-    if err != nil { return err }
-    fmt.Println(out)
-    return nil
-}
-```
-
-## Prompts
-
-Prompts live as plain markdown under `pkg/prompt/` and ship inside the binary
-via `//go:embed`. Two subdirectories:
-
-- **`roles/`** — persona system prompts (`marketing.md`, `software-engineer.md`,
-  …). Pick one per invocation via `--role` or service config.
-- **`tasks/`** — per-subcommand user-message templates (`craft.md`,
-  `log-summarize.md`, …). Rendered with Go's `text/template` so flags / context
-  can be interpolated.
-
-```go
-// pkg/prompt/prompt.go
-package prompt
-
-import (
-    "bytes"
-    "embed"
-    "fmt"
-    "text/template"
-)
-
-//go:embed roles/*.md tasks/*.md
-var fs embed.FS
-
-func Render(name string, data any) (string, error) {
-    raw, err := fs.ReadFile(name + ".md")
-    if err != nil {
-        return "", fmt.Errorf("prompt %q not found: %w", name, err)
+// anthropic → claude, everything else → crush
+func (e *Executor) CLI() string {
+    if e.cfg.Provider == "anthropic" {
+        return "claude"
     }
-    if data == nil {
-        return string(raw), nil
-    }
-    tmpl, err := template.New(name).Parse(string(raw))
-    if err != nil { return "", err }
-    var buf bytes.Buffer
-    if err := tmpl.Execute(&buf, data); err != nil { return "", err }
-    return buf.String(), nil
+    return "crush"
 }
 ```
 
-Example `pkg/prompt/roles/software-engineer.md`:
+Three execution modes:
 
-```markdown
-You are a senior software engineer. Be concrete, cite tradeoffs, prefer the
-simplest design that solves the problem. Output runnable code, not pseudocode.
-```
+| Method           | Use                                  | claude flags                                   |
+| ---------------- | ------------------------------------ | ---------------------------------------------- |
+| `RunHeadless`    | pure text gen, no tools (coordinator, scout, reviewer) | `-p --output-format text` + all tools disabled |
+| `RunAgent`       | autonomous coding with file tools (build, fix)         | `-p --output-format stream-json --verbose` + Write/Edit/Bash/Read/Glob/Grep |
+| `RunInteractive` | hands-on session, blocks until exit  | `--add-dir <workdir>`                          |
 
-Example `pkg/prompt/tasks/craft.md`:
+For `claude`, `RunAgent` reads the `stream-json` event feed and renders it
+through `streamClaude` into a compact one-line-per-action view. `crush` has no
+structured stream format, so its output is passed through raw with `--verbose`.
 
-```markdown
-Produce a project craft for the following idea:
-
-{{.Idea}}
-
-Include: stack choice, directory layout, first-week milestones.
-```
-
-**Why markdown + embed:**
-- Prompts are reviewed and diffed like docs, edited by non-Go contributors.
-- `embed.FS` ships them in the single binary — no runtime path lookup, no
-  "where's the prompt file" deploy problem.
-- Templates keep dynamic data out of the prompt body.
-
-## Service-per-call rule
-
-> **Every external call constructs a fresh `ChatModel`.**
-
-- No package-level clients. No `init()`-time API connections.
-- `llm.NewChatModel(ctx, cfg)` returns Eino's `model.ChatModel` interface; the
-  concrete implementation (`claude`, `openai`, `ollama`, …) is chosen from
-  config.
-- Subcommands depend on the Eino interface, never on a concrete provider —
-  swapping Anthropic for a local Ollama model is a config change, not a code
-  change.
-- Construction is cheap (struct init + `http.Client`); auth and model load
-  happen lazily on first `Generate` / `Stream`.
-
-```go
-// pkg/llm/factory.go
-package llm
-
-import (
-    "context"
-    "fmt"
-
-    "github.com/cloudwego/eino/components/model"
-    claude  "github.com/cloudwego/eino-ext/components/model/claude"
-    openai  "github.com/cloudwego/eino-ext/components/model/openai"
-    ollama  "github.com/cloudwego/eino-ext/components/model/ollama"
-)
-
-type Config struct {
-    Provider  string `json:"provider"`            // anthropic | openai | ollama
-    Model     string `json:"model"`
-    APIKeyEnv string `json:"api_key_env,omitempty"`
-    Endpoint  string `json:"endpoint,omitempty"`  // for ollama / self-hosted
-}
-
-func NewChatModel(ctx context.Context, cfg Config) (model.ChatModel, error) {
-    switch cfg.Provider {
-    case "anthropic":
-        return claude.NewChatModel(ctx, &claude.Config{
-            APIKey: os.Getenv(cfg.APIKeyEnv),
-            Model:  cfg.Model,
-        })
-    case "openai":
-        return openai.NewChatModel(ctx, &openai.ChatModelConfig{
-            APIKey: os.Getenv(cfg.APIKeyEnv),
-            Model:  cfg.Model,
-        })
-    case "ollama":
-        return ollama.NewChatModel(ctx, &ollama.ChatModelConfig{
-            BaseURL: cfg.Endpoint,
-            Model:   cfg.Model,
-        })
-    default:
-        return nil, fmt.Errorf("unknown llm provider: %q", cfg.Provider)
-    }
-}
-```
+A `Preflight()` check guards the `crush` path against a known tool-calling
+regression (charmbracelet/crush#1322); it is a no-op for `anthropic`.
 
 ## Config
 
-`.colony/config.json` at the project root. Created by `colony init`.
+`.colony/config.json` at the project root, created by `colony init`. The
+default provider is `anthropic` (the `claude` CLI), which manages its own auth
+and needs no API key in env. Non-anthropic providers require their API key env
+var (validated before each run).
 
 ```json
 {
   "root": "/abs/path/to/project",
   "llm": {
     "provider": "anthropic",
-    "model": "claude-opus-4-7",
-    "api_key_env": "ANTHROPIC_API_KEY"
+    "model": "claude-sonnet-4-6"
+  },
+  "roles": {
+    "lens_reviewer": {
+      "provider": "anthropic",
+      "model": "claude-haiku-4-5-20251001"
+    }
   }
 }
 ```
 
-To switch to a local model later:
+- **`llm`** — the default model for every role.
+- **`roles`** — per-role overrides. `Config.Role(name)` falls back to `llm`;
+  review lenses resolve via `Config.LensRole(lens)` → `<lens>_lens` →
+  `lens_reviewer` → `llm`. This is how the review engine runs cheap per-lens
+  analysis on Haiku while keeping synthesis on the default model.
+
+To use a non-Anthropic provider (billed per-token via crush + API key):
 
 ```json
 {
-  "llm": { "provider": "ollama", "model": "qwen2.5-coder:7b", "endpoint": "http://localhost:11434" }
+  "llm": { "provider": "openai", "model": "gpt-4o", "api_key_env": "OPENAI_API_KEY" }
 }
 ```
+
+> Note: non-anthropic providers go through `crush` and bill per token against
+> the API key. The `anthropic` path goes through `claude` and uses your Claude
+> subscription. Choose per your billing situation.
+
+## Prompts
+
+Prompts live as plain markdown under `pkg/prompt/` and ship inside the binary
+via `//go:embed`. `prompt.go` exposes `Load(name)` / `Render(name, data)`
+(rendered with Go's `text/template` so flags and context interpolate). Roles
+and task prompts sit at the top level (`coordinator.md`, `build.md`, `fix.md`,
+`scout.md`, `review.md`, …); review lenses and other module personas live under
+`module-prompts/` (`review-bugs.md`, `review-security.md`, `architect.md`, …).
+
+**Why markdown + embed:**
+- Prompts are reviewed and diffed like docs, edited by non-Go contributors.
+- `embed.FS` ships them in the single binary — no runtime path lookup.
+- Templates keep dynamic data out of the prompt body.
 
 ## Adding a new subcommand
 
 1. Create `pkg/cmd/<name>.go` with `var <name>Cmd = &cobra.Command{...}`.
 2. Register it in `pkg/cmd/root.go` `init()`.
-3. If it talks to a model, call `llm.NewChatModel(ctx, cfg.LLM)` inside
-   `RunE` — don't hold a long-lived client.
-4. Put shared logic in `pkg/module/`, never in `pkg/cmd/`.
+3. If it talks to a model, load config and construct a fresh
+   `llm.New(cfg.Role("<role>"))` inside `RunE` — don't hold a long-lived
+   executor.
+4. Put shared logic in `pkg/module/`, prompts in `pkg/prompt/`.
 
 ## Quick start
 
 ### Prerequisites
 
-- Go 1.21+
-- An API key for your chosen provider (default: Anthropic)
-
-```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-```
+- Go 1.25+ (see `go.mod`)
+- The `claude` CLI (default path) — https://claude.ai/code
+- Or, for non-Anthropic providers, the `crush` CLI —
+  `brew install charmbracelet/tap/crush` and the matching API key:
+  ```bash
+  export OPENAI_API_KEY=sk-...   # only for non-anthropic providers
+  ```
 
 ### First-time setup
 
@@ -353,7 +214,7 @@ which colony          # → /Users/<you>/.local/bin/colony
 colony version
 ```
 
-> `make install` creates a symlink from `~/.local/bin/colony` → `./colony` in this repo.
+> `make install` symlinks `~/.local/bin/colony` → `./colony` in this repo.
 > After any code change, run `make build` — the symlink picks it up immediately.
 
 ### Usage
@@ -430,11 +291,12 @@ colony swarm --spec X.md --lang go --review-depth fast   # fast: 1 LLM call/subt
 
 ### Switching LLM provider
 
-Edit `.colony/config.json` — no code changes needed:
+Edit `.colony/config.json` — no code changes needed. Anthropic uses the
+`claude` CLI (subscription); any other provider uses `crush` (API key):
 
 ```json
 {
-  "llm": { "provider": "ollama", "model": "qwen2.5-coder:7b", "endpoint": "http://localhost:11434" }
+  "llm": { "provider": "deepseek", "model": "deepseek-chat", "api_key_env": "DEEPSEEK_API_KEY" }
 }
 ```
 
