@@ -43,6 +43,84 @@ func TestRoleUnknownFallsBack(t *testing.T) {
 	}
 }
 
+// --- CommandRole tests ---
+
+// A command scope's own llm becomes the default for that command, while every
+// other command keeps using the global default.
+func TestCommandRoleScopedDefault(t *testing.T) {
+	cfg := Config{
+		LLM: LLMConfig{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+		Commands: map[string]ScopeConfig{
+			"loop": {LLM: LLMConfig{Provider: "deepseek", Model: "deepseek-chat"}},
+		},
+	}
+	if got := cfg.CommandRole("loop", "engineer"); got.Provider != "deepseek" {
+		t.Errorf("loop should use scoped deepseek default, got %+v", got)
+	}
+	if got := cfg.CommandRole("swarm", "engineer"); got.Provider != "anthropic" {
+		t.Errorf("other commands should keep global default, got %+v", got)
+	}
+}
+
+// A role inside a command scope wins over the scope's own llm default.
+func TestCommandRoleScopedRoleOverride(t *testing.T) {
+	cfg := Config{
+		LLM: LLMConfig{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+		Commands: map[string]ScopeConfig{
+			"loop": {
+				LLM:   LLMConfig{Provider: "deepseek", Model: "deepseek-chat"},
+				Roles: map[string]LLMConfig{"escalation": {Provider: "anthropic", Model: "claude-sonnet-4-6"}},
+			},
+		},
+	}
+	if got := cfg.CommandRole("loop", "escalation"); got.Provider != "anthropic" {
+		t.Errorf("escalation role should override scope default, got %+v", got)
+	}
+	if got := cfg.CommandRole("loop", "builder"); got.Provider != "deepseek" {
+		t.Errorf("unscoped role should fall to scope default, got %+v", got)
+	}
+}
+
+// Backwards compatibility: a config with no commands block resolves exactly
+// like Role — existing deployed configs are unaffected.
+func TestCommandRoleNoScopeFallsBackToRole(t *testing.T) {
+	cfg := Config{
+		LLM:   LLMConfig{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+		Roles: map[string]LLMConfig{"engineer": {Provider: "openai", Model: "gpt-4o"}},
+	}
+	if got := cfg.CommandRole("loop", "engineer"); got.Provider != "openai" {
+		t.Errorf("no scope should defer to global role, got %+v", got)
+	}
+	if got := cfg.CommandRole("loop", "reviewer"); got.Provider != "anthropic" {
+		t.Errorf("no scope, unknown role should fall to global default, got %+v", got)
+	}
+}
+
+// An old config JSON without a "commands" key loads cleanly.
+func TestLoadConfigWithoutCommandsBlock(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, ".colony"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	legacyJSON := `{
+		"llm": {"provider": "anthropic", "model": "claude-sonnet-4-6"},
+		"roles": {"engineer": {"provider": "openai", "model": "gpt-4o"}}
+	}`
+	if err := os.WriteFile(filepath.Join(tmp, ".colony", "config.json"), []byte(legacyJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Commands != nil {
+		t.Errorf("expected nil Commands for legacy config, got %+v", cfg.Commands)
+	}
+	if got := cfg.CommandRole("loop", "engineer"); got.Provider != "openai" {
+		t.Errorf("legacy config should resolve via global role, got %+v", got)
+	}
+}
+
 func TestLoadMissingConfig(t *testing.T) {
 	tmp := t.TempDir()
 	_, err := Load(tmp)

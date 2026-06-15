@@ -160,9 +160,10 @@ func matchingBrace(s string, pos int) int {
 		if inStr {
 			continue
 		}
-		if c == '{' {
+		switch c {
+		case '{':
 			depth++
-		} else if c == '}' {
+		case '}':
 			depth--
 			if depth == 0 {
 				return i

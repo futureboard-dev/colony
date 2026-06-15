@@ -99,7 +99,7 @@ func runMission(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("open missions.db: %w", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	sessID := fmt.Sprintf("%s-%s", m.Name, time.Now().Format("20060102-150405"))
 	if err := store.InsertSession(storage.Session{
@@ -144,7 +144,7 @@ func runAudit(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("open missions.db: %w", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	if auditPurge {
 		n, err := store.DeleteSessions(storage.SessionFilter{

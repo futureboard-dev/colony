@@ -153,7 +153,7 @@ func showProjectRuns(dbPath string) {
 		fmt.Printf("  Could not open run history: %v\n", err)
 		return
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	runs, err := store.QueryRuns(storage.RunFilter{})
 	if err != nil {

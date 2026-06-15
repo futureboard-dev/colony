@@ -149,7 +149,7 @@ func runCraft(cmd *cobra.Command, args []string) error {
 	runID := strings.TrimSuffix(filepath.Base(logPath), ".log")
 	store := openRunStore(root, out)
 	if store != nil {
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 		_ = store.InsertRun(storage.Run{
 			ID: runID, Kind: "craft", Project: module.ProjectName(root),
 			Language: craftLang, Model: llmCfg.Model, Status: "running",

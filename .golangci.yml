@@ -1,0 +1,26 @@
+version: "2"
+
+linters:
+  settings:
+    errcheck:
+      # Fire-and-forget calls where a returned error is not actionable:
+      # terminal/stream writes, best-effort cleanup, and Close on handles we
+      # only read from. Close on files we *write* is still checked explicitly.
+      exclude-functions:
+        - (io.Closer).Close
+        - (io.Writer).Write
+        - (*os.File).Close
+        - (*database/sql.DB).Close
+        - (*database/sql.Rows).Close
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - os.Remove
+        - os.RemoveAll
+        - os.Unsetenv
+  exclusions:
+    rules:
+      # Tests legitimately ignore errors in setup/teardown.
+      - path: _test.go
+        linters:
+          - errcheck

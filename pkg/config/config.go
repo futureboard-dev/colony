@@ -48,8 +48,19 @@ func (c LLMConfig) ValidateKey() error {
 // Config is the top-level .colony/config.json structure.
 // Roles lets you assign different models to different agent roles.
 // If a role is not specified, the top-level LLM config is used.
+// Commands lets a single command (e.g. "loop") override the default LLM and
+// roles for its own run, leaving every other command on the global defaults.
 type Config struct {
-	Root  string               `json:"root"`
+	Root     string                 `json:"root"`
+	LLM      LLMConfig              `json:"llm"`
+	Roles    map[string]LLMConfig   `json:"roles,omitempty"`
+	Commands map[string]ScopeConfig `json:"commands,omitempty"`
+}
+
+// ScopeConfig overrides model selection for a single command. An empty LLM or
+// Roles falls through to the global Config, so a scope only needs to specify
+// what differs.
+type ScopeConfig struct {
 	LLM   LLMConfig            `json:"llm"`
 	Roles map[string]LLMConfig `json:"roles,omitempty"`
 }
@@ -62,6 +73,27 @@ func (c *Config) Role(name string) LLMConfig {
 		}
 	}
 	return c.LLM
+}
+
+// CommandRole returns the LLMConfig for a role within a named command's scope.
+// Precedence (most specific first):
+//  1. commands[command].roles[role]
+//  2. commands[command].llm  (the command's own default)
+//  3. global roles[role]
+//  4. global llm
+//
+// A config with no matching command scope resolves exactly like Role(role),
+// so existing configs without a "commands" block are unaffected.
+func (c *Config) CommandRole(command, role string) LLMConfig {
+	if scope, ok := c.Commands[command]; ok {
+		if cfg, ok := scope.Roles[role]; ok {
+			return cfg
+		}
+		if scope.LLM.Provider != "" {
+			return scope.LLM
+		}
+	}
+	return c.Role(role)
 }
 
 // LensRole returns the LLMConfig for a specific lens, checking "<lens>_lens" first,

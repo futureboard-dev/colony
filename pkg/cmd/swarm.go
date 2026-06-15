@@ -109,7 +109,7 @@ func runSwarm(cmd *cobra.Command, args []string) error {
 	runID := "swarm-" + ts
 	store := openRunStore(root, out)
 	if store != nil {
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 		_ = store.InsertRun(storage.Run{
 			ID: runID, Kind: "swarm", Project: projectName,
 			Language: swarmLang, Mode: swarmMode, Status: "running",

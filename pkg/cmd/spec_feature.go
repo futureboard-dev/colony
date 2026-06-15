@@ -143,14 +143,17 @@ func runSpecFeature(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("create TASK.md: %w", err)
 	}
-	defer f.Close()
-
 	fmt.Fprintf(f, "# Feature: %s\n\n", slugName)
 
 	fmt.Printf("%sGenerating spec for %q...%s\n", ansiCyan, slugName, ansiReset)
 	if err := ex.RunHeadless(cmd.Context(), root, p, f); err != nil {
+		f.Close()
 		os.RemoveAll(featureDir)
 		return fmt.Errorf("llm: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		os.RemoveAll(featureDir)
+		return fmt.Errorf("write TASK.md: %w", err)
 	}
 
 	// Record hash so --continue can detect edits.
@@ -198,7 +201,9 @@ func runSpecFeatureContinue(cmd *cobra.Command, cfg *config.Config, root, slugNa
 		tmp.Close()
 		return fmt.Errorf("llm: %w", err)
 	}
-	tmp.Close()
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("write temp spec: %w", err)
+	}
 
 	if err := os.Rename(tmpName, taskFile); err != nil {
 		return fmt.Errorf("replace TASK.md: %w", err)

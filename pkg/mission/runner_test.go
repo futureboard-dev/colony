@@ -461,8 +461,7 @@ func TestMalformedEnvelope(t *testing.T) {
 // clarifyNode returns CLARIFICATION on the first call, then APPROVED on the second.
 // It records what input text it received on each call.
 type clarifyNode struct {
-	calls  []string
-	answer string // set after first call to simulate enriched input
+	calls []string
 }
 
 func (n *clarifyNode) Run(_ context.Context, in Input) (Output, error) {
