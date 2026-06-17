@@ -43,12 +43,12 @@ func SetupWorktree(projectRoot, projectName, branch, baseBranch string) (string,
 
 	// propagate .claude config and .env into the worktree
 	if info, err := os.Stat(filepath.Join(projectRoot, ".claude")); err == nil && info.IsDir() {
-		exec.Command("cp", "-r", filepath.Join(projectRoot, ".claude")+"/",
-			filepath.Join(worktreePath, ".claude")+"/").Run() //nolint:errcheck
+		_ = exec.Command("cp", "-r", filepath.Join(projectRoot, ".claude")+"/",
+			filepath.Join(worktreePath, ".claude")+"/").Run()
 	}
 	if _, err := os.Stat(filepath.Join(projectRoot, ".env")); err == nil {
-		exec.Command("cp", filepath.Join(projectRoot, ".env"),
-			filepath.Join(worktreePath, ".env")).Run() //nolint:errcheck
+		_ = exec.Command("cp", filepath.Join(projectRoot, ".env"),
+			filepath.Join(worktreePath, ".env")).Run()
 	}
 
 	return worktreePath, nil

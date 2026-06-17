@@ -76,6 +76,26 @@ type SessionFilter struct {
 	Status      string
 }
 
+// Task represents a task in the loop queue with optional spec and gate overrides.
+type Task struct {
+	ID             string
+	Description    string
+	State          string // "open", "needs-fix", "done", "blocked"
+	SpecPath       string // path to the spec file (--file)
+	BaseBranch     string // base branch (--base)
+	GateOverrides  string // comma-joined gate names to skip, e.g. "format,lint"
+	Lang           string
+	CycleCount     int
+	LastFeedback   string
+	CreatedAt      time.Time
+	UpdatedAt      *time.Time
+}
+
+// TaskFilter controls which tasks to return from QueryTasks.
+type TaskFilter struct {
+	States []string
+}
+
 // Store is the persistence interface for mission runs.
 type Store interface {
 	InsertSession(s Session) error
@@ -88,6 +108,12 @@ type Store interface {
 	UpdateRun(r Run) error
 	QueryRuns(f RunFilter) ([]Run, error)
 	Close() error
+
+	// Task CRUD
+	InsertTask(t Task) error
+	QueryTasks(f TaskFilter) ([]Task, error)
+	UpdateTaskState(id, state, feedback string) error
+	IncrementCycle(id string) error
 }
 
 // SQLiteStore implements Store using modernc.org/sqlite.

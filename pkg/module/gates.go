@@ -72,7 +72,7 @@ func InstallDeps(lang, worktree string, out io.Writer) {
 	switch strings.ToLower(lang) {
 	case "typescript", "ts":
 		fmt.Fprintf(out, "   Installing dependencies (pnpm)...\n")
-		RunShell("pnpm install --frozen-lockfile", worktree, out) //nolint:errcheck
+		_ = RunShell("pnpm install --frozen-lockfile", worktree, out)
 	case "python", "py":
 		if _, err := os.Stat(filepath.Join(worktree, "requirements.txt")); err != nil {
 			return
@@ -81,9 +81,9 @@ func InstallDeps(lang, worktree string, out io.Writer) {
 		// pip install -r requirements.txt`, but RunShell has no shell so we
 		// create the venv and invoke its pip by absolute path.
 		fmt.Fprintf(out, "   Installing dependencies (pip into .venv)...\n")
-		RunShell("python3 -m venv .venv", worktree, out) //nolint:errcheck
+		_ = RunShell("python3 -m venv .venv", worktree, out)
 		pip := filepath.Join(worktree, ".venv", "bin", "pip")
-		RunShell(pip+" install -r requirements.txt", worktree, out) //nolint:errcheck
+		_ = RunShell(pip+" install -r requirements.txt", worktree, out)
 	case "go":
 		if _, err := os.Stat(filepath.Join(worktree, "go.mod")); err != nil {
 			return
