@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/jirateep/colony/pkg/config"
@@ -53,6 +55,9 @@ func runLoop(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Clear stale sentinel on startup if present.
+	_ = removeSentinel(root)
+
 	store, err := openLoopStore(root)
 	if err != nil {
 		return err
@@ -68,6 +73,10 @@ func runLoop(cmd *cobra.Command, args []string) error {
 		idleLimit = 10
 	}
 
+	// Wrap the command context with signal handling.
+	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	totalPasses := 0
 	consecutiveIdle := 0
 
@@ -78,7 +87,7 @@ func runLoop(cmd *cobra.Command, args []string) error {
 			break
 		}
 
-		task, err := pickNextTask(cmd.Context(), store)
+		task, err := pickNextTask(ctx, store)
 		if err != nil {
 			return fmt.Errorf("pick task: %w", err)
 		}
@@ -92,14 +101,16 @@ func runLoop(cmd *cobra.Command, args []string) error {
 			if loopOnce {
 				break
 			}
-			time.Sleep(5 * time.Second)
+			if err := sleepInterruptibly(ctx); err != nil {
+				return nil
+			}
 			continue
 		}
 
 		consecutiveIdle = 0
 		totalPasses++
 
-		if err := processTask(cmd.Context(), cfg, root, store, task); err != nil {
+		if err := processTask(ctx, cfg, root, store, task); err != nil {
 			fmt.Fprintf(os.Stderr, "loop: task %q failed: %v\n", task.ID, err)
 			_ = markTaskBlocked(store, task.ID)
 		}
@@ -107,9 +118,52 @@ func runLoop(cmd *cobra.Command, args []string) error {
 		if loopOnce {
 			break
 		}
+
+		// Poll sentinel at pass boundary.
+		if sentinelExists(root) {
+			fmt.Fprintf(os.Stderr, "loop: stop sentinel detected, exiting\n")
+			_ = removeSentinel(root)
+			break
+		}
+
+		// Check context (signal) at pass boundary.
+		if ctx.Err() != nil {
+			fmt.Fprintf(os.Stderr, "loop: interrupted, exiting\n")
+			break
+		}
 	}
 
 	return nil
+}
+
+// sleepInterruptibly sleeps for 5s or until the context is cancelled.
+func sleepInterruptibly(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(5 * time.Second):
+		return nil
+	}
+}
+
+// sentinelPath returns the path to the loop stop sentinel file.
+func sentinelPath(root string) string {
+	return filepath.Join(root, ".colony", "loop.stop")
+}
+
+// sentinelExists returns true if the stop sentinel file exists.
+func sentinelExists(root string) bool {
+	_, err := os.Stat(sentinelPath(root))
+	return err == nil
+}
+
+// removeSentinel deletes the stop sentinel file if it exists.
+func removeSentinel(root string) error {
+	err := os.Remove(sentinelPath(root))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
 }
 
 // pickNextTask queries the tasks table for the next open or needs-fix task.
@@ -173,6 +227,13 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 
 	// Record outcome.
 	if runErr != nil {
+		// Check if the context was cancelled (signal received).
+		if ctx.Err() != nil {
+			_ = store.UpdateSession(sessID, "interrupted", time.Now())
+			_ = store.UpdateTaskState(task.ID, "needs-fix", "")
+			return nil
+		}
+
 		_ = store.UpdateSession(sessID, "failed", time.Now())
 
 		// Check if it's a max-cycles error (task hit the cap).
