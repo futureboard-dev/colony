@@ -21,7 +21,8 @@ const (
 
 // ErrMaxCycles is returned when a cyclic node exceeds the mission's max_cycles limit.
 type ErrMaxCycles struct {
-	NodeID string
+	NodeID     string
+	LastOutput *Output
 }
 
 func (e *ErrMaxCycles) Error() string {
@@ -202,7 +203,7 @@ func (r *defaultRunner) Run(ctx context.Context, m *Mission, g *Graph, sessionID
 				if g.IsBackEdge(nr.nodeID, nextID) {
 					// Cycle: check max_cycles before re-dispatching.
 					if m.MaxCycles > 0 && runCount[nextID] >= m.MaxCycles {
-						cycErr := &ErrMaxCycles{NodeID: nextID}
+						cycErr := &ErrMaxCycles{NodeID: nextID, LastOutput: &nr.output}
 						cancel()
 						for active > 0 {
 							<-resultCh

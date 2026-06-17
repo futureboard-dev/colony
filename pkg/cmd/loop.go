@@ -47,6 +47,9 @@ func init() {
 	loopCmd.Flags().StringVar(&loopEscalateTo, "escalate-to", "", "model for escalation role (default: off)")
 	loopCmd.Flags().StringVar(&loopLang, "lang", "go", "language for gates")
 	loopCmd.Flags().IntVar(&loopIdleLimit, "idle", 10, "consecutive idle passes before stopping")
+
+	loopCmd.AddCommand(loopStatusCmd)
+	loopCmd.AddCommand(loopScheduleCmd)
 }
 
 func runLoop(cmd *cobra.Command, args []string) error {
@@ -323,6 +326,20 @@ func openLoopStore(root string) (*storage.SQLiteStore, error) {
 // extractFeedback returns a string representation of mission output or error
 // for use in last_feedback.
 func extractFeedback(out *mission.Output, runErr error) string {
+	// If this is a max-cycles error with a captured last output, use
+	// the last output's feedback text (the rejecting gate's output).
+	if errMax, ok := runErr.(*mission.ErrMaxCycles); ok && errMax.LastOutput != nil {
+		if txt := errMax.LastOutput.Envelope.OutputText(); txt != "" {
+			return txt
+		}
+		if errMax.LastOutput.Raw != "" {
+			return errMax.LastOutput.Raw
+		}
+		if errMax.LastOutput.Envelope.Feedback != "" {
+			return errMax.LastOutput.Envelope.Feedback
+		}
+	}
+
 	if out != nil {
 		if txt := out.Envelope.OutputText(); txt != "" {
 			return txt
