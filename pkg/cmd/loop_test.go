@@ -40,6 +40,7 @@ func TestLoopOnce_Idle(t *testing.T) {
 
 // TestLoopOnce_RunsMission verifies that with an open task pickNextTask returns it.
 func TestLoopOnce_RunsMission(t *testing.T) {
+	skipIfShort(t)
 	dir := t.TempDir()
 	setupMinimalProject(t, dir)
 
@@ -104,6 +105,7 @@ func TestLoopOnce_MaxPasses(t *testing.T) {
 
 // TestLoopOnce_EscalationCeiling verifies markTaskBlocked updates the task row.
 func TestLoopOnce_EscalationCeiling(t *testing.T) {
+	skipIfShort(t)
 	dir := t.TempDir()
 	setupMinimalProject(t, dir)
 
@@ -295,6 +297,7 @@ func setupLoopCmd(ctx context.Context) *cobra.Command {
 // TestLoop_SentinelStop verifies that writing .colony/loop.stop causes the
 // running loop to exit after the current task and clean up the sentinel.
 func TestLoop_SentinelStop(t *testing.T) {
+	skipIfShort(t)
 	dir := t.TempDir()
 	setupMinimalProject(t, dir)
 
@@ -388,6 +391,7 @@ func TestLoop_SentinelStop(t *testing.T) {
 // TestLoop_ContextCancel verifies that cancelling the context closes the
 // running session as interrupted and marks the in-flight task needs-fix.
 func TestLoop_ContextCancel(t *testing.T) {
+	skipIfShort(t)
 	dir := t.TempDir()
 	setupMinimalProject(t, dir)
 
@@ -523,6 +527,15 @@ func TestLoop_StaleSentinelClearedOnStart(t *testing.T) {
 		t.Errorf("unexpected error checking sentinel: %v", err)
 	}
 }
+// skipIfShort skips tests that drive a real agent CLI (claude/crush), which is
+// unavailable/slow in CI. Run the full suite locally with `go test` (no -short).
+func skipIfShort(t *testing.T) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("invokes a live agent CLI; skipped in -short mode")
+	}
+}
+
 func setupMinimalProject(t *testing.T, dir string) {
 	t.Helper()
 	colonyDir := filepath.Join(dir, ".colony")
@@ -535,8 +548,19 @@ func setupMinimalProject(t *testing.T, dir string) {
 	if err := os.WriteFile(filepath.Join(colonyDir, "config.json"), []byte(configJSON), 0644); err != nil {
 		t.Fatal(err)
 	}
-	// Initialize a git repo so module.FindRoot succeeds.
+	// Initialize a git repo so module.FindRoot succeeds. Make an initial commit
+	// so HEAD resolves — the loop branches a worktree from the base ref.
 	if err := exec.Command("git", "init", "--initial-branch=main", dir).Run(); err != nil {
 		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"-C", dir, "config", "user.email", "test@example.com"},
+		{"-C", dir, "config", "user.name", "test"},
+		{"-C", dir, "add", "-A"},
+		{"-C", dir, "commit", "-m", "init", "--quiet"},
+	} {
+		if err := exec.Command("git", args...).Run(); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
 	}
 }
