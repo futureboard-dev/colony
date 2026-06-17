@@ -136,6 +136,21 @@ func TestRunGateCaptureAll_Typescript(t *testing.T) {
 	}
 }
 
+// TestRunGateCaptureScopesLintCache verifies RunGateCapture scopes
+// GOLANGCI_LINT_CACHE to the worktree, so stale results from a pruned worktree
+// can't leak into another run.
+func TestRunGateCaptureScopesLintCache(t *testing.T) {
+	dir := t.TempDir()
+	out, err := RunGateCapture("printenv GOLANGCI_LINT_CACHE", dir)
+	if err != nil {
+		t.Fatalf("printenv failed: %v\noutput: %s", err, out)
+	}
+	want := dir + "/.golangci-cache\n"
+	if out != want {
+		t.Errorf("GOLANGCI_LINT_CACHE = %q, want %q", out, want)
+	}
+}
+
 // Helpers
 func writeMinimalGoModule(t *testing.T, dir, content string) {
 	t.Helper()

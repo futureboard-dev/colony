@@ -108,6 +108,12 @@ func RunGateCapture(command, workdir string) (string, error) {
 	}
 	cmd := exec.Command(parts[0], parts[1:]...)
 	cmd.Dir = workdir
+	// Scope golangci-lint's cache to this worktree. Colony runs gates in
+	// throwaway worktrees; a shared cache retains results keyed by the old
+	// worktree's absolute paths, so once that worktree is pruned the linter
+	// reports phantom errors against files it can no longer read. A per-worktree
+	// cache dir is torn down with the worktree and never leaks across runs.
+	cmd.Env = append(os.Environ(), "GOLANGCI_LINT_CACHE="+filepath.Join(workdir, ".golangci-cache"))
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
