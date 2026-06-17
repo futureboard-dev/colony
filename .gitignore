@@ -25,6 +25,7 @@ vendor/
 
 # Build cache
 .cache/
+.golangci-cache/
 
 # IDE/Editor specific
 .idea/
