@@ -26,9 +26,8 @@ func NewBuilderNode(agentID string, cfg config.LLMConfig) *BuilderNode {
 }
 
 func (n *BuilderNode) Run(ctx context.Context, in Input) (Output, error) {
-	if err := n.cfg.ValidateKey(); err != nil {
-		return Output{}, err
-	}
+	// Key validation is handled by the executor (RunAgent), which skips it for
+	// anthropic — the claude CLI manages its own auth.
 
 	// Determine language from params or default.
 	lang := "go"
@@ -64,9 +63,8 @@ func NewFixerNode(agentID string, cfg config.LLMConfig) *FixerNode {
 }
 
 func (n *FixerNode) Run(ctx context.Context, in Input) (Output, error) {
-	if err := n.cfg.ValidateKey(); err != nil {
-		return Output{}, err
-	}
+	// Key validation is handled by the executor (RunAgent), which skips it for
+	// anthropic — the claude CLI manages its own auth.
 
 	// Extract gate name and error details from the input.
 	// The input contains the upstream's output which has the gate failure info.
@@ -98,7 +96,7 @@ func runLLMAndParse(ctx context.Context, agentID string, cfg config.LLMConfig, p
 	var buf bytes.Buffer
 	stream := io.MultiWriter(&buf, prefixedWriter(os.Stderr, "    "+agentID+" │ "))
 	fmt.Fprintf(os.Stderr, "    %s │ <streaming…>\n", agentID)
-	if err := exec.RunHeadless(ctx, ".", promptText, stream); err != nil {
+	if err := exec.RunAgent(ctx, ".", promptText, stream); err != nil {
 		raw := buf.String()
 		var env Envelope
 		if jsonErr := json.Unmarshal([]byte(extractJSON(raw)), &env); jsonErr == nil && env.Decision != "" {

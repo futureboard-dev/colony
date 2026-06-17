@@ -193,10 +193,17 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 		return fmt.Errorf("increment cycle: %w", err)
 	}
 
+	// Resolve the builder input: spec file contents (if --file was given),
+	// the inline description, or both combined.
+	input, err := taskInput(task)
+	if err != nil {
+		return err
+	}
+
 	// Build the mission.
 	opts := mission.BuildGateFixOpts{
 		Name:      "loop-" + task.ID,
-		Input:     task.Description,
+		Input:     input,
 		Lang:      lang,
 		MaxCycles: loopMaxCycles,
 	}
@@ -266,9 +273,13 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 
 // escalateTask re-dispatches a max-cycled task on the escalation role.
 func escalateTask(ctx context.Context, cfg *config.Config, root string, store *storage.SQLiteStore, task *storage.Task, lang string, prevOut *mission.Output) error {
+	input, err := taskInput(task)
+	if err != nil {
+		return err
+	}
 	opts := mission.BuildGateFixOpts{
 		Name:      "escalation-" + task.ID,
-		Input:     task.Description,
+		Input:     input,
 		Lang:      lang,
 		MaxCycles: 1,
 	}
@@ -321,6 +332,24 @@ func openLoopStore(root string) (*storage.SQLiteStore, error) {
 		dbPath = filepath.Join(root, ".colony", "missions.db")
 	}
 	return storage.Open(dbPath)
+}
+
+// taskInput resolves the builder input for a task: the spec file contents when
+// --file was given, the inline description otherwise, or both combined when a
+// task has both. Returns an error if a referenced spec file cannot be read.
+func taskInput(task *storage.Task) (string, error) {
+	if task.SpecPath == "" {
+		return task.Description, nil
+	}
+	data, err := os.ReadFile(task.SpecPath)
+	if err != nil {
+		return "", fmt.Errorf("read spec file %q: %w", task.SpecPath, err)
+	}
+	spec := string(data)
+	if task.Description == "" {
+		return spec, nil
+	}
+	return task.Description + "\n\n" + spec, nil
 }
 
 // extractFeedback returns a string representation of mission output or error
