@@ -11,6 +11,7 @@ import (
 
 	"github.com/jirateep/colony/pkg/config"
 	"github.com/jirateep/colony/pkg/mission"
+	"github.com/jirateep/colony/pkg/module"
 	"github.com/jirateep/colony/pkg/storage"
 	"github.com/spf13/cobra"
 )
@@ -200,11 +201,25 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 		return err
 	}
 
+	// Each task runs in its own isolated git worktree so multiple loop agents
+	// can work in parallel without colliding on the working tree.
+	baseBranch := task.BaseBranch
+	if baseBranch == "" {
+		baseBranch = module.DefaultBranch()
+	}
+	branch := module.NewBranch(task.Description)
+	projectName := module.ProjectName(root)
+	workdir, err := module.SetupWorktreeLocal(root, projectName, branch, baseBranch)
+	if err != nil {
+		return fmt.Errorf("setup worktree: %w", err)
+	}
+
 	// Build the mission.
 	opts := mission.BuildGateFixOpts{
 		Name:      "loop-" + task.ID,
 		Input:     input,
 		Lang:      lang,
+		Workdir:   workdir,
 		MaxCycles: loopMaxCycles,
 	}
 	if loopEscalateTo != "" {

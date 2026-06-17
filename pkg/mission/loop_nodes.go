@@ -48,7 +48,7 @@ func (n *BuilderNode) Run(ctx context.Context, in Input) (Output, error) {
 	}
 	combined = injectInput(combined, in.Text)
 
-	return runLLMAndParse(ctx, n.agentID, n.cfg, combined)
+	return runLLMAndParse(ctx, n.agentID, n.cfg, workdirFrom(in), combined)
 }
 
 // FixerNode is a Node that uses the fix.md prompt to fix gate failures.
@@ -87,16 +87,24 @@ func (n *FixerNode) Run(ctx context.Context, in Input) (Output, error) {
 		combined = injectClientConfig(combined, string(b))
 	}
 
-	return runLLMAndParse(ctx, n.agentID, n.cfg, combined)
+	return runLLMAndParse(ctx, n.agentID, n.cfg, workdirFrom(in), combined)
+}
+
+// workdirFrom returns the workdir param, defaulting to the current directory.
+func workdirFrom(in Input) string {
+	if wd, ok := in.Params["workdir"].(string); ok && wd != "" {
+		return wd
+	}
+	return "."
 }
 
 // runLLMAndParse is a shared helper that calls the LLM and parses the envelope.
-func runLLMAndParse(ctx context.Context, agentID string, cfg config.LLMConfig, promptText string) (Output, error) {
+func runLLMAndParse(ctx context.Context, agentID string, cfg config.LLMConfig, workdir, promptText string) (Output, error) {
 	exec := llm.New(cfg)
 	var buf bytes.Buffer
 	stream := io.MultiWriter(&buf, prefixedWriter(os.Stderr, "    "+agentID+" │ "))
 	fmt.Fprintf(os.Stderr, "    %s │ <streaming…>\n", agentID)
-	if err := exec.RunAgent(ctx, ".", promptText, stream); err != nil {
+	if err := exec.RunAgent(ctx, workdir, promptText, stream); err != nil {
 		raw := buf.String()
 		var env Envelope
 		if jsonErr := json.Unmarshal([]byte(extractJSON(raw)), &env); jsonErr == nil && env.Decision != "" {

@@ -5,6 +5,7 @@ type BuildGateFixOpts struct {
 	Name       string
 	Input      string
 	Lang       string
+	Workdir    string          // directory the builder/fixer/gate operate in (worktree path); "" = current dir
 	SkipGates  map[string]bool // gate names to skip (e.g. {"format": true})
 	MaxCycles  int
 	// EscalationRole, when non-nil, wires an escalation node that runs after
@@ -56,6 +57,7 @@ func BuildGateFix(opts BuildGateFixOpts) *Mission {
 		Params: map[string]any{
 			"lang":       opts.Lang,
 			"skip_gates": opts.SkipGates,
+			"workdir":    opts.Workdir,
 		},
 	}
 }
