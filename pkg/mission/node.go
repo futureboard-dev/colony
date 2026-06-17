@@ -5,6 +5,14 @@ import (
 	"encoding/json"
 )
 
+// Role names used for registry registration of built-in agent roles.
+const (
+	RoleGate       = "gate"
+	RoleBuilder    = "builder"
+	RoleFixer      = "fixer"
+	RoleEscalation = "escalation"
+)
+
 // Decision is the routing decision returned by a node.
 type Decision string
 

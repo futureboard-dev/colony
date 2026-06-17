@@ -11,9 +11,11 @@ import (
 
 type LangCommands struct {
 	Format    string
+	Vet       string
 	Lint      string
 	TypeCheck string
 	Test      string
+	Build     string
 }
 
 func CommandsFor(lang string) (LangCommands, error) {
@@ -21,23 +23,29 @@ func CommandsFor(lang string) (LangCommands, error) {
 	case "typescript", "ts":
 		return LangCommands{
 			Format:    "pnpm prettier --write .",
+			Vet:       "pnpm tsc --noEmit",
 			Lint:      "pnpm eslint .",
 			TypeCheck: "pnpm tsc --noEmit",
 			Test:      "pnpm build",
+			Build:     "pnpm build",
 		}, nil
 	case "python", "py":
 		return LangCommands{
 			Format:    "ruff format .",
+			Vet:       "mypy . --ignore-missing-imports",
 			Lint:      "ruff check .",
 			TypeCheck: "mypy . --ignore-missing-imports",
 			Test:      "pytest --tb=short",
+			Build:     "",
 		}, nil
 	case "go":
 		return LangCommands{
 			Format:    "gofmt -w ./...",
+			Vet:       "go vet ./...",
 			Lint:      "golangci-lint run ./...",
 			TypeCheck: "go build ./...",
 			Test:      "go test ./... -count=1",
+			Build:     "go build ./...",
 		}, nil
 	default:
 		return LangCommands{}, fmt.Errorf("unknown language %q — use: typescript, python, go", lang)
@@ -102,4 +110,39 @@ func RunGateCapture(command, workdir string) (string, error) {
 	cmd.Dir = workdir
 	out, err := cmd.CombinedOutput()
 	return string(out), err
+}
+
+// RunGateCaptureAll runs all quality gates for the given language in sequence:
+// format, vet, lint, typecheck, test, build. Skips gates in the skip set and
+// those whose commands are empty. Returns on the first non-zero exit: combined
+// output + exit error. Returns empty string and nil when all gates pass.
+func RunGateCaptureAll(lang string, workdir string, skip map[string]bool) (string, error) {
+	cmds, err := CommandsFor(lang)
+	if err != nil {
+		return "", err
+	}
+	type gateStep struct {
+		name string
+		cmd  string
+	}
+	steps := []gateStep{
+		{"format", cmds.Format},
+		{"vet", cmds.Vet},
+		{"lint", cmds.Lint},
+		{"typecheck", cmds.TypeCheck},
+		{"test", cmds.Test},
+		{"build", cmds.Build},
+	}
+	var combined strings.Builder
+	for _, s := range steps {
+		if skip[s.name] || s.cmd == "" {
+			continue
+		}
+		out, err := RunGateCapture(s.cmd, workdir)
+		if err != nil {
+			fmt.Fprintf(&combined, "--- %s ---\n%s", s.name, out)
+			return combined.String(), fmt.Errorf("%s failed: %w", s.name, err)
+		}
+	}
+	return "", nil
 }

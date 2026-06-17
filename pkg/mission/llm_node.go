@@ -209,4 +209,13 @@ func init() {
 			return NewLLMNode(agentID, r, cfg), nil
 		})
 	}
+	// Register the gate role — no LLM, runs quality gates via RunGateCaptureAll.
+	// The lang and skip gates are configured via Mission Params at runtime.
+	Register(RoleGate, func(agentID string, cfg config.LLMConfig) (Node, error) {
+		return NewGateNode(agentID, "go", nil), nil
+	})
+	// Register the builder role — uses build.md prompt via BuilderNode.
+	Register(RoleBuilder, BuilderNodeFactory)
+	// Register the fixer role — uses fix.md prompt via FixerNode.
+	Register(RoleFixer, FixerNodeFactory)
 }
