@@ -13,18 +13,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// TaskRow represents a task from the sqlite queue that the loop operates on.
-// In v1 this is a minimal model; storage extensions are in pkg/storage/task.go.
-type TaskRow struct {
-	ID          string
-	Description string
-	State       string // "open", "needs-fix", "done", "blocked"
-	SpecPath    string
-	BaseBranch  string
-	CycleCount  int
-	Lang        string
-}
-
 var loopCmd = &cobra.Command{
 	Use:   "loop",
 	Short: "Autonomous steward: build→gate→fix loop",
@@ -124,34 +112,28 @@ func runLoop(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// pickNextTask queries the store for the next open or needs-fix task.
-func pickNextTask(ctx context.Context, store *storage.SQLiteStore) (*TaskRow, error) {
-	// v1: query the runs table as a proxy for the task queue.
-	// Look for any open/unprocessed tasks. For now, we check if there's
-	// at least one run that isn't "complete" or "blocked".
-	runs, err := store.QueryRuns(storage.RunFilter{})
+// pickNextTask queries the tasks table for the next open or needs-fix task.
+func pickNextTask(ctx context.Context, store *storage.SQLiteStore) (*storage.Task, error) {
+	tasks, err := store.QueryTasks(storage.TaskFilter{States: []string{"open", "needs-fix"}})
 	if err != nil {
 		return nil, err
 	}
-
-	for _, r := range runs {
-		if r.Status == "running" || r.Status == "" {
-			return &TaskRow{
-				ID:          r.ID,
-				Description: r.Branch,
-				State:       r.Status,
-				Lang:        r.Language,
-			}, nil
-		}
+	if len(tasks) == 0 {
+		return nil, nil
 	}
-	return nil, nil
+	return &tasks[0], nil
 }
 
 // processTask runs the BuildGateFix mission on a single task.
-func processTask(ctx context.Context, cfg *config.Config, root string, store *storage.SQLiteStore, task *TaskRow) error {
+func processTask(ctx context.Context, cfg *config.Config, root string, store *storage.SQLiteStore, task *storage.Task) error {
 	lang := task.Lang
 	if lang == "" {
 		lang = loopLang
+	}
+
+	// Increment cycle count before processing.
+	if err := store.IncrementCycle(task.ID); err != nil {
+		return fmt.Errorf("increment cycle: %w", err)
 	}
 
 	// Build the mission.
@@ -201,15 +183,25 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 			}
 			return nil
 		}
+
+		// Max-cycles hit but no escalation configured → needs-fix with feedback.
+		if _, ok := runErr.(*mission.ErrMaxCycles); ok {
+			feedback := extractFeedback(out, runErr)
+			_ = store.UpdateTaskState(task.ID, "needs-fix", feedback)
+			return nil
+		}
+
 		return runErr
 	}
 
 	_ = store.UpdateSession(sessID, "completed", time.Now())
+	// Gate green.
+	_ = store.UpdateTaskState(task.ID, "done", "")
 	return nil
 }
 
 // escalateTask re-dispatches a max-cycled task on the escalation role.
-func escalateTask(ctx context.Context, cfg *config.Config, root string, store *storage.SQLiteStore, task *TaskRow, lang string, prevOut *mission.Output) error {
+func escalateTask(ctx context.Context, cfg *config.Config, root string, store *storage.SQLiteStore, task *storage.Task, lang string, prevOut *mission.Output) error {
 	opts := mission.BuildGateFixOpts{
 		Name:      "escalation-" + task.ID,
 		Input:     task.Description,
@@ -244,15 +236,18 @@ func escalateTask(ctx context.Context, cfg *config.Config, root string, store *s
 
 	if runErr != nil {
 		fmt.Fprintf(os.Stderr, "escalation failed for task %q, marking blocked\n", task.ID)
+		_ = store.UpdateTaskState(task.ID, "blocked", extractFeedback(nil, runErr))
 		return markTaskBlocked(store, task.ID)
 	}
+
+	// Escalation succeeded.
+	_ = store.UpdateTaskState(task.ID, "done", "")
 	return nil
 }
 
 // markTaskBlocked transitions a task to blocked state.
 func markTaskBlocked(store *storage.SQLiteStore, taskID string) error {
-	now := time.Now()
-	return store.UpdateRun(storage.Run{ID: taskID, Status: "blocked", FinishedAt: &now})
+	return store.UpdateTaskState(taskID, "blocked", "")
 }
 
 // openLoopStore opens the project's missions.db.
@@ -262,4 +257,24 @@ func openLoopStore(root string) (*storage.SQLiteStore, error) {
 		dbPath = filepath.Join(root, ".colony", "missions.db")
 	}
 	return storage.Open(dbPath)
+}
+
+// extractFeedback returns a string representation of mission output or error
+// for use in last_feedback.
+func extractFeedback(out *mission.Output, runErr error) string {
+	if out != nil {
+		if txt := out.Envelope.OutputText(); txt != "" {
+			return txt
+		}
+		if out.Raw != "" {
+			return out.Raw
+		}
+		if out.Envelope.Feedback != "" {
+			return out.Envelope.Feedback
+		}
+	}
+	if runErr != nil {
+		return runErr.Error()
+	}
+	return ""
 }
