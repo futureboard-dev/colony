@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -39,6 +40,7 @@ var (
 	loopEscalateTo string
 	loopLang       string
 	loopIdleLimit  int
+	loopRetryBlock bool
 )
 
 func init() {
@@ -48,6 +50,7 @@ func init() {
 	loopCmd.Flags().StringVar(&loopEscalateTo, "escalate-to", "", "model for escalation role (default: off)")
 	loopCmd.Flags().StringVar(&loopLang, "lang", "go", "language for gates")
 	loopCmd.Flags().IntVar(&loopIdleLimit, "idle", 10, "consecutive idle passes before stopping")
+	loopCmd.Flags().BoolVar(&loopRetryBlock, "retry-blocked", false, "re-queue blocked tasks (needs-fix) to continue them in their existing worktree")
 
 	loopCmd.AddCommand(loopStatusCmd)
 	loopCmd.AddCommand(loopScheduleCmd)
@@ -67,6 +70,15 @@ func runLoop(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer func() { _ = store.Close() }()
+
+	// Re-queue blocked tasks so they continue in their existing worktree.
+	if loopRetryBlock {
+		n, rqErr := requeueBlocked(store)
+		if rqErr != nil {
+			return fmt.Errorf("retry-blocked: %w", rqErr)
+		}
+		fmt.Fprintf(os.Stderr, "loop: re-queued %d blocked task(s)\n", n)
+	}
 
 	maxPasses := loopMaxPasses
 	if maxPasses <= 0 {
@@ -202,16 +214,17 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 	}
 
 	// Each task runs in its own isolated git worktree so multiple loop agents
-	// can work in parallel without colliding on the working tree.
-	baseBranch := task.BaseBranch
-	if baseBranch == "" {
-		baseBranch = module.DefaultBranch()
-	}
-	branch := module.NewBranch(task.Description)
+	// can work in parallel without colliding on the working tree. On a retry,
+	// reuse the task's existing worktree to continue prior work (saves tokens).
 	projectName := module.ProjectName(root)
-	workdir, err := module.SetupWorktreeLocal(root, projectName, branch, baseBranch)
+	workdir, branch, err := resolveWorktree(root, projectName, task)
 	if err != nil {
 		return fmt.Errorf("setup worktree: %w", err)
+	}
+	if task.Branch != branch {
+		if err := store.UpdateTaskBranch(task.ID, branch); err != nil {
+			return fmt.Errorf("record task branch: %w", err)
+		}
 	}
 
 	// Build the mission.
@@ -260,6 +273,15 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 		}
 
 		_ = store.UpdateSession(sessID, "failed", time.Now())
+
+		// Stuck: identical gate failure repeated — the model can't fix it, so
+		// escalation/more cycles would only waste tokens. Block with feedback.
+		if _, ok := runErr.(*mission.ErrStuck); ok {
+			feedback := extractFeedback(out, runErr)
+			_ = store.UpdateTaskState(task.ID, "blocked", feedback)
+			fmt.Fprintf(os.Stderr, "loop: task %q stuck (identical failure repeated), blocked\n", task.ID)
+			return nil
+		}
 
 		// Check if it's a max-cycles error (task hit the cap).
 		if _, ok := runErr.(*mission.ErrMaxCycles); ok && loopEscalateTo != "" {
@@ -340,6 +362,21 @@ func markTaskBlocked(store *storage.SQLiteStore, taskID string) error {
 	return store.UpdateTaskState(taskID, "blocked", "")
 }
 
+// requeueBlocked flips blocked tasks back to needs-fix so the loop picks them
+// up again, continuing in their existing worktree. Returns the count re-queued.
+func requeueBlocked(store *storage.SQLiteStore) (int, error) {
+	blocked, err := store.QueryTasks(storage.TaskFilter{States: []string{"blocked"}})
+	if err != nil {
+		return 0, err
+	}
+	for _, t := range blocked {
+		if err := store.UpdateTaskState(t.ID, "needs-fix", t.LastFeedback); err != nil {
+			return 0, err
+		}
+	}
+	return len(blocked), nil
+}
+
 // openLoopStore opens the project's missions.db.
 func openLoopStore(root string) (*storage.SQLiteStore, error) {
 	dbPath := storage.DefaultDBPath()
@@ -347,6 +384,40 @@ func openLoopStore(root string) (*storage.SQLiteStore, error) {
 		dbPath = filepath.Join(root, ".colony", "missions.db")
 	}
 	return storage.Open(dbPath)
+}
+
+// resolveWorktree returns the worktree dir and branch for a task. If the task
+// already has a branch whose worktree still exists, it is reused (continue);
+// otherwise a fresh worktree is created. The branch slug derives from the task
+// description, falling back to the spec filename or task ID so it is never empty.
+func resolveWorktree(root, projectName string, task *storage.Task) (workdir, branch string, err error) {
+	if task.Branch != "" {
+		path := module.WorktreePath(projectName, task.Branch)
+		if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
+			return path, task.Branch, nil
+		}
+	}
+
+	baseBranch := task.BaseBranch
+	if baseBranch == "" {
+		baseBranch = module.DefaultBranch()
+	}
+	branch = module.NewBranch(branchDesc(task))
+	workdir, err = module.SetupWorktreeLocal(root, projectName, branch, baseBranch)
+	return workdir, branch, err
+}
+
+// branchDesc returns a non-empty label for branch naming: the task description,
+// else the spec filename (without extension), else the task ID.
+func branchDesc(task *storage.Task) string {
+	if task.Description != "" {
+		return task.Description
+	}
+	if task.SpecPath != "" {
+		base := filepath.Base(task.SpecPath)
+		return strings.TrimSuffix(base, filepath.Ext(base))
+	}
+	return task.ID
 }
 
 // taskInput resolves the builder input for a task: the spec file contents when
@@ -370,17 +441,24 @@ func taskInput(task *storage.Task) (string, error) {
 // extractFeedback returns a string representation of mission output or error
 // for use in last_feedback.
 func extractFeedback(out *mission.Output, runErr error) string {
-	// If this is a max-cycles error with a captured last output, use
-	// the last output's feedback text (the rejecting gate's output).
-	if errMax, ok := runErr.(*mission.ErrMaxCycles); ok && errMax.LastOutput != nil {
-		if txt := errMax.LastOutput.Envelope.OutputText(); txt != "" {
+	// If the error captured the last rejecting gate output (max-cycles or
+	// stuck), use its feedback text — the real failing gate output.
+	var last *mission.Output
+	switch e := runErr.(type) {
+	case *mission.ErrMaxCycles:
+		last = e.LastOutput
+	case *mission.ErrStuck:
+		last = e.LastOutput
+	}
+	if last != nil {
+		if txt := last.Envelope.OutputText(); txt != "" {
 			return txt
 		}
-		if errMax.LastOutput.Raw != "" {
-			return errMax.LastOutput.Raw
+		if last.Raw != "" {
+			return last.Raw
 		}
-		if errMax.LastOutput.Envelope.Feedback != "" {
-			return errMax.LastOutput.Envelope.Feedback
+		if last.Envelope.Feedback != "" {
+			return last.Envelope.Feedback
 		}
 	}
 

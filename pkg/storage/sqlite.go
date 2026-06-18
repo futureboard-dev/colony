@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -78,17 +79,18 @@ type SessionFilter struct {
 
 // Task represents a task in the loop queue with optional spec and gate overrides.
 type Task struct {
-	ID             string
-	Description    string
-	State          string // "open", "needs-fix", "done", "blocked"
-	SpecPath       string // path to the spec file (--file)
-	BaseBranch     string // base branch (--base)
-	GateOverrides  string // comma-joined gate names to skip, e.g. "format,lint"
-	Lang           string
-	CycleCount     int
-	LastFeedback   string
-	CreatedAt      time.Time
-	UpdatedAt      *time.Time
+	ID            string
+	Description   string
+	State         string // "open", "needs-fix", "done", "blocked"
+	SpecPath      string // path to the spec file (--file)
+	BaseBranch    string // base branch (--base)
+	GateOverrides string // comma-joined gate names to skip, e.g. "format,lint"
+	Lang          string
+	CycleCount    int
+	LastFeedback  string
+	Branch        string // worktree branch created for this task (for continue/reuse)
+	CreatedAt     time.Time
+	UpdatedAt     *time.Time
 }
 
 // TaskFilter controls which tasks to return from QueryTasks.
@@ -113,6 +115,7 @@ type Store interface {
 	InsertTask(t Task) error
 	QueryTasks(f TaskFilter) ([]Task, error)
 	UpdateTaskState(id, state, feedback string) error
+	UpdateTaskBranch(id, branch string) error
 	IncrementCycle(id string) error
 }
 
@@ -143,6 +146,13 @@ func Open(dbPath string) (*SQLiteStore, error) {
 	if _, err := db.Exec(schemaDDL); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate schema: %w", err)
+	}
+	// Idempotent column add for existing databases (SQLite lacks IF NOT EXISTS
+	// for ALTER TABLE), so retries reuse the same worktree.
+	if _, err := db.Exec(`ALTER TABLE tasks ADD COLUMN branch TEXT NOT NULL DEFAULT ''`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column") {
+		db.Close()
+		return nil, fmt.Errorf("migrate column branch: %w", err)
 	}
 	return &SQLiteStore{db: db}, nil
 }

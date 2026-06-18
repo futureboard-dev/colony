@@ -98,7 +98,12 @@ func workdirFrom(in Input) string {
 	return "."
 }
 
-// runLLMAndParse is a shared helper that calls the LLM and parses the envelope.
+// runLLMAndParse runs a code-writing agent (builder/fixer). Unlike LLM-judge
+// nodes, these agents write files and stop — they do NOT emit a decision
+// envelope (their prompts say "when done, stop"). The real APPROVED/REJECTED
+// decision comes from the downstream gate node, to which builder/fixer route
+// unconditionally. So success here just means "the agent finished; run the
+// gate." We return an APPROVED envelope carrying the agent's output as context.
 func runLLMAndParse(ctx context.Context, agentID string, cfg config.LLMConfig, workdir, promptText string) (Output, error) {
 	exec := llm.New(cfg)
 	var buf bytes.Buffer
@@ -106,25 +111,16 @@ func runLLMAndParse(ctx context.Context, agentID string, cfg config.LLMConfig, w
 	fmt.Fprintf(os.Stderr, "    %s │ <streaming…>\n", agentID)
 	if err := exec.RunAgent(ctx, workdir, promptText, stream); err != nil {
 		raw := buf.String()
-		var env Envelope
-		if jsonErr := json.Unmarshal([]byte(extractJSON(raw)), &env); jsonErr == nil && env.Decision != "" {
-			return Output{AgentID: agentID, Envelope: env, Raw: raw}, nil
-		}
-		return Output{AgentID: agentID, Raw: raw}, fmt.Errorf("agent %q: llm call failed: %w\n--- agent output ---\n%s---", agentID, err, raw)
+		return Output{AgentID: agentID, Raw: raw},
+			fmt.Errorf("agent %q: llm call failed: %w\n--- agent output ---\n%s---", agentID, err, raw)
 	}
 
 	raw := buf.String()
-	var env Envelope
-	if err := json.Unmarshal([]byte(extractJSON(raw)), &env); err != nil {
-		preview := raw
-		if len(preview) > 500 {
-			preview = preview[:500] + "...(truncated)"
-		}
-		return Output{AgentID: agentID, Raw: raw},
-			fmt.Errorf("agent %q: invalid JSON envelope: %w\n--- raw output ---\n%s---", agentID, err, preview)
-	}
-
-	return Output{AgentID: agentID, Envelope: env, Raw: raw}, nil
+	return Output{
+		AgentID:  agentID,
+		Envelope: Envelope{Decision: APPROVED, Output: mustMarshal(raw)},
+		Raw:      raw,
+	}, nil
 }
 
 // BuilderNodeFactory returns a NodeFactory for builder roles.

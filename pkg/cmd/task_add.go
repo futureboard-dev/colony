@@ -12,9 +12,9 @@ import (
 )
 
 var (
-	taskAddFile       string
-	taskAddBase       string
-	taskAddNoFormat   bool
+	taskAddFile     string
+	taskAddBase     string
+	taskAddNoFormat bool
 )
 
 // taskAddCmd represents the `colony task add` subcommand.

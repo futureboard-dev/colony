@@ -29,6 +29,18 @@ func (e *ErrMaxCycles) Error() string {
 	return fmt.Sprintf("max_cycles exceeded for node %q: mission failed", e.NodeID)
 }
 
+// ErrStuck is returned when a fix cycle reproduces the identical gate failure —
+// the fixer is making no progress, so the loop bails early instead of burning
+// further cycles. Carries the repeated output for feedback.
+type ErrStuck struct {
+	NodeID     string
+	LastOutput *Output
+}
+
+func (e *ErrStuck) Error() string {
+	return fmt.Sprintf("stuck at node %q: identical failure repeated, bailing", e.NodeID)
+}
+
 // Runner executes a mission graph.
 type Runner interface {
 	Run(ctx context.Context, m *Mission, g *Graph, sessionID string, store storage.Store) (*Output, error)
@@ -104,6 +116,10 @@ func (r *defaultRunner) Run(ctx context.Context, m *Mission, g *Graph, sessionID
 	// Used on back-edges so a rejecting upstream's feedback is merged with the
 	// node's prior context, instead of replacing it.
 	lastInputs := make(map[string][]Output)
+	// prevReject tracks the last REJECTED feedback that drove each back-edge, so
+	// we can bail early when a fix cycle produces the identical failure (the
+	// fixer is stuck and burning tokens to no effect).
+	prevReject := make(map[string]string)
 	stepNum := 0
 	active := 0
 	var finalOutput *Output
@@ -211,6 +227,20 @@ func (r *defaultRunner) Run(ctx context.Context, m *Mission, g *Graph, sessionID
 						}
 						return nil, cycErr
 					}
+					// Stuck-detection: if this back-edge fired before with the
+					// identical rejecting feedback, the fixer is making no
+					// progress — bail rather than burn another full cycle.
+					fb := nr.output.Envelope.Feedback
+					if prev, seen := prevReject[nextID]; seen && fb != "" && fb == prev {
+						stuckErr := &ErrStuck{NodeID: nextID, LastOutput: &nr.output}
+						cancel()
+						for active > 0 {
+							<-resultCh
+							active--
+						}
+						return nil, stuckErr
+					}
+					prevReject[nextID] = fb
 					// Merge the rejecting upstream's output with whatever inputs
 					// the target last ran with, so the target sees its prior
 					// context (e.g. the original spec) plus the new feedback.

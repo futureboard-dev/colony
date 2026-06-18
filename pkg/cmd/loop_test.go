@@ -527,6 +527,7 @@ func TestLoop_StaleSentinelClearedOnStart(t *testing.T) {
 		t.Errorf("unexpected error checking sentinel: %v", err)
 	}
 }
+
 // skipIfShort skips tests that drive a real agent CLI (claude/crush), which is
 // unavailable/slow in CI. Run the full suite locally with `go test` (no -short).
 func skipIfShort(t *testing.T) {

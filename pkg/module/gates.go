@@ -40,7 +40,7 @@ func CommandsFor(lang string) (LangCommands, error) {
 		}, nil
 	case "go":
 		return LangCommands{
-			Format:    "gofmt -w ./...",
+			Format:    "go fmt ./...",
 			Vet:       "go vet ./...",
 			Lint:      "golangci-lint run ./...",
 			TypeCheck: "go build ./...",

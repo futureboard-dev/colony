@@ -2,12 +2,12 @@ package mission
 
 // BuildGateFixOpts configures the BuildGateFix mission template.
 type BuildGateFixOpts struct {
-	Name       string
-	Input      string
-	Lang       string
-	Workdir    string          // directory the builder/fixer/gate operate in (worktree path); "" = current dir
-	SkipGates  map[string]bool // gate names to skip (e.g. {"format": true})
-	MaxCycles  int
+	Name      string
+	Input     string
+	Lang      string
+	Workdir   string          // directory the builder/fixer/gate operate in (worktree path); "" = current dir
+	SkipGates map[string]bool // gate names to skip (e.g. {"format": true})
+	MaxCycles int
 	// EscalationRole, when non-nil, wires an escalation node that runs after
 	// max-cycles with a red gate. The mission itself does not enforce the
 	// escalation transition — the caller (loop steward) handles it.

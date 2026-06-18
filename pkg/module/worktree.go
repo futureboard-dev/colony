@@ -23,6 +23,12 @@ func NewBranch(desc string) string {
 	return fmt.Sprintf("agent/%s-%s", Slugify(desc), ts)
 }
 
+// WorktreePath returns the filesystem path a worktree for the given project and
+// branch would occupy. Used to check whether an existing worktree is present.
+func WorktreePath(projectName, branch string) string {
+	return filepath.Join(WorktreeBase(), projectName, branch)
+}
+
 // SetupWorktree creates an isolated git worktree on a new branch.
 func SetupWorktree(projectRoot, projectName, branch, baseBranch string) (string, error) {
 	base := WorktreeBase()
