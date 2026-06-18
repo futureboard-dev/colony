@@ -25,6 +25,9 @@ var scoutTmpl string
 //go:embed review.md
 var reviewTmpl string
 
+//go:embed review_loop.md
+var reviewLoopTmpl string
+
 //go:embed spec_feature.md
 var specFeatureTmpl string
 
@@ -97,6 +100,13 @@ func Scout(spec string) (string, error) {
 
 func Review(spec, diff string) (string, error) {
 	return render(reviewTmpl, map[string]any{"Spec": spec, "Diff": diff})
+}
+
+// ReviewLoop returns the loop's envelope-format review prompt. The spec and diff
+// are injected under the prompt's # INPUT marker by the caller, so this returns
+// the static template unchanged.
+func ReviewLoop() string {
+	return reviewLoopTmpl
 }
 
 func SpecFeature(input string) (string, error) {

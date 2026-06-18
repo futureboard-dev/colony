@@ -218,4 +218,6 @@ func init() {
 	Register(RoleBuilder, BuilderNodeFactory)
 	// Register the fixer role — uses fix.md prompt via FixerNode.
 	Register(RoleFixer, FixerNodeFactory)
+	// Register the review role — LLM semantic gate via ReviewNode.
+	Register(RoleReview, ReviewNodeFactory)
 }

@@ -3,7 +3,9 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -41,6 +43,7 @@ var (
 	loopLang       string
 	loopIdleLimit  int
 	loopRetryBlock bool
+	loopReview     bool
 )
 
 func init() {
@@ -51,6 +54,7 @@ func init() {
 	loopCmd.Flags().StringVar(&loopLang, "lang", "go", "language for gates")
 	loopCmd.Flags().IntVar(&loopIdleLimit, "idle", 10, "consecutive idle passes before stopping")
 	loopCmd.Flags().BoolVar(&loopRetryBlock, "retry-blocked", false, "re-queue blocked tasks (needs-fix) to continue them in their existing worktree")
+	loopCmd.Flags().BoolVar(&loopReview, "review", false, "run an LLM review gate before marking a task done (also auto-enabled when a 'review' role is configured)")
 
 	loopCmd.AddCommand(loopStatusCmd)
 	loopCmd.AddCommand(loopScheduleCmd)
@@ -78,7 +82,7 @@ func runLoop(cmd *cobra.Command, args []string) error {
 		if rqErr != nil {
 			return fmt.Errorf("retry-blocked: %w", rqErr)
 		}
-		fmt.Fprintf(os.Stderr, "loop: re-queued %d blocked task(s)\n", n)
+		fmt.Fprintf(os.Stderr, "%sloop: re-queued %d blocked task(s)%s\n", ansiBlue, n, ansiReset)
 	}
 
 	maxPasses := loopMaxPasses
@@ -100,7 +104,7 @@ func runLoop(cmd *cobra.Command, args []string) error {
 	for {
 		// Check global pass cap.
 		if maxPasses > 0 && totalPasses >= maxPasses {
-			fmt.Fprintf(os.Stderr, "loop: reached max-passes (%d), exiting\n", maxPasses)
+			fmt.Fprintf(os.Stderr, "%sloop: reached max-passes (%d), exiting%s\n", ansiBlue, maxPasses, ansiReset)
 			break
 		}
 
@@ -110,9 +114,9 @@ func runLoop(cmd *cobra.Command, args []string) error {
 		}
 		if task == nil {
 			consecutiveIdle++
-			fmt.Fprintf(os.Stderr, "idle\n")
+			fmt.Fprintf(os.Stderr, "%sidle%s\n", ansiBlue, ansiReset)
 			if consecutiveIdle >= idleLimit {
-				fmt.Fprintf(os.Stderr, "loop: idle limit reached (%d consecutive), exiting\n", idleLimit)
+				fmt.Fprintf(os.Stderr, "%sloop: idle limit reached (%d consecutive), exiting%s\n", ansiBlue, idleLimit, ansiReset)
 				break
 			}
 			if loopOnce {
@@ -128,7 +132,7 @@ func runLoop(cmd *cobra.Command, args []string) error {
 		totalPasses++
 
 		if err := processTask(ctx, cfg, root, store, task); err != nil {
-			fmt.Fprintf(os.Stderr, "loop: task %q failed: %v\n", task.ID, err)
+			fmt.Fprintf(os.Stderr, "%sloop: task %q failed: %v%s\n", ansiRed, task.ID, err, ansiReset)
 			_ = markTaskBlocked(store, task.ID)
 		}
 
@@ -138,14 +142,14 @@ func runLoop(cmd *cobra.Command, args []string) error {
 
 		// Poll sentinel at pass boundary.
 		if sentinelExists(root) {
-			fmt.Fprintf(os.Stderr, "loop: stop sentinel detected, exiting\n")
+			fmt.Fprintf(os.Stderr, "%sloop: stop sentinel detected, exiting%s\n", ansiBlue, ansiReset)
 			_ = removeSentinel(root)
 			break
 		}
 
 		// Check context (signal) at pass boundary.
 		if ctx.Err() != nil {
-			fmt.Fprintf(os.Stderr, "loop: interrupted, exiting\n")
+			fmt.Fprintf(os.Stderr, "%sloop: interrupted, exiting%s\n", ansiBlue, ansiReset)
 			break
 		}
 	}
@@ -228,6 +232,14 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 		}
 	}
 
+	// Write the spec to SPEC.md in the worktree. The build/fix prompts instruct
+	// the agent to "read SPEC.md in this directory"; unlike craft/swarm, the loop
+	// resolves the spec inline, so without this the file the prompt names does
+	// not exist — weaker models then hallucinate or stub the implementation.
+	if err := os.WriteFile(filepath.Join(workdir, "SPEC.md"), []byte(input), 0644); err != nil {
+		return fmt.Errorf("write SPEC.md: %w", err)
+	}
+
 	// Build the mission.
 	opts := mission.BuildGateFixOpts{
 		Name:      "loop-" + missionLabel(task),
@@ -238,6 +250,11 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 	}
 	if loopEscalateTo != "" {
 		opts.EscalationRole = mission.RoleEscalation
+	}
+	// Enable the review gate when --review is passed or a review role is set in
+	// config.json. The model is resolved via cfg.CommandRole("loop", "review").
+	if loopReview || cfg.HasCommandRole("loop", mission.RoleReview) {
+		opts.ReviewRole = mission.RoleReview
 	}
 
 	m := mission.BuildGateFix(opts)
@@ -280,7 +297,7 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 		if _, ok := runErr.(*mission.ErrStuck); ok {
 			feedback := extractFeedback(out, runErr)
 			_ = store.UpdateTaskState(task.ID, "blocked", feedback)
-			fmt.Fprintf(os.Stderr, "loop: task %q stuck (identical failure repeated), blocked\n", task.ID)
+			fmt.Fprintf(os.Stderr, "%sloop: task %q stuck (identical failure repeated), blocked%s\n", ansiRed, task.ID, ansiReset)
 			return nil
 		}
 
@@ -304,9 +321,87 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 	}
 
 	_ = store.UpdateSession(sessID, "completed", time.Now())
-	// Gate green.
-	_ = store.UpdateTaskState(task.ID, "done", "")
+
+	// Gate green — finish the task like craft: drop SPEC.md, commit, push, open PR.
+	baseBranch := task.BaseBranch
+	if baseBranch == "" {
+		baseBranch = module.DefaultBranch()
+	}
+	prURL, finishErr := finishTask(workdir, branch, baseBranch, missionLabel(task))
+	if finishErr != nil {
+		fmt.Fprintf(os.Stderr, "%sloop: task %q built but finish failed: %v%s\n", ansiRed, task.ID, finishErr, ansiReset)
+		_ = store.UpdateTaskState(task.ID, "needs-fix", finishErr.Error())
+		return nil
+	}
+
+	fmt.Fprintf(os.Stderr, "%sloop: task %q done → %s%s\n", ansiGreen, task.ID, prURL, ansiReset)
+	_ = store.UpdateTaskState(task.ID, "done", prURL)
 	return nil
+}
+
+// finishTask mirrors craft's done-flow for a completed loop task: it removes the
+// transient SPEC.md, commits all worktree changes on the task branch, pushes the
+// branch to origin, and opens a PR against baseBranch. It returns the PR URL.
+func finishTask(workdir, branch, baseBranch, label string) (string, error) {
+	out := os.Stderr
+
+	_ = os.Remove(filepath.Join(workdir, "SPEC.md"))
+
+	add := exec.Command("git", "add", "-A")
+	add.Dir = workdir
+	if err := add.Run(); err != nil {
+		return "", fmt.Errorf("git add: %w", err)
+	}
+
+	// Nothing staged means the agent wrote no files — treat as a real failure so
+	// the task is not falsely marked done with an empty diff.
+	if diff := exec.Command("git", "diff", "--cached", "--quiet"); runInDir(diff, workdir) == nil {
+		return "", fmt.Errorf("no changes to commit — agent produced an empty diff")
+	}
+
+	commit := exec.Command("git", "commit", "-m", "loop: "+label)
+	commit.Dir = workdir
+	commit.Stdout = out
+	commit.Stderr = out
+	if err := commit.Run(); err != nil {
+		return "", fmt.Errorf("git commit: %w", err)
+	}
+	fmt.Fprintf(out, "%sloop: committed on branch %s%s\n", ansiBlue, branch, ansiReset)
+
+	push := exec.Command("git", "push", "-u", "origin", branch)
+	push.Dir = workdir
+	push.Stdout = out
+	push.Stderr = out
+	if err := push.Run(); err != nil {
+		return "", fmt.Errorf("git push: %w", err)
+	}
+	fmt.Fprintf(out, "%sloop: pushed branch %s%s\n", ansiBlue, branch, ansiReset)
+
+	args := []string{
+		"pr", "create",
+		"--base", baseBranch,
+		"--head", branch,
+		"--title", branch,
+		"--body", fmt.Sprintf("Automated by colony loop.\n\nBranch: `%s`\nBase: `%s`", branch, baseBranch),
+	}
+	if repo := remoteRepo(workdir); repo != "" {
+		args = append(args, "--repo", repo)
+	}
+	gh := exec.Command("gh", args...)
+	gh.Dir = workdir
+	var prURL strings.Builder
+	gh.Stdout = io.MultiWriter(out, &prURL)
+	gh.Stderr = out
+	if err := gh.Run(); err != nil {
+		return "", fmt.Errorf("gh pr create: %w", err)
+	}
+	return strings.TrimSpace(prURL.String()), nil
+}
+
+// runInDir runs cmd in dir and returns its error (nil = exit 0).
+func runInDir(cmd *exec.Cmd, dir string) error {
+	cmd.Dir = dir
+	return cmd.Run()
 }
 
 // escalateTask re-dispatches a max-cycled task on the escalation role.
@@ -348,7 +443,7 @@ func escalateTask(ctx context.Context, cfg *config.Config, root string, store *s
 	_ = store.UpdateSession(sessID, "completed", time.Now())
 
 	if runErr != nil {
-		fmt.Fprintf(os.Stderr, "escalation failed for task %q, marking blocked\n", task.ID)
+		fmt.Fprintf(os.Stderr, "%sescalation failed for task %q, marking blocked%s\n", ansiRed, task.ID, ansiReset)
 		_ = store.UpdateTaskState(task.ID, "blocked", extractFeedback(nil, runErr))
 		return markTaskBlocked(store, task.ID)
 	}

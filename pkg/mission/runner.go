@@ -19,6 +19,14 @@ const (
 	outputNode = "__output__"
 )
 
+// ANSI colors for the runner's per-step status marks.
+const (
+	clrReset = "\033[0m"
+	clrGreen = "\033[32m"
+	clrRed   = "\033[31m"
+	clrBlue  = "\033[34m"
+)
+
 // ErrMaxCycles is returned when a cyclic node exceeds the mission's max_cycles limit.
 type ErrMaxCycles struct {
 	NodeID     string
@@ -99,7 +107,7 @@ func (r *defaultRunner) Run(ctx context.Context, m *Mission, g *Graph, sessionID
 
 	startedAt := time.Now()
 
-	fmt.Fprintf(r.logWriter, "Mission %q [%s]\n", m.Name, sessionID)
+	fmt.Fprintf(r.logWriter, "%sMission %q [%s]%s\n", clrBlue, m.Name, sessionID, clrReset)
 
 	type nodeResult struct {
 		nodeID string
@@ -140,9 +148,9 @@ func (r *defaultRunner) Run(ctx context.Context, m *Mission, g *Graph, sessionID
 
 		role := g.Agents[nodeID].Role
 		if m.MaxCycles > 0 {
-			fmt.Fprintf(r.logWriter, "  ▶ %s (%s) step %d run %d/%d\n", nodeID, role, thisStep, thisRun, m.MaxCycles)
+			fmt.Fprintf(r.logWriter, "  %s▶ %s (%s) step %d run %d/%d%s\n", clrBlue, nodeID, role, thisStep, thisRun, m.MaxCycles, clrReset)
 		} else {
-			fmt.Fprintf(r.logWriter, "  ▶ %s (%s) step %d\n", nodeID, role, thisStep)
+			fmt.Fprintf(r.logWriter, "  %s▶ %s (%s) step %d%s\n", clrBlue, nodeID, role, thisStep, clrReset)
 		}
 
 		go func() {
@@ -268,7 +276,7 @@ func (r *defaultRunner) Run(ctx context.Context, m *Mission, g *Graph, sessionID
 
 	totalSteps := stepNum
 	totalDuration := time.Since(startedAt)
-	fmt.Fprintf(r.logWriter, "Mission %q completed: %d steps, %s\n", m.Name, totalSteps, fmtDuration(totalDuration))
+	fmt.Fprintf(r.logWriter, "%sMission %q completed: %d steps, %s%s\n", clrGreen, m.Name, totalSteps, fmtDuration(totalDuration), clrReset)
 
 	return finalOutput, nil
 }
@@ -324,18 +332,18 @@ func (r *defaultRunner) executeNode(
 
 	// Log completion.
 	duration := finishedAt.Sub(startedAt)
-	mark := "✓"
+	mark, color := "✓", clrGreen
 	if execErr != nil {
-		mark = "✗"
+		mark, color = "✗", clrRed
 	} else {
 		switch out.Envelope.Decision {
 		case REJECTED, REPROCESS:
-			mark = "✗"
+			mark, color = "✗", clrRed
 		case CLARIFICATION:
-			mark = "?"
+			mark, color = "?", clrBlue
 		}
 	}
-	fmt.Fprintf(r.logWriter, "  %s %s (%s) [%s] (%s)\n", mark, nodeID, agent.Role, decision, fmtDuration(duration))
+	fmt.Fprintf(r.logWriter, "  %s%s %s (%s) [%s] (%s)%s\n", color, mark, nodeID, agent.Role, decision, fmtDuration(duration), clrReset)
 
 	step := storage.Step{
 		SessionID:  sessionID,

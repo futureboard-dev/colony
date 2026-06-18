@@ -24,6 +24,7 @@ const (
 	ansiRed    = "\033[31m"
 	ansiCyan   = "\033[36m"
 	ansiYellow = "\033[33m"
+	ansiBlue   = "\033[34m"
 )
 
 var (

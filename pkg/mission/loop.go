@@ -12,6 +12,11 @@ type BuildGateFixOpts struct {
 	// max-cycles with a red gate. The mission itself does not enforce the
 	// escalation transition — the caller (loop steward) handles it.
 	EscalationRole string
+	// ReviewRole, when non-empty, inserts an LLM review node between a green gate
+	// and __output__: gate(APPROVED) → review → (APPROVED → __output__) /
+	// (REJECTED → fixer). It catches stubs/unimplemented spec items the
+	// deterministic gate cannot, before a task is committed.
+	ReviewRole string
 }
 
 // BuildGateFix returns a populated Mission configured for the build→gate→fix
@@ -35,6 +40,20 @@ func BuildGateFix(opts BuildGateFixOpts) *Mission {
 		{From: "gate", OnApprove: "__output__"},
 		{From: "gate", OnReject: "fixer"},
 		{From: "fixer", To: "gate"}, // back-edge: fixer → gate
+	}
+
+	if opts.ReviewRole != "" {
+		agents = append(agents, Agent{ID: "review", Role: opts.ReviewRole})
+		// Redirect the green gate to review instead of straight to output.
+		for i := range flow {
+			if flow[i].From == "gate" && flow[i].OnApprove == "__output__" {
+				flow[i].OnApprove = "review"
+			}
+		}
+		flow = append(flow,
+			Edge{From: "review", OnApprove: "__output__"},
+			Edge{From: "review", OnReject: "fixer"}, // back-edge: review → fixer
+		)
 	}
 
 	if opts.EscalationRole != "" {

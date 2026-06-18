@@ -2,6 +2,8 @@ package mission
 
 import (
 	"testing"
+
+	"github.com/jirateep/colony/pkg/config"
 )
 
 // TestBuildGateFix_HasBuilderGateFixer verifies the mission has builder, gate,
@@ -135,6 +137,68 @@ func TestBuildGateFix_EscalationNode(t *testing.T) {
 	}
 	if !hasOutputEdge {
 		t.Error("missing edge: escalation -> __output__")
+	}
+}
+
+// TestBuildGateFix_ReviewNode verifies that when ReviewRole is set, the green
+// gate routes to a review node, which then routes to output (approve) or back
+// to the fixer (reject) — and that the result is a valid graph.
+func TestBuildGateFix_ReviewNode(t *testing.T) {
+	m := BuildGateFix(BuildGateFixOpts{
+		Name:       "with-review",
+		Input:      "test",
+		Lang:       "go",
+		MaxCycles:  3,
+		ReviewRole: RoleReview,
+	})
+
+	found := false
+	for _, a := range m.Agents {
+		if a.ID == "review" && a.Role == RoleReview {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected review agent with role %q", RoleReview)
+	}
+
+	var gateToReview, gateToOutput, reviewToOutput, reviewToFixer bool
+	for _, e := range m.Flow {
+		switch {
+		case e.From == "gate" && e.OnApprove == "review":
+			gateToReview = true
+		case e.From == "gate" && e.OnApprove == "__output__":
+			gateToOutput = true
+		case e.From == "review" && e.OnApprove == "__output__":
+			reviewToOutput = true
+		case e.From == "review" && e.OnReject == "fixer":
+			reviewToFixer = true
+		}
+	}
+	if !gateToReview {
+		t.Error("missing edge: gate -> review on approve")
+	}
+	if gateToOutput {
+		t.Error("gate should no longer route directly to __output__ when review is enabled")
+	}
+	if !reviewToOutput {
+		t.Error("missing edge: review -> __output__ on approve")
+	}
+	if !reviewToFixer {
+		t.Error("missing edge: review -> fixer on reject")
+	}
+
+	// The wired mission must build into a valid graph. The review→fixer→gate
+	// cycle is bounded by the existing fixer→gate back-edge (max_cycles).
+	g, err := BuildGraph(m, DefaultRegistry, func(string) config.LLMConfig {
+		return config.LLMConfig{Provider: "anthropic", Model: "claude-opus-4-8"}
+	})
+	if err != nil {
+		t.Fatalf("BuildGraph with review node failed: %v", err)
+	}
+	if !g.IsBackEdge("fixer", "gate") {
+		t.Error("expected fixer -> gate to remain a back-edge bounding the review cycle")
 	}
 }
 
