@@ -87,6 +87,12 @@ func (s *SQLiteStore) UpdateTaskBranch(id, branch string) error {
 	return err
 }
 
+// DeleteTask removes a task row by id. Deleting a missing id is a no-op.
+func (s *SQLiteStore) DeleteTask(id string) error {
+	_, err := s.db.Exec(`DELETE FROM tasks WHERE id=?`, id)
+	return err
+}
+
 // IncreCycle increments the cycle_count for a task.
 func (s *SQLiteStore) IncrementCycle(id string) error {
 	_, err := s.db.Exec(

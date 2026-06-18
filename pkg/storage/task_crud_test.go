@@ -124,6 +124,32 @@ func TestTaskIncrementCycle(t *testing.T) {
 	}
 }
 
+func TestDeleteTask(t *testing.T) {
+	db := openTestDB(t)
+
+	now := time.Now().Truncate(time.Second).UTC()
+	if err := db.InsertTask(Task{ID: "t-del", Description: "delete me", State: "open", CreatedAt: now}); err != nil {
+		t.Fatalf("InsertTask: %v", err)
+	}
+
+	if err := db.DeleteTask("t-del"); err != nil {
+		t.Fatalf("DeleteTask: %v", err)
+	}
+
+	tasks, err := db.QueryTasks(TaskFilter{})
+	if err != nil {
+		t.Fatalf("QueryTasks: %v", err)
+	}
+	if len(tasks) != 0 {
+		t.Fatalf("expected 0 tasks after delete, got %d", len(tasks))
+	}
+
+	// Deleting a missing id is a no-op, not an error.
+	if err := db.DeleteTask("t-missing"); err != nil {
+		t.Errorf("DeleteTask(missing) returned error: %v", err)
+	}
+}
+
 func TestTaskUpdateStateWithFeedback(t *testing.T) {
 	db := openTestDB(t)
 

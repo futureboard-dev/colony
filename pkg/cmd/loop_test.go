@@ -528,6 +528,42 @@ func TestLoop_StaleSentinelClearedOnStart(t *testing.T) {
 	}
 }
 
+func TestBranchDesc(t *testing.T) {
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "TASK.md")
+	if err := os.WriteFile(specPath, []byte("# Feature: add-user-auth\n\nbody\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name string
+		task storage.Task
+		want string
+	}{
+		{"description wins", storage.Task{Description: "do the thing", SpecPath: specPath}, "do the thing"},
+		{"spec title from contents", storage.Task{SpecPath: specPath}, "add-user-auth"},
+		{"unreadable spec falls back to filename", storage.Task{SpecPath: filepath.Join(dir, "missing-spec.md")}, "missing-spec"},
+		{"nothing falls back to id", storage.Task{ID: "abc-123"}, "abc-123"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := branchDesc(&tc.task); got != tc.want {
+				t.Errorf("branchDesc = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestMissionLabel(t *testing.T) {
+	if got := missionLabel(&storage.Task{Description: "Add User Auth"}); got != "add-user-auth" {
+		t.Errorf("missionLabel = %q, want %q", got, "add-user-auth")
+	}
+	// Empty slug (whitespace-only description) falls back to the task ID.
+	if got := missionLabel(&storage.Task{ID: "id-1", Description: "   "}); got != "id-1" {
+		t.Errorf("missionLabel empty-slug fallback = %q, want %q", got, "id-1")
+	}
+}
+
 // skipIfShort skips tests that drive a real agent CLI (claude/crush), which is
 // unavailable/slow in CI. Run the full suite locally with `go test` (no -short).
 func skipIfShort(t *testing.T) {

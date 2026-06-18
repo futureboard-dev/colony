@@ -54,6 +54,7 @@ func init() {
 
 	loopCmd.AddCommand(loopStatusCmd)
 	loopCmd.AddCommand(loopScheduleCmd)
+	loopCmd.AddCommand(loopClearCmd)
 }
 
 func runLoop(cmd *cobra.Command, args []string) error {
@@ -229,7 +230,7 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 
 	// Build the mission.
 	opts := mission.BuildGateFixOpts{
-		Name:      "loop-" + task.ID,
+		Name:      "loop-" + missionLabel(task),
 		Input:     input,
 		Lang:      lang,
 		Workdir:   workdir,
@@ -315,7 +316,7 @@ func escalateTask(ctx context.Context, cfg *config.Config, root string, store *s
 		return err
 	}
 	opts := mission.BuildGateFixOpts{
-		Name:      "escalation-" + task.ID,
+		Name:      "escalation-" + missionLabel(task),
 		Input:     input,
 		Lang:      lang,
 		MaxCycles: 1,
@@ -408,14 +409,29 @@ func resolveWorktree(root, projectName string, task *storage.Task) (workdir, bra
 }
 
 // branchDesc returns a non-empty label for branch naming: the task description,
-// else the spec filename (without extension), else the task ID.
+// else the spec's title (read from its contents), else the spec filename
+// without extension, else the task ID.
 func branchDesc(task *storage.Task) string {
 	if task.Description != "" {
 		return task.Description
 	}
 	if task.SpecPath != "" {
 		base := filepath.Base(task.SpecPath)
+		if data, err := os.ReadFile(task.SpecPath); err == nil {
+			if d := module.ExtractTaskDesc(string(data), base); d != "" {
+				return d
+			}
+		}
 		return strings.TrimSuffix(base, filepath.Ext(base))
+	}
+	return task.ID
+}
+
+// missionLabel returns a readable mission-name suffix derived from the task's
+// description/spec, falling back to the task ID so it is never empty.
+func missionLabel(task *storage.Task) string {
+	if label := module.Slugify(branchDesc(task)); label != "" {
+		return label
 	}
 	return task.ID
 }
