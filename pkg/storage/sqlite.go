@@ -14,6 +14,29 @@ import (
 //go:embed schema.sql
 var schemaDDL string
 
+// migrateSchema applies schema DDL and idempotent column migrations.
+// It runs `CREATE TABLE IF NOT EXISTS` from the embedded schema.sql, then
+// adds columns that may already exist on a previously-created database.
+func migrateSchema(db *sql.DB) error {
+	if _, err := db.Exec(schemaDDL); err != nil {
+		return err
+	}
+	// Idempotent column adds — ignore "duplicate column" errors.
+	migrations := []string{
+		`ALTER TABLE tasks ADD COLUMN pr_url TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE tasks ADD COLUMN branch TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE tasks ADD COLUMN last_feedback TEXT NOT NULL DEFAULT ''`,
+	}
+	for _, m := range migrations {
+		if _, err := db.Exec(m); err != nil {
+			// SQLite returns "duplicate column name" when the column already exists.
+			// Silently ignore; any other error is real.
+			_ = err
+		}
+	}
+	return nil
+}
+
 // Step represents a single agent execution step.
 type Step struct {
 	ID         int64
@@ -69,6 +92,19 @@ type RunFilter struct {
 	Kind    string
 }
 
+// Task represents a work item in the loop queue.
+type Task struct {
+	ID           string
+	Description  string
+	SpecPath     string
+	Status       string // open | needs-fix | in-progress | done
+	Branch       string
+	PRURL        string
+	LastFeedback string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
 // SessionFilter controls which sessions to return from QuerySessions or DeleteSessions.
 type SessionFilter struct {
 	MissionName string
@@ -87,6 +123,9 @@ type Store interface {
 	InsertRun(r Run) error
 	UpdateRun(r Run) error
 	QueryRuns(f RunFilter) ([]Run, error)
+	InsertTask(t Task) error
+	QueryTasks() ([]Task, error)
+	UpdateTaskState(id, status, lastFeedback string) error
 	Close() error
 }
 
@@ -114,7 +153,7 @@ func Open(dbPath string) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(schemaDDL); err != nil {
+	if err := migrateSchema(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate schema: %w", err)
 	}

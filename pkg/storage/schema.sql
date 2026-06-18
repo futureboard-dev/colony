@@ -22,6 +22,18 @@ CREATE TABLE IF NOT EXISTS steps (
     FOREIGN KEY (session_id) REFERENCES sessions(id)
 );
 
+CREATE TABLE IF NOT EXISTS tasks (
+    id          TEXT     PRIMARY KEY,
+    description TEXT     NOT NULL DEFAULT '',
+    spec_path   TEXT     NOT NULL DEFAULT '',
+    status      TEXT     NOT NULL DEFAULT 'open',
+    branch      TEXT     NOT NULL DEFAULT '',
+    pr_url      TEXT     NOT NULL DEFAULT '',
+    last_feedback TEXT   NOT NULL DEFAULT '',
+    created_at  DATETIME NOT NULL,
+    updated_at  DATETIME NOT NULL
+);
+
 -- runs holds the structured facts for blueprint/swarm pipeline runs.
 -- The raw streaming output stays in .colony/logs/; log_path points to it.
 CREATE TABLE IF NOT EXISTS runs (
