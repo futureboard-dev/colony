@@ -125,6 +125,13 @@ func runLoop(cmd *cobra.Command, args []string) error {
 			if err := sleepInterruptibly(ctx); err != nil {
 				return nil
 			}
+			// Poll sentinel after waking from idle sleep so a stop request is
+			// honoured without waiting to pick and process another task.
+			if sentinelExists(root) {
+				fmt.Fprintf(os.Stderr, "%sloop: stop sentinel detected, exiting%s\n", ansiBlue, ansiReset)
+				_ = removeSentinel(root)
+				break
+			}
 			continue
 		}
 
@@ -310,10 +317,15 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 			return nil
 		}
 
-		// Max-cycles hit but no escalation configured → needs-fix with feedback.
+		// Max-cycles hit but no escalation configured → block (terminal) with the
+		// failing gate output as feedback. Re-queuing to needs-fix would have the
+		// daemon re-pick the task and re-run the whole mission with a fresh cycle
+		// budget, looping forever. A blocked task is not re-picked; resume it
+		// explicitly with `colony loop --retry-blocked`.
 		if _, ok := runErr.(*mission.ErrMaxCycles); ok {
 			feedback := extractFeedback(out, runErr)
-			_ = store.UpdateTaskState(task.ID, "needs-fix", feedback)
+			_ = store.UpdateTaskState(task.ID, "blocked", feedback)
+			fmt.Fprintf(os.Stderr, "%sloop: task %q hit max-cycles, blocked (use --retry-blocked to resume)%s\n", ansiRed, task.ID, ansiReset)
 			return nil
 		}
 
@@ -327,10 +339,14 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 	if baseBranch == "" {
 		baseBranch = module.DefaultBranch()
 	}
+	// The gate has passed, so the build is complete — the task is done regardless
+	// of whether delivery (push/PR) succeeds. A delivery failure is an operational
+	// issue to surface, never a reason to re-run the builder: the code is already
+	// committed, so a re-run would only produce an empty diff and spin forever.
 	prURL, finishErr := finishTask(workdir, branch, baseBranch, missionLabel(task))
 	if finishErr != nil {
-		fmt.Fprintf(os.Stderr, "%sloop: task %q built but finish failed: %v%s\n", ansiRed, task.ID, finishErr, ansiReset)
-		_ = store.UpdateTaskState(task.ID, "needs-fix", finishErr.Error())
+		fmt.Fprintf(os.Stderr, "%sloop: task %q done (gate passed) but delivery failed: %v%s\n", ansiYellow, task.ID, finishErr, ansiReset)
+		_ = store.UpdateTaskState(task.ID, "done", "delivery failed: "+finishErr.Error())
 		return nil
 	}
 

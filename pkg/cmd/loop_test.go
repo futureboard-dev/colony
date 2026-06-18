@@ -341,30 +341,17 @@ func TestLoop_SentinelStop(t *testing.T) {
 		_ = runLoop(cmd, nil)
 	}()
 
-	// Wait for the loop to process the first task (fails fast) and enter idle
-	// sleep. During idle sleep, insert a new task and write the sentinel so
-	// that when the loop wakes and picks the task, the sentinel is present at
-	// the pass boundary.
+	// Let the loop start (clearing any stale sentinel at startup) and begin
+	// processing the in-flight task. Then write the sentinel and cancel the
+	// context: cancelling makes the runner return, bringing the loop to a pass
+	// boundary where the now-present sentinel is detected. Because the sentinel
+	// is checked before the context-cancel exit, the loop exits via the sentinel
+	// path and removes the file.
 	time.Sleep(100 * time.Millisecond)
-
-	store, err = storage.Open(filepath.Join(dir, ".colony", "missions.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.InsertTask(storage.Task{
-		ID:          "sentinel-test-2",
-		Description: "second task",
-		State:       "open",
-		Lang:        "go",
-		CreatedAt:   time.Now(),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	store.Close()
-
 	if err := os.WriteFile(sentinel, nil, 0644); err != nil {
 		t.Fatal(err)
 	}
+	cancel()
 
 	// Wait for the loop to detect the sentinel and exit.
 	doneCh := make(chan struct{})
