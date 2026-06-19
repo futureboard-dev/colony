@@ -835,3 +835,128 @@ func waitForFile(path string, timeout time.Duration) error {
 // CI/PR observation behaviour (red→needs-fix, green→done, PR comment→requeue)
 // is covered in the mission package (pkg/mission/observe_test.go), which tests
 // ObserveTasksForPR directly with the store and the gh CLI shelled out.
+
+// TestFinishTask_SquashCommit verifies that finishTask squashes multiple prior
+// commits into a single commit using git reset --soft.
+func TestFinishTask_SquashCommit(t *testing.T) {
+	// Create temporary directory that acts as both repo root and worktree.
+	workdir := t.TempDir()
+
+	// Init git repo with an origin remote so origin/main exists.
+	runCmd(t, workdir, "git", "init", "--initial-branch=main")
+	runCmd(t, workdir, "git", "config", "user.email", "test@example.com")
+	runCmd(t, workdir, "git", "config", "user.name", "test")
+
+	// Initial commit that serves as the base.
+	writeFileForCmd(t, workdir, "base.txt", "base")
+	runCmd(t, workdir, "git", "add", "base.txt")
+	runCmd(t, workdir, "git", "commit", "-m", "base", "--quiet")
+
+	// Create origin remote pointing to itself (so origin/main resolves).
+	runCmd(t, workdir, "git", "remote", "add", "origin", workdir)
+
+	// Create the base branch ref so origin/<base> resolves.
+	base := "main"
+	runCmd(t, workdir, "git", "push", "origin", "main")
+
+	// Create a feature branch diverging from main.
+	runCmd(t, workdir, "git", "checkout", "-b", "feature/test", "--quiet")
+
+	// Simulate multiple WIP agent commits.
+	writeFileForCmd(t, workdir, "file1.txt", "first change")
+	runCmd(t, workdir, "git", "add", "file1.txt")
+	runCmd(t, workdir, "git", "commit", "-m", "wip: first commit", "--quiet")
+
+	writeFileForCmd(t, workdir, "file2.txt", "second change")
+	runCmd(t, workdir, "git", "add", "file2.txt")
+	runCmd(t, workdir, "git", "commit", "-m", "wip: second commit", "--quiet")
+
+	writeFileForCmd(t, workdir, "file3.txt", "third change")
+	runCmd(t, workdir, "git", "add", "file3.txt")
+	runCmd(t, workdir, "git", "commit", "-m", "wip: third commit", "--quiet")
+
+	// Verify we have multiple commits on the branch.
+	revCount := func() int {
+		out := runCmdOut(t, workdir, "git", "rev-list", "--count", "HEAD", "^origin/"+base)
+		return atoi(out)
+	}
+	if n := revCount(); n < 3 {
+		t.Fatalf("expected at least 3 WIP commits, got %d", n)
+	}
+
+	// Run finishTask which should squash. Note: gh/pr step may fail if gh is
+	// not installed; that is a delivery failure, not a squash failure — the
+	// commit is still made locally.
+	prURL, finishErr := finishTask(workdir, "feature/test", base, "test-label")
+	if finishErr != nil && !strings.Contains(finishErr.Error(), "gh pr create") {
+		t.Fatalf("finishTask unexpected error: %v", finishErr)
+	}
+	_ = prURL
+
+	// After finishTask there should be exactly one commit on the branch.
+	if n := revCount(); n != 1 {
+		t.Errorf("expected 1 commit after squash, got %d", n)
+	}
+
+	// Verify the commit message.
+	log := runCmdOut(t, workdir, "git", "log", "--format=%s", "-1")
+	if !strings.Contains(log, "loop: test-label") {
+		t.Errorf("expected commit message 'loop: test-label', got %q", log)
+	}
+}
+
+// TestGetConflictFiles_NoConflicts verifies getConflictFiles returns nil for a
+// clean worktree.
+func TestGetConflictFiles_NoConflicts(t *testing.T) {
+	workdir := t.TempDir()
+	runCmd(t, workdir, "git", "init", "--initial-branch=main")
+	runCmd(t, workdir, "git", "config", "user.email", "test@example.com")
+	runCmd(t, workdir, "git", "config", "user.name", "test")
+	writeFileForCmd(t, workdir, "readme.md", "hello")
+	runCmd(t, workdir, "git", "add", "readme.md")
+	runCmd(t, workdir, "git", "commit", "-m", "init", "--quiet")
+
+	files := getConflictFiles(workdir)
+	if len(files) != 0 {
+		t.Errorf("expected no conflict files, got %v", files)
+	}
+}
+
+// Helper: runCmd runs a command in dir and fails the test on error.
+func runCmd(t *testing.T, dir, name string, args ...string) {
+	t.Helper()
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("cmd %s %v: %v\n%s", name, args, err, string(out))
+	}
+}
+
+// Helper: runCmdOut runs a command and returns trimmed stdout.
+func runCmdOut(t *testing.T, dir, name string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("cmd %s %v: %v", name, args, err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// Helper: writeFileForCmd writes content to a file in dir.
+func writeFileForCmd(t *testing.T, dir, name, content string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0644); err != nil {
+		t.Fatalf("write %s: %v", name, err)
+	}
+}
+
+// Helper: atoi parses an integer from a trimmed string.
+func atoi(s string) int {
+	var n int
+	if _, err := fmt.Sscanf(s, "%d", &n); err != nil {
+		return 0
+	}
+	return n
+}

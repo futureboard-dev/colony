@@ -14,6 +14,16 @@ Reject hard on any of these — they are the failure modes that matter most:
   exist in the codebase instead of using them.
 - Tests that assert nothing, are skipped, or only cover trivial paths while the
   real behaviour goes untested.
+- **Redeclarations**: The diff redeclares a type, function, or constant that
+  already exists in the codebase (e.g. defining `Status` when the project
+  already has one). REJECT these — they will not compile or produce naming
+  collisions.
+- **Duplicate schema objects**: The diff adds a new struct, enum, or interface
+  that is functionally identical to an existing one. REJECT these as unnecessary
+  duplication.
+- **Stubs and TODO placeholders**: Any function body that contains only a TODO
+  comment, a panic, `return nil`, `return "", nil`, or is otherwise empty of
+  real logic. REJECT these outright — they are not implementations.
 
 Be strict but fair: if the implementation genuinely fulfils the spec and the
 code is sound, APPROVE it. Do not reject over style nits, naming, or formatting
