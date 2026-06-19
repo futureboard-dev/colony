@@ -3,6 +3,8 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -18,9 +20,10 @@ var (
 
 var loopStatusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "Show the loop queue, feedback, and recent sessions",
-	Long: `Display the current loop status: queued tasks (open/needs-fix),
-blocked/needs-fix feedback, and recent loop and escalation sessions.
+	Short: "Show the loop queue, feedback, daemon liveness, and recent sessions",
+	Long: `Display the current loop status: daemon running/not (pid, uptime),
+queued tasks (open/needs-fix), blocked/needs-fix feedback, and recent loop and
+escalation sessions.
 
 Flags:
   --state <s>    Filter queue by state (open, needs-fix, blocked, done)
@@ -44,6 +47,11 @@ func runLoopStatus(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("open store: %w", err)
 	}
 	defer func() { _ = store.Close() }()
+
+	// 0. Daemon liveness (pid, uptime) — only in text mode.
+	if !statusJSON {
+		emitDaemonStatus(cmd, root)
+	}
 
 	// 1. Build queue filter.
 	stateFilter := []string{"open", "needs-fix", "blocked"}
@@ -221,4 +229,27 @@ func durationStr(start time.Time, finished *time.Time) string {
 		return fmt.Sprintf("%ds", int(d.Seconds()))
 	}
 	return fmt.Sprintf("%dm%ds", int(d.Minutes()), int(d.Seconds())%60)
+}
+
+// emitDaemonStatus prints the --watch daemon liveness (running/not, pid,
+// uptime) based on the project's loop.pid file.
+func emitDaemonStatus(cmd *cobra.Command, root string) {
+	colonyPath := filepath.Join(root, ".colony")
+	pidPath := filepath.Join(colonyPath, "loop.pid")
+
+	cmd.Println("=== Daemon ===")
+	running, pid, _ := daemonUptime(colonyPath)
+	switch {
+	case running:
+		cmd.Printf("  running (pid=%d)\n", pid)
+		if fi, err := os.Stat(pidPath); err == nil {
+			uptime := time.Since(fi.ModTime()).Truncate(time.Second)
+			cmd.Printf("  uptime: %s\n", uptime)
+		}
+	case pid > 0:
+		cmd.Printf("  stale pidfile (pid=%d) — process gone\n", pid)
+	default:
+		cmd.Println("  not running")
+	}
+	cmd.Println()
 }

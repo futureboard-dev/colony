@@ -73,6 +73,41 @@ func TestTaskQueryByStates(t *testing.T) {
 	}
 }
 
+func TestTaskQueryByID(t *testing.T) {
+	db := openTestDB(t)
+
+	now := time.Now().Truncate(time.Second).UTC()
+	task := Task{
+		ID: "test-task-1", Description: "fix login", SpecPath: "SPEC.md",
+		Branch: "feature/login", PRURL: "https://github.com/owner/repo/pull/1",
+		State: "open", CreatedAt: now,
+	}
+	if err := db.InsertTask(task); err != nil {
+		t.Fatalf("InsertTask: %v", err)
+	}
+
+	tasks, err := db.QueryTasks(TaskFilter{ID: "test-task-1"})
+	if err != nil {
+		t.Fatalf("QueryTasks: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+	got := tasks[0]
+	if got.Description != "fix login" {
+		t.Errorf("description: got %q, want %q", got.Description, "fix login")
+	}
+	if got.State != "open" {
+		t.Errorf("state: got %q, want %q", got.State, "open")
+	}
+	if got.Branch != "feature/login" {
+		t.Errorf("branch: got %q, want %q", got.Branch, "feature/login")
+	}
+	if got.PRURL != "https://github.com/owner/repo/pull/1" {
+		t.Errorf("pr_url: got %q, want %q", got.PRURL, "https://github.com/owner/repo/pull/1")
+	}
+}
+
 func TestTaskUpdateState(t *testing.T) {
 	db := openTestDB(t)
 
@@ -175,5 +210,54 @@ func TestTaskUpdateStateWithFeedback(t *testing.T) {
 	}
 	if tasks[0].LastFeedback != feedback {
 		t.Errorf("expected last_feedback %q, got %q", feedback, tasks[0].LastFeedback)
+	}
+}
+
+func TestPickNextOpenTaskPrioritizesNeedsFix(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().Truncate(time.Second).UTC()
+	// Insert needs-fix task older than open task.
+	if err := db.InsertTask(Task{
+		ID: "needs-fix-old", Description: "needs fix", State: "needs-fix",
+		CreatedAt: now.Add(-1 * time.Hour),
+	}); err != nil {
+		t.Fatalf("InsertTask: %v", err)
+	}
+	if err := db.InsertTask(Task{
+		ID: "open-recent", Description: "open recent", State: "open",
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("InsertTask: %v", err)
+	}
+
+	picked, err := db.PickNextOpenTask()
+	if err != nil {
+		t.Fatalf("PickNextOpenTask: %v", err)
+	}
+	if picked == nil {
+		t.Fatal("expected a task, got nil")
+	}
+	if picked.ID != "needs-fix-old" {
+		t.Errorf("expected needs-fix-old (prioritized), got %s", picked.ID)
+	}
+}
+
+func TestPickNextOpenTaskEmpty(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().Truncate(time.Second).UTC()
+	// Only done tasks.
+	if err := db.InsertTask(Task{
+		ID: "done-1", Description: "done", State: "done",
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("InsertTask: %v", err)
+	}
+
+	picked, err := db.PickNextOpenTask()
+	if err != nil {
+		t.Fatalf("PickNextOpenTask: %v", err)
+	}
+	if picked != nil {
+		t.Errorf("expected nil for no open tasks, got %+v", picked)
 	}
 }
