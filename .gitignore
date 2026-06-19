@@ -68,3 +68,4 @@ temp/
 CRUSH.md
 CLAUDE.md
 .haadex
+.golangci-cache
