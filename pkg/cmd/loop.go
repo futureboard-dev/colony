@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -19,6 +20,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// loopPollInterval is the sleep between passes in --watch daemon mode.
+const loopPollInterval = 30 * time.Second
+
 var loopCmd = &cobra.Command{
 	Use:   "loop",
 	Short: "Autonomous steward: build→gate→fix loop",
@@ -27,6 +31,7 @@ Picks the next actionable task, runs BuildGateFix on it, and records the outcome
 
 Flags:
   --once          Run a single pass (pick one task, process it, exit)
+  --watch         Run as a long-lived daemon (polls queue, observes CI/PR)
   --max-passes    Stop after N total passes (0 = unlimited)
   --max-cycles    Cap the inner fix loop per task (default 5)
   --escalate-to   Model to use for escalation role (default: off)
@@ -37,6 +42,7 @@ Flags:
 
 var (
 	loopOnce       bool
+	loopWatch      bool
 	loopMaxPasses  int
 	loopMaxCycles  int
 	loopEscalateTo string
@@ -48,6 +54,7 @@ var (
 
 func init() {
 	loopCmd.Flags().BoolVar(&loopOnce, "once", false, "run a single pass and exit")
+	loopCmd.Flags().BoolVar(&loopWatch, "watch", false, "run as a long-lived daemon (polls queue, observes CI/PR)")
 	loopCmd.Flags().IntVar(&loopMaxPasses, "max-passes", 0, "stop after N total passes (0 = unlimited)")
 	loopCmd.Flags().IntVar(&loopMaxCycles, "max-cycles", 5, "cap the inner fix loop per task")
 	loopCmd.Flags().StringVar(&loopEscalateTo, "escalate-to", "", "model for escalation role (default: off)")
@@ -65,6 +72,13 @@ func runLoop(cmd *cobra.Command, args []string) error {
 	cfg, root, err := loadConfig()
 	if err != nil {
 		return err
+	}
+
+	// --watch runs the resident daemon: pidfile, log rotation, continuous
+	// polling, and the OBSERVE phase (CI/PR). It reuses the same pass body
+	// (pickNextTask → processTask) as the one-shot path.
+	if loopWatch {
+		return runWatchDaemon(cmd.Context(), cfg, root)
 	}
 
 	// Clear stale sentinel on startup if present.
@@ -604,4 +618,110 @@ func extractFeedback(out *mission.Output, runErr error) string {
 		return runErr.Error()
 	}
 	return ""
+}
+
+// runWatchDaemon is the long-lived --watch daemon: it manages the pidfile and
+// rotating log, then polls the queue continuously, running the same pass body
+// (pickNextTask → processTask) as the one-shot path plus an OBSERVE phase
+// (CI/PR) each cycle. It exits cleanly on SIGINT/SIGTERM or the stop sentinel.
+func runWatchDaemon(ctx context.Context, cfg *config.Config, root string) error {
+	colonyPath := filepath.Join(root, ".colony")
+	if err := os.MkdirAll(colonyPath, 0755); err != nil {
+		return fmt.Errorf("create .colony dir: %w", err)
+	}
+
+	pidPath := filepath.Join(colonyPath, "loop.pid")
+	logPath := filepath.Join(colonyPath, "loop.log")
+
+	// Pidfile lock: only one daemon per project. A stale pidfile (dead process)
+	// is cleared by writePidfile.
+	if err := writePidfile(pidPath); err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(pidPath) }()
+
+	// Clear stale stop sentinel on startup so the daemon does not self-stop.
+	_ = removeSentinel(root)
+
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("open daemon log: %w", err)
+	}
+	defer func() { _ = logFile.Close() }()
+
+	multiOut := io.MultiWriter(os.Stderr, logFile)
+	slog.SetDefault(slog.New(slog.NewTextHandler(logFile, &slog.HandlerOptions{Level: slog.LevelInfo})))
+
+	store, err := openLoopStore(root)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = store.Close() }()
+
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	fmt.Fprintf(multiOut, "%sloop: daemon started (pid=%d)%s\n", ansiBlue, os.Getpid(), ansiReset)
+	slog.Info("daemon started", "pid", os.Getpid())
+
+	for {
+		select {
+		case <-ctx.Done():
+			fmt.Fprintf(multiOut, "%sloop: daemon interrupted, exiting%s\n", ansiBlue, ansiReset)
+			return nil
+		default:
+		}
+
+		// Honour the stop sentinel at the top of each pass.
+		if sentinelExists(root) {
+			fmt.Fprintf(multiOut, "%sloop: stop sentinel detected, exiting%s\n", ansiBlue, ansiReset)
+			_ = removeSentinel(root)
+			return nil
+		}
+
+		// Rotate the daemon log if it has grown past the threshold.
+		if err := maybeRotate(logPath, 10<<20, 3); err != nil {
+			slog.Warn("log rotation failed", "error", err)
+		}
+
+		// One pass: pick the next actionable task and process it (reusing the
+		// full build→gate→fix engine and done-flow).
+		task, err := pickNextTask(ctx, store)
+		if err != nil {
+			slog.Error("pick task failed", "error", err)
+		} else if task != nil {
+			if err := processTask(ctx, cfg, root, store, task); err != nil {
+				slog.Error("task failed", "id", task.ID, "error", err)
+				_ = markTaskBlocked(store, task.ID)
+			}
+		}
+
+		// OBSERVE phase: poll CI/PR for tasks with a pr_url. Runs only here, in
+		// --watch mode — the one-shot path never observes.
+		observeAllTasks(ctx, store)
+
+		// Sleep before the next poll, waking early on cancellation.
+		select {
+		case <-ctx.Done():
+			fmt.Fprintf(multiOut, "%sloop: daemon interrupted, exiting%s\n", ansiBlue, ansiReset)
+			return nil
+		case <-time.After(loopPollInterval):
+		}
+	}
+}
+
+// observeAllTasks runs the OBSERVE phase: polls CI/PR for tasks with a pr_url
+// and applies any feedback via store.UpdateTaskState. Called only from the
+// --watch daemon.
+func observeAllTasks(ctx context.Context, store *storage.SQLiteStore) {
+	results, err := mission.ObserveTasksForPR(ctx, store)
+	if err != nil {
+		slog.Warn("observe failed", "error", err)
+		return
+	}
+	for _, r := range results {
+		if r.Changed {
+			slog.Info("task observed", "id", r.TaskID, "status", r.NewStatus, "feedback", r.NewFeedback)
+		}
+	}
 }

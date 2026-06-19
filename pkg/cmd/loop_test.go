@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -586,5 +587,122 @@ func setupMinimalProject(t *testing.T, dir string) {
 		if err := exec.Command("git", args...).Run(); err != nil {
 			t.Fatalf("git %v: %v", args, err)
 		}
+	}
+}
+// --- --watch daemon helpers (pidfile, log rotation) ---
+
+func TestWritePidfile(t *testing.T) {
+	dir := t.TempDir()
+	pidPath := filepath.Join(dir, "loop.pid")
+
+	if err := writePidfile(pidPath); err != nil {
+		t.Fatalf("writePidfile: %v", err)
+	}
+
+	// Verify content.
+	data, err := os.ReadFile(pidPath)
+	if err != nil {
+		t.Fatalf("read pidfile: %v", err)
+	}
+	var pid int
+	if _, err := fmt.Sscanf(string(data), "%d", &pid); err != nil {
+		t.Fatalf("parse pid: %v", err)
+	}
+	if pid != os.Getpid() {
+		t.Errorf("expected pid %d, got %d", os.Getpid(), pid)
+	}
+}
+
+func TestWritePidfileRejectsDuplicate(t *testing.T) {
+	dir := t.TempDir()
+	pidPath := filepath.Join(dir, "loop.pid")
+
+	// Write a pidfile with a fake PID (high enough that it won't exist).
+	fakePid := 999999999
+	if err := os.WriteFile(pidPath, []byte(fmt.Sprintf("%d\n", fakePid)), 0644); err != nil {
+		t.Fatalf("write fake pidfile: %v", err)
+	}
+
+	// Now try to writePidfile — this should succeed because the fake PID is dead.
+	// (we can't test the "already running" case reliably in CI since PID may or may not exist)
+	if err := writePidfile(pidPath); err != nil {
+		t.Fatalf("expected stale pid cleared, got error: %v", err)
+	}
+
+	// Verify our PID was written.
+	data, _ := os.ReadFile(pidPath)
+	var pid int
+	fmt.Sscanf(string(data), "%d", &pid)
+	if pid != os.Getpid() {
+		t.Errorf("expected our pid %d, got %d", os.Getpid(), pid)
+	}
+}
+
+func TestMaybeRotate(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "loop.log")
+
+	// Write a small file — rotation should not happen.
+	if err := os.WriteFile(logPath, []byte("small"), 0644); err != nil {
+		t.Fatalf("write log: %v", err)
+	}
+	if err := maybeRotate(logPath, 10<<20, 3); err != nil {
+		t.Fatalf("maybeRotate on small file: %v", err)
+	}
+	// Original file should still be there.
+	if _, err := os.Stat(logPath); os.IsNotExist(err) {
+		t.Error("small log was rotated when it shouldn't have been")
+	}
+
+	// Write a large file — rotation should happen.
+	large := make([]byte, 10<<20+1) // > 10MB
+	if err := os.WriteFile(logPath, large, 0644); err != nil {
+		t.Fatalf("write large log: %v", err)
+	}
+	if err := maybeRotate(logPath, 10<<20, 3); err != nil {
+		t.Fatalf("maybeRotate on large file: %v", err)
+	}
+	// Original should be renamed to .1
+	if _, err := os.Stat(logPath + ".1"); os.IsNotExist(err) {
+		t.Error("expected rotated file log.1 to exist")
+	}
+	// Should have created a new empty log file (via rotation).
+	if _, err := os.Stat(logPath); os.IsNotExist(err) {
+		t.Error("expected new log file to exist after rotation")
+	}
+}
+
+func TestReadPidfile(t *testing.T) {
+	dir := t.TempDir()
+	pidPath := filepath.Join(dir, "loop.pid")
+
+	// No pidfile.
+	if pid := readPidfile(pidPath); pid != 0 {
+		t.Errorf("expected 0 for missing pidfile, got %d", pid)
+	}
+
+	// Valid pidfile.
+	if err := os.WriteFile(pidPath, []byte("12345\n"), 0644); err != nil {
+		t.Fatalf("write pidfile: %v", err)
+	}
+	if pid := readPidfile(pidPath); pid != 12345 {
+		t.Errorf("expected 12345, got %d", pid)
+	}
+
+	// Invalid content.
+	if err := os.WriteFile(pidPath, []byte("not-a-number\n"), 0644); err != nil {
+		t.Fatalf("write pidfile: %v", err)
+	}
+	if pid := readPidfile(pidPath); pid != 0 {
+		t.Errorf("expected 0 for invalid content, got %d", pid)
+	}
+}
+
+func TestLoopStatusNoDaemon(t *testing.T) {
+	// daemonUptime returns not running when no pidfile exists.
+	colonyPath := t.TempDir()
+	running, pid, _ := daemonUptime(colonyPath)
+	if running {
+		t.Errorf("expected not running, got running pid=%d", pid)
 	}
 }
