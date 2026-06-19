@@ -94,8 +94,8 @@ func TestBuildGateFix_MaxCyclesSets(t *testing.T) {
 		Name:  "default-cycles",
 		Input: "test",
 	})
-	if m2.MaxCycles != 5 {
-		t.Errorf("expected default MaxCycles 5, got %d", m2.MaxCycles)
+	if m2.MaxCycles != 3 {
+		t.Errorf("expected default MaxCycles 3, got %d", m2.MaxCycles)
 	}
 }
 

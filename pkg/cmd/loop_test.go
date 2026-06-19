@@ -289,7 +289,7 @@ func setupLoopCmd(ctx context.Context) *cobra.Command {
 	cmd.SetContext(ctx)
 	cmd.Flags().BoolVar(&loopOnce, "once", false, "")
 	cmd.Flags().IntVar(&loopMaxPasses, "max-passes", 0, "")
-	cmd.Flags().IntVar(&loopMaxCycles, "max-cycles", 5, "")
+	cmd.Flags().IntVar(&loopMaxCycles, "max-cycles", 3, "")
 	cmd.Flags().StringVar(&loopEscalateTo, "escalate-to", "", "")
 	cmd.Flags().StringVar(&loopLang, "lang", "go", "")
 	cmd.Flags().IntVar(&loopIdleLimit, "idle", 10, "")

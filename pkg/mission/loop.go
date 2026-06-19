@@ -64,7 +64,7 @@ func BuildGateFix(opts BuildGateFixOpts) *Mission {
 
 	maxCycles := opts.MaxCycles
 	if maxCycles <= 0 {
-		maxCycles = 5 // default
+		maxCycles = 3 // default
 	}
 
 	return &Mission{

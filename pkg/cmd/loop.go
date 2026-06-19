@@ -33,7 +33,7 @@ Flags:
   --once          Run a single pass (pick one task, process it, exit)
   --watch         Run as a long-lived daemon (polls queue, observes CI/PR)
   --max-passes    Stop after N total passes (0 = unlimited)
-  --max-cycles    Cap the inner fix loop per task (default 5)
+  --max-cycles    Cap the inner fix loop per task (default 3)
   --escalate-to   Model to use for escalation role (default: off)
   --lang          Language for gates (default: go)
   --idle          Consecutive idle passes before stopping (default 10)`,
@@ -56,7 +56,7 @@ func init() {
 	loopCmd.Flags().BoolVar(&loopOnce, "once", false, "run a single pass and exit")
 	loopCmd.Flags().BoolVar(&loopWatch, "watch", false, "run as a long-lived daemon (polls queue, observes CI/PR)")
 	loopCmd.Flags().IntVar(&loopMaxPasses, "max-passes", 0, "stop after N total passes (0 = unlimited)")
-	loopCmd.Flags().IntVar(&loopMaxCycles, "max-cycles", 5, "cap the inner fix loop per task")
+	loopCmd.Flags().IntVar(&loopMaxCycles, "max-cycles", 3, "cap the inner fix loop per task")
 	loopCmd.Flags().StringVar(&loopEscalateTo, "escalate-to", "", "model for escalation role (default: off)")
 	loopCmd.Flags().StringVar(&loopLang, "lang", "go", "language for gates")
 	loopCmd.Flags().IntVar(&loopIdleLimit, "idle", 10, "consecutive idle passes before stopping")
@@ -288,8 +288,10 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 		return fmt.Errorf("build graph: %w", err)
 	}
 
-	// Create a session and run the mission.
-	sessID := fmt.Sprintf("loop-%s-%s", task.ID, time.Now().Format("20060102-150405"))
+	// Create a session and run the mission. Derive the session ID from the
+	// worktree branch (stripping the "agent/" prefix) so `loop status` lines up
+	// with the worktree name instead of showing the raw task UUID.
+	sessID := "loop-" + strings.TrimPrefix(branch, "agent/")
 	if err := store.InsertSession(storage.Session{
 		ID:          sessID,
 		MissionName: m.Name,

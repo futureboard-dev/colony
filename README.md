@@ -313,6 +313,48 @@ picks tasks from the queue, builds/attempts them, gates the result, and loops
 back on failure. A human can stop the loop, inspect status, or schedule it at
 the OS level.
 
+### Queueing tasks
+
+The loop processes tasks from a queue stored in `.colony/missions.db`. Enqueue
+work with `colony task add` — each call inserts an `open` task that the loop
+picks up on its next pass (it selects tasks in state `open` or `needs-fix`).
+
+```bash
+# Queue an inline description
+colony task add "add rate limiting to the API"
+
+# Queue an authored spec — the loop writes it to SPEC.md inside the task's
+# isolated worktree, where the build/fix prompts expect to read it
+colony task add --file SPEC.md
+
+# Set the base branch the task's worktree branches from
+colony task add --file SPEC.md --base develop
+
+# Skip the format gate for this task
+colony task add --file SPEC.md --no-format
+```
+
+| Flag          | Default | Description                                  |
+| ------------- | ------- | -------------------------------------------- |
+| `--file`      | ""      | Path to a spec file (stored in `spec_path`)  |
+| `--base`      | ""      | Base branch the worktree branches from       |
+| `--no-format` | false   | Skip the format gate for this task           |
+
+`colony task add` prints the new task ID on success. Verify the queue with
+`colony loop status`.
+
+> **`colony task add` vs `colony task`.** `task add` enqueues a task for the
+> autonomous loop. Plain `colony task "…"` instead creates a worktree and opens
+> an **interactive** agent session — it does not touch the loop queue.
+
+A typical spec-to-loop flow:
+
+```bash
+colony task add --file SPEC.md   # 1. enqueue the spec
+colony loop --once               # 2. process one task and exit (or `colony loop` / `--watch`)
+colony loop status               # 3. inspect queue, feedback, and sessions
+```
+
 ### Loop lifecycle
 
 ```bash
