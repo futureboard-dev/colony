@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -589,6 +590,7 @@ func setupMinimalProject(t *testing.T, dir string) {
 		}
 	}
 }
+
 // --- --watch daemon helpers (pidfile, log rotation) ---
 
 func TestWritePidfile(t *testing.T) {
@@ -706,3 +708,130 @@ func TestLoopStatusNoDaemon(t *testing.T) {
 		t.Errorf("expected not running, got running pid=%d", pid)
 	}
 }
+
+// TestWatchDaemonLifecycle verifies the daemon lifecycle: pidfile written on
+// start, removed on clean exit via the stop sentinel.
+func TestWatchDaemonLifecycle(t *testing.T) {
+	dir := t.TempDir()
+	setupMinimalProject(t, dir)
+
+	origWd, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	defer func() { _ = os.Chdir(origWd) }()
+
+	cfg, root, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+
+	pidPath := filepath.Join(root, ".colony", "loop.pid")
+	stopPath := filepath.Join(root, ".colony", "loop.stop")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runWatchDaemon(ctx, cfg, root)
+	}()
+
+	// Wait for pidfile to appear.
+	if err := waitForFile(pidPath, 2*time.Second); err != nil {
+		t.Fatalf("pidfile not created: %v", err)
+	}
+
+	// Verify pidfile content.
+	pid := readPidfile(pidPath)
+	if pid == 0 {
+		t.Fatal("expected non-zero pid in pidfile")
+	}
+
+	// Stop via sentinel.
+	if err := os.WriteFile(stopPath, nil, 0644); err != nil {
+		t.Fatalf("write stop sentinel: %v", err)
+	}
+
+	if err := <-done; err != nil {
+		t.Fatalf("daemon exited with error: %v", err)
+	}
+
+	// Pidfile should be removed on clean exit.
+	if _, err := os.Stat(pidPath); err == nil {
+		t.Error("pidfile still exists after daemon exit")
+	}
+}
+
+// TestWatchDaemonRejectsDuplicate verifies that a second --watch fails with an
+// error when the pidfile already references a running process.
+func TestWatchDaemonRejectsDuplicate(t *testing.T) {
+	colonyPath := t.TempDir()
+	pidPath := filepath.Join(colonyPath, "loop.pid")
+
+	// Write our own pid so the lock check sees a running process.
+	if err := os.WriteFile(pidPath, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0644); err != nil {
+		t.Fatalf("write pidfile: %v", err)
+	}
+
+	err := writePidfile(pidPath)
+	if err == nil {
+		t.Fatal("expected duplicate daemon error, got nil")
+	}
+	if !strings.Contains(err.Error(), "already running") {
+		t.Errorf("expected 'already running' error, got: %v", err)
+	}
+}
+
+// TestWatchDaemonLogRotation verifies that log rotation occurs when the log
+// exceeds the size threshold.
+func TestWatchDaemonLogRotation(t *testing.T) {
+	colonyPath := t.TempDir()
+	logPath := filepath.Join(colonyPath, "loop.log")
+
+	// Write a small file — rotation should not happen.
+	if err := os.WriteFile(logPath, []byte("small"), 0644); err != nil {
+		t.Fatalf("write log: %v", err)
+	}
+	if err := maybeRotate(logPath, 10<<20, 3); err != nil {
+		t.Fatalf("maybeRotate on small file: %v", err)
+	}
+	if _, err := os.Stat(logPath); os.IsNotExist(err) {
+		t.Error("small log was rotated when it shouldn't have been")
+	}
+
+	// Write a large file — rotation should happen.
+	large := make([]byte, 10<<20+1)
+	if err := os.WriteFile(logPath, large, 0644); err != nil {
+		t.Fatalf("write large log: %v", err)
+	}
+	if err := maybeRotate(logPath, 10<<20, 3); err != nil {
+		t.Fatalf("maybeRotate on large file: %v", err)
+	}
+
+	// Original renamed to .1, new log created.
+	if _, err := os.Stat(logPath + ".1"); os.IsNotExist(err) {
+		t.Error("expected rotated file log.1 to exist")
+	}
+	if _, err := os.Stat(logPath); os.IsNotExist(err) {
+		t.Error("expected new log file to exist after rotation")
+	}
+}
+
+// waitForFile waits up to timeout for a file to exist.
+func waitForFile(path string, timeout time.Duration) error {
+	deadline := time.After(timeout)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return nil
+		}
+		select {
+		case <-deadline:
+			return fmt.Errorf("timed out waiting for %s", path)
+		default:
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+}
+
+// CI/PR observation behaviour (red→needs-fix, green→done, PR comment→requeue)
+// is covered in the mission package (pkg/mission/observe_test.go), which tests
+// ObserveTasksForPR directly with the store and the gh CLI shelled out.
