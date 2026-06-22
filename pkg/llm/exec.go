@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/jirateep/colony/pkg/config"
@@ -41,7 +42,7 @@ func (e *Executor) RunHeadless(ctx context.Context, workdir, prompt string, out 
 	}
 	cmd := exec.CommandContext(ctx, cli, e.headlessArgs(prompt)...)
 	cmd.Dir = workdir
-	cmd.Env = os.Environ()
+	cmd.Env = cleanEnvForClaude()
 	cmd.Stdout = out
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -63,7 +64,7 @@ func (e *Executor) RunAgent(ctx context.Context, workdir, prompt string, out io.
 	}
 	cmd := exec.CommandContext(ctx, cli, e.agentArgs(prompt)...)
 	cmd.Dir = workdir
-	cmd.Env = os.Environ()
+	cmd.Env = cleanEnvForClaude()
 
 	stdoutW, stderrW := out, out
 	if out == nil {
@@ -212,6 +213,23 @@ func (e *Executor) validateKeyIfNeeded() error {
 		return nil
 	}
 	return e.cfg.ValidateKey()
+}
+
+// cleanEnvForClaude returns os.Environ() with CLAUDE_CODE_CHILD_SESSION stripped.
+// That var tells the claude CLI it's a tool subprocess inside Claude Code and
+// should use API-key auth — which fails when the user has a subscription (session
+// auth). Dropping it lets the subprocess authenticate normally (session or API key)
+// while preserving all other Claude Code vars so subscription auth passes through.
+func cleanEnvForClaude() []string {
+	env := os.Environ()
+	out := make([]string, 0, len(env))
+	for _, e := range env {
+		key, _, _ := strings.Cut(e, "=")
+		if key != "CLAUDE_CODE_CHILD_SESSION" {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 func checkInstalled(cli string) error {

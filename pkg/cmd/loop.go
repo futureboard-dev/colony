@@ -66,6 +66,101 @@ func init() {
 	loopCmd.AddCommand(loopStatusCmd)
 	loopCmd.AddCommand(loopScheduleCmd)
 	loopCmd.AddCommand(loopClearCmd)
+	loopCmd.AddCommand(loopRetryReviewCmd)
+}
+
+// loopRetryReviewCmd runs just the review step on a blocked task's existing
+// worktree, skipping builder and gate. Useful when review failed due to an
+// auth/config issue and the built code is already correct.
+var loopRetryReviewCmd = &cobra.Command{
+	Use:   "retry-review <task-id>",
+	Short: "Re-run only the review gate on a blocked task's existing worktree",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runLoopRetryReview,
+}
+
+func runLoopRetryReview(cmd *cobra.Command, args []string) error {
+	taskID := args[0]
+
+	cfg, root, err := loadConfig()
+	if err != nil {
+		return err
+	}
+
+	store, err := openLoopStore(root)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = store.Close() }()
+
+	tasks, err := store.QueryTasks(storage.TaskFilter{ID: taskID})
+	if err != nil {
+		return fmt.Errorf("query task: %w", err)
+	}
+	if len(tasks) == 0 {
+		return fmt.Errorf("task %q not found", taskID)
+	}
+	task := &tasks[0]
+
+	if task.Branch == "" {
+		return fmt.Errorf("task %q has no recorded branch — has it been built yet?", taskID)
+	}
+
+	projectName := module.ProjectName(root)
+	workdir := module.WorktreePath(projectName, task.Branch)
+	if info, statErr := os.Stat(workdir); statErr != nil || !info.IsDir() {
+		return fmt.Errorf("worktree %q not found — cannot retry review without existing build", workdir)
+	}
+
+	reviewCfg := cfg.CommandRole("loop", mission.RoleReview)
+	if reviewCfg.Provider == "" {
+		return fmt.Errorf("no review role configured in .colony/config.json under commands.loop.roles.review")
+	}
+
+	fmt.Fprintf(os.Stderr, "%sloop: retrying review for task %q on worktree %s%s\n", ansiBlue, taskID, workdir, ansiReset)
+
+	node := mission.NewReviewNode("review", reviewCfg)
+	out, runErr := node.Run(cmd.Context(), mission.Input{
+		Params: map[string]any{"workdir": workdir},
+	})
+
+	if runErr != nil {
+		_ = store.UpdateTaskState(task.ID, "blocked", runErr.Error())
+		return fmt.Errorf("review failed: %w", runErr)
+	}
+
+	if out.Envelope.Decision != mission.APPROVED {
+		feedback := out.Envelope.Feedback
+		_ = store.UpdateTaskState(task.ID, "blocked", feedback)
+		fmt.Fprintf(os.Stderr, "%sloop: review REJECTED — task blocked\n%s%s\n", ansiRed, feedback, ansiReset)
+		return nil
+	}
+
+	fmt.Fprintf(os.Stderr, "%sloop: review APPROVED — integrating%s\n", ansiGreen, ansiReset)
+
+	lang := task.Lang
+	if lang == "" {
+		lang = loopLang
+	}
+	baseBranch := task.BaseBranch
+	if baseBranch == "" {
+		baseBranch = module.DefaultBranch()
+	}
+
+	if err := integrateTask(workdir, task.Branch, baseBranch, lang, task, store); err != nil {
+		return nil // integrateTask already marked blocked
+	}
+
+	prURL, finishErr := finishTask(workdir, task.Branch, baseBranch, missionLabel(task))
+	if finishErr != nil {
+		fmt.Fprintf(os.Stderr, "%sloop: task %q done (review passed) but delivery failed: %v%s\n", ansiYellow, task.ID, finishErr, ansiReset)
+		_ = store.UpdateTaskState(task.ID, "done", "delivery failed: "+finishErr.Error())
+		return nil
+	}
+
+	fmt.Fprintf(os.Stderr, "%sloop: task %q done → %s%s\n", ansiGreen, task.ID, prURL, ansiReset)
+	_ = store.UpdateTaskState(task.ID, "done", prURL)
+	return nil
 }
 
 func runLoop(cmd *cobra.Command, args []string) error {
