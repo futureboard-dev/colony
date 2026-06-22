@@ -72,14 +72,11 @@ func SetupWorktreeLocal(projectRoot, projectName, branch, baseBranch string) (st
 		return "", err
 	}
 
-	// Resolve a base ref that exists locally. Prefer the named base branch;
-	// fall back to HEAD if it doesn't resolve.
 	baseRef := baseBranch
 	if baseRef == "" {
 		baseRef = "HEAD"
-	}
-	if err := exec.Command("git", "-C", projectRoot, "rev-parse", "--verify", baseRef).Run(); err != nil {
-		baseRef = "HEAD"
+	} else if err := exec.Command("git", "-C", projectRoot, "rev-parse", "--verify", baseRef).Run(); err != nil {
+		return "", fmt.Errorf("base branch %q not found locally", baseRef)
 	}
 
 	if err := gitCmd(projectRoot, "worktree", "add", worktreePath, "-b", branch,
