@@ -34,7 +34,12 @@ func (c LLMConfig) KeyEnvName() string {
 }
 
 // ValidateKey checks that the required API key environment variable is set.
+// Anthropic is skipped — the claude CLI manages its own auth and does not need
+// ANTHROPIC_API_KEY; forwarding a key from env would be rejected by the CLI.
 func (c LLMConfig) ValidateKey() error {
+	if c.Provider == "anthropic" {
+		return nil
+	}
 	key := c.KeyEnvName()
 	if key == "" {
 		return fmt.Errorf("unknown provider %q: cannot derive API key env var — set api_key_env in config", c.Provider)

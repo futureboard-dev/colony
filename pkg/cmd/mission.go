@@ -9,7 +9,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jirateep/colony/pkg/config"
-	"github.com/jirateep/colony/pkg/mission"
+	"github.com/jirateep/colony/pkg/mission/graph"
+	"github.com/jirateep/colony/pkg/mission/nodes"
 	"github.com/jirateep/colony/pkg/storage"
 )
 
@@ -78,7 +79,7 @@ func runMission(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	m, err := mission.LoadMission(missionFile)
+	m, err := graph.LoadMission(missionFile)
 	if err != nil {
 		return err
 	}
@@ -87,7 +88,10 @@ func runMission(cmd *cobra.Command, args []string) error {
 		m.Input = missionInput
 	}
 
-	g, err := mission.BuildGraph(m, mission.DefaultRegistry, func(role string) config.LLMConfig {
+	reg := graph.NewRegistry()
+	nodes.Register(reg)
+
+	g, err := graph.BuildGraph(m, reg, func(role string) config.LLMConfig {
 		return cfg.Role(role)
 	})
 	if err != nil {
@@ -111,7 +115,7 @@ func runMission(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("insert session: %w", err)
 	}
 
-	runner := mission.NewRunner()
+	runner := graph.NewRunner()
 	out, runErr := runner.Run(cmd.Context(), m, g, sessID, store)
 
 	if runErr != nil {
@@ -192,7 +196,7 @@ func runAudit(cmd *cobra.Command, args []string) error {
 		fmt.Printf("%-4d %-4s %-20s %-16s %-10s %d\n",
 			s.StepNum, s.SubStep, s.AgentID, s.Role, s.Decision, s.DurationMS)
 		if auditShowOutput && s.OutputJSON != "" {
-			var env mission.Envelope
+			var env graph.Envelope
 			if err := json.Unmarshal([]byte(s.OutputJSON), &env); err == nil && env.OutputText() != "" {
 				fmt.Printf("    output: %s\n", env.OutputText())
 			} else {

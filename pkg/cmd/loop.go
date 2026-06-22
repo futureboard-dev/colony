@@ -14,8 +14,11 @@ import (
 	"time"
 
 	"github.com/jirateep/colony/pkg/config"
-	"github.com/jirateep/colony/pkg/mission"
+	"github.com/jirateep/colony/pkg/mission/blueprint"
+	"github.com/jirateep/colony/pkg/mission/graph"
+	"github.com/jirateep/colony/pkg/mission/nodes"
 	"github.com/jirateep/colony/pkg/module"
+	"github.com/jirateep/colony/pkg/observe"
 	"github.com/jirateep/colony/pkg/storage"
 	"github.com/spf13/cobra"
 )
@@ -112,15 +115,15 @@ func runLoopRetryReview(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("worktree %q not found — cannot retry review without existing build", workdir)
 	}
 
-	reviewCfg := cfg.CommandRole("loop", mission.RoleReview)
+	reviewCfg := cfg.CommandRole("loop", graph.RoleReview)
 	if reviewCfg.Provider == "" {
 		return fmt.Errorf("no review role configured in .colony/config.json under commands.loop.roles.review")
 	}
 
 	fmt.Fprintf(os.Stderr, "%sloop: retrying review for task %q on worktree %s%s\n", ansiBlue, taskID, workdir, ansiReset)
 
-	node := mission.NewReviewNode("review", reviewCfg)
-	out, runErr := node.Run(cmd.Context(), mission.Input{
+	node := nodes.NewReviewNode("review", reviewCfg)
+	out, runErr := node.Run(cmd.Context(), graph.Input{
 		Params: map[string]any{"workdir": workdir},
 	})
 
@@ -129,7 +132,7 @@ func runLoopRetryReview(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("review failed: %w", runErr)
 	}
 
-	if out.Envelope.Decision != mission.APPROVED {
+	if out.Envelope.Decision != graph.APPROVED {
 		feedback := out.Envelope.Feedback
 		_ = store.UpdateTaskState(task.ID, "blocked", feedback)
 		fmt.Fprintf(os.Stderr, "%sloop: review REJECTED — task blocked\n%s%s\n", ansiRed, feedback, ansiReset)
@@ -169,14 +172,10 @@ func runLoop(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// --watch runs the resident daemon: pidfile, log rotation, continuous
-	// polling, and the OBSERVE phase (CI/PR). It reuses the same pass body
-	// (pickNextTask → processTask) as the one-shot path.
 	if loopWatch {
 		return runWatchDaemon(cmd.Context(), cfg, root)
 	}
 
-	// Clear stale sentinel on startup if present.
 	_ = removeSentinel(root)
 
 	store, err := openLoopStore(root)
@@ -185,7 +184,6 @@ func runLoop(cmd *cobra.Command, args []string) error {
 	}
 	defer func() { _ = store.Close() }()
 
-	// Re-queue blocked tasks so they continue in their existing worktree.
 	if loopRetryBlock {
 		n, rqErr := requeueBlocked(store)
 		if rqErr != nil {
@@ -196,14 +194,13 @@ func runLoop(cmd *cobra.Command, args []string) error {
 
 	maxPasses := loopMaxPasses
 	if maxPasses <= 0 {
-		maxPasses = 0 // unlimited
+		maxPasses = 0
 	}
 	idleLimit := loopIdleLimit
 	if idleLimit <= 0 {
 		idleLimit = 10
 	}
 
-	// Wrap the command context with signal handling.
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -211,7 +208,6 @@ func runLoop(cmd *cobra.Command, args []string) error {
 	consecutiveIdle := 0
 
 	for {
-		// Check global pass cap.
 		if maxPasses > 0 && totalPasses >= maxPasses {
 			fmt.Fprintf(os.Stderr, "%sloop: reached max-passes (%d), exiting%s\n", ansiBlue, maxPasses, ansiReset)
 			break
@@ -234,8 +230,6 @@ func runLoop(cmd *cobra.Command, args []string) error {
 			if err := sleepInterruptibly(ctx); err != nil {
 				return nil
 			}
-			// Poll sentinel after waking from idle sleep so a stop request is
-			// honoured without waiting to pick and process another task.
 			if sentinelExists(root) {
 				fmt.Fprintf(os.Stderr, "%sloop: stop sentinel detected, exiting%s\n", ansiBlue, ansiReset)
 				_ = removeSentinel(root)
@@ -256,14 +250,12 @@ func runLoop(cmd *cobra.Command, args []string) error {
 			break
 		}
 
-		// Poll sentinel at pass boundary.
 		if sentinelExists(root) {
 			fmt.Fprintf(os.Stderr, "%sloop: stop sentinel detected, exiting%s\n", ansiBlue, ansiReset)
 			_ = removeSentinel(root)
 			break
 		}
 
-		// Check context (signal) at pass boundary.
 		if ctx.Err() != nil {
 			fmt.Fprintf(os.Stderr, "%sloop: interrupted, exiting%s\n", ansiBlue, ansiReset)
 			break
@@ -273,7 +265,6 @@ func runLoop(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// sleepInterruptibly sleeps for 5s or until the context is cancelled.
 func sleepInterruptibly(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
@@ -283,18 +274,15 @@ func sleepInterruptibly(ctx context.Context) error {
 	}
 }
 
-// sentinelPath returns the path to the loop stop sentinel file.
 func sentinelPath(root string) string {
 	return filepath.Join(root, ".colony", "loop.stop")
 }
 
-// sentinelExists returns true if the stop sentinel file exists.
 func sentinelExists(root string) bool {
 	_, err := os.Stat(sentinelPath(root))
 	return err == nil
 }
 
-// removeSentinel deletes the stop sentinel file if it exists.
 func removeSentinel(root string) error {
 	err := os.Remove(sentinelPath(root))
 	if os.IsNotExist(err) {
@@ -303,7 +291,6 @@ func removeSentinel(root string) error {
 	return err
 }
 
-// pickNextTask queries the tasks table for the next open or needs-fix task.
 func pickNextTask(ctx context.Context, store *storage.SQLiteStore) (*storage.Task, error) {
 	tasks, err := store.QueryTasks(storage.TaskFilter{States: []string{"open", "needs-fix"}})
 	if err != nil {
@@ -315,28 +302,21 @@ func pickNextTask(ctx context.Context, store *storage.SQLiteStore) (*storage.Tas
 	return &tasks[0], nil
 }
 
-// processTask runs the BuildGateFix mission on a single task.
 func processTask(ctx context.Context, cfg *config.Config, root string, store *storage.SQLiteStore, task *storage.Task) error {
 	lang := task.Lang
 	if lang == "" {
 		lang = loopLang
 	}
 
-	// Increment cycle count before processing.
 	if err := store.IncrementCycle(task.ID); err != nil {
 		return fmt.Errorf("increment cycle: %w", err)
 	}
 
-	// Resolve the builder input: spec file contents (if --file was given),
-	// the inline description, or both combined.
 	input, err := taskInput(task)
 	if err != nil {
 		return err
 	}
 
-	// Each task runs in its own isolated git worktree so multiple loop agents
-	// can work in parallel without colliding on the working tree. On a retry,
-	// reuse the task's existing worktree to continue prior work (saves tokens).
 	projectName := module.ProjectName(root)
 	workdir, branch, err := resolveWorktree(root, projectName, task)
 	if err != nil {
@@ -348,16 +328,11 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 		}
 	}
 
-	// Write the spec to SPEC.md in the worktree. The build/fix prompts instruct
-	// the agent to "read SPEC.md in this directory"; unlike craft/swarm, the loop
-	// resolves the spec inline, so without this the file the prompt names does
-	// not exist — weaker models then hallucinate or stub the implementation.
 	if err := os.WriteFile(filepath.Join(workdir, "SPEC.md"), []byte(input), 0644); err != nil {
 		return fmt.Errorf("write SPEC.md: %w", err)
 	}
 
-	// Build the mission.
-	opts := mission.BuildGateFixOpts{
+	opts := blueprint.BuildGateFixOpts{
 		Name:      "loop-" + missionLabel(task),
 		Input:     input,
 		Lang:      lang,
@@ -365,27 +340,23 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 		MaxCycles: loopMaxCycles,
 	}
 	if loopEscalateTo != "" {
-		opts.EscalationRole = mission.RoleEscalation
+		opts.EscalationRole = graph.RoleEscalation
 	}
-	// Enable the review gate when --review is passed or a review role is set in
-	// config.json. The model is resolved via cfg.CommandRole("loop", "review").
-	if loopReview || cfg.HasCommandRole("loop", mission.RoleReview) {
-		opts.ReviewRole = mission.RoleReview
+	if loopReview || cfg.HasCommandRole("loop", graph.RoleReview) {
+		opts.ReviewRole = graph.RoleReview
 	}
 
-	m := mission.BuildGateFix(opts)
+	m := blueprint.BuildGateFix(opts)
 
-	// Build the graph with CommandRole resolution.
-	g, err := mission.BuildGraph(m, mission.DefaultRegistry, func(role string) config.LLMConfig {
+	reg := graph.NewRegistry()
+	nodes.Register(reg)
+	g, err := graph.BuildGraph(m, reg, func(role string) config.LLMConfig {
 		return cfg.CommandRole("loop", role)
 	})
 	if err != nil {
 		return fmt.Errorf("build graph: %w", err)
 	}
 
-	// Create a session and run the mission. Derive the session ID from the
-	// worktree branch (stripping the "agent/" prefix) so `loop status` lines up
-	// with the worktree name instead of showing the raw task UUID.
 	sessID := "loop-" + strings.TrimPrefix(branch, "agent/")
 	if err := store.InsertSession(storage.Session{
 		ID:          sessID,
@@ -396,12 +367,10 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 		return fmt.Errorf("insert session: %w", err)
 	}
 
-	runner := mission.NewRunner()
+	runner := graph.NewRunner()
 	out, runErr := runner.Run(ctx, m, g, sessID, store)
 
-	// Record outcome.
 	if runErr != nil {
-		// Check if the context was cancelled (signal received).
 		if ctx.Err() != nil {
 			_ = store.UpdateSession(sessID, "interrupted", time.Now())
 			_ = store.UpdateTaskState(task.ID, "needs-fix", "")
@@ -410,30 +379,21 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 
 		_ = store.UpdateSession(sessID, "failed", time.Now())
 
-		// Stuck: identical gate failure repeated — the model can't fix it, so
-		// escalation/more cycles would only waste tokens. Block with feedback.
-		if _, ok := runErr.(*mission.ErrStuck); ok {
+		if _, ok := runErr.(*graph.ErrStuck); ok {
 			feedback := extractFeedback(out, runErr)
 			_ = store.UpdateTaskState(task.ID, "blocked", feedback)
 			fmt.Fprintf(os.Stderr, "%sloop: task %q stuck (identical failure repeated), blocked%s\n", ansiRed, task.ID, ansiReset)
 			return nil
 		}
 
-		// Check if it's a max-cycles error (task hit the cap).
-		if _, ok := runErr.(*mission.ErrMaxCycles); ok && loopEscalateTo != "" {
-			// Escalate: re-dispatch on escalation role once.
+		if _, ok := runErr.(*graph.ErrMaxCycles); ok && loopEscalateTo != "" {
 			if err := escalateTask(ctx, cfg, root, store, task, lang, out); err != nil {
 				return fmt.Errorf("escalation failed: %w", err)
 			}
 			return nil
 		}
 
-		// Max-cycles hit but no escalation configured → block (terminal) with the
-		// failing gate output as feedback. Re-queuing to needs-fix would have the
-		// daemon re-pick the task and re-run the whole mission with a fresh cycle
-		// budget, looping forever. A blocked task is not re-picked; resume it
-		// explicitly with `colony loop --retry-blocked`.
-		if _, ok := runErr.(*mission.ErrMaxCycles); ok {
+		if _, ok := runErr.(*graph.ErrMaxCycles); ok {
 			feedback := extractFeedback(out, runErr)
 			_ = store.UpdateTaskState(task.ID, "blocked", feedback)
 			fmt.Fprintf(os.Stderr, "%sloop: task %q hit max-cycles, blocked (use --retry-blocked to resume)%s\n", ansiRed, task.ID, ansiReset)
@@ -445,23 +405,14 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 
 	_ = store.UpdateSession(sessID, "completed", time.Now())
 
-	// Gate green — run integration gate: merge origin/<base> into the worktree
-	// and re-run the deterministic gate. This catches breakage from naming
-	// collisions or semantic conflicts that the builder's isolated branch cannot
-	// detect. Only a clean merge + green gate proceeds to finishTask.
 	baseBranch := task.BaseBranch
 	if baseBranch == "" {
 		baseBranch = module.DefaultBranch()
 	}
 	if err := integrateTask(workdir, branch, baseBranch, lang, task, store); err != nil {
-		// integrateTask handles marking the task blocked on failure.
 		return nil
 	}
 
-	// The integration gate passed — finish the task like craft: drop SPEC.md,
-	// commit, push, open PR. A delivery failure is an operational issue to
-	// surface, never a reason to re-run the builder: the code is already
-	// committed, so a re-run would only produce an empty diff and spin forever.
 	prURL, finishErr := finishTask(workdir, branch, baseBranch, missionLabel(task))
 	if finishErr != nil {
 		fmt.Fprintf(os.Stderr, "%sloop: task %q done (gate passed) but delivery failed: %v%s\n", ansiYellow, task.ID, finishErr, ansiReset)
@@ -474,14 +425,10 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 	return nil
 }
 
-// integrateTask fetches origin/<base>, merges it into the worktree branch, and
-// re-runs the deterministic gate. On merge conflict or gate failure the task is
-// marked blocked and never reaches finishTask.
 func integrateTask(workdir, branch, baseBranch, lang string, task *storage.Task, store *storage.SQLiteStore) error {
 	out := os.Stderr
 	fmt.Fprintf(out, "%sloop: integrating %s with origin/%s%s\n", ansiBlue, branch, baseBranch, ansiReset)
 
-	// Fetch the base branch from origin.
 	fetch := exec.Command("git", "fetch", "origin", baseBranch)
 	fetch.Dir = workdir
 	fetch.Stdout = out
@@ -491,18 +438,15 @@ func integrateTask(workdir, branch, baseBranch, lang string, task *storage.Task,
 		return fmt.Errorf("git fetch: %w", err)
 	}
 
-	// Merge FETCH_HEAD into the worktree branch.
 	merge := exec.Command("git", "merge", "FETCH_HEAD")
 	merge.Dir = workdir
 	merge.Stdout = out
 	merge.Stderr = out
 	if err := merge.Run(); err != nil {
-		// Merge conflict — abort and block the task.
 		abort := exec.Command("git", "merge", "--abort")
 		abort.Dir = workdir
 		_ = abort.Run()
 
-		// Collect conflicting file list.
 		conflictFiles := getConflictFiles(workdir)
 		feedback := fmt.Sprintf("merge conflict with origin/%s. Conflicting files: %s", baseBranch, strings.Join(conflictFiles, ", "))
 		_ = store.UpdateTaskState(task.ID, "blocked", feedback)
@@ -510,7 +454,6 @@ func integrateTask(workdir, branch, baseBranch, lang string, task *storage.Task,
 		return fmt.Errorf("merge conflict with origin/%s", baseBranch)
 	}
 
-	// Merge succeeded — re-run the deterministic gate.
 	fmt.Fprintf(out, "%sloop: merge clean — re-running gates%s\n", ansiBlue, ansiReset)
 	gateOutput, gateErr := module.RunGateCaptureAll(lang, workdir, nil)
 	if gateErr != nil {
@@ -524,7 +467,6 @@ func integrateTask(workdir, branch, baseBranch, lang string, task *storage.Task,
 	return nil
 }
 
-// getConflictFiles returns the list of files with merge conflicts in the worktree.
 func getConflictFiles(workdir string) []string {
 	cmd := exec.Command("git", "diff", "--name-only", "--diff-filter=U")
 	cmd.Dir = workdir
@@ -542,19 +484,11 @@ func getConflictFiles(workdir string) []string {
 	return files
 }
 
-// finishTask mirrors craft's done-flow for a completed loop task: it removes the
-// transient SPEC.md, commits all worktree changes on the task branch, pushes the
-// branch to origin, and opens a PR against baseBranch. It returns the PR URL.
 func finishTask(workdir, branch, baseBranch, label string) (string, error) {
 	out := os.Stderr
 
 	_ = os.Remove(filepath.Join(workdir, "SPEC.md"))
 
-	// Squash all WIP commits down to a single clean commit. The agent may have
-	// made multiple intermediate commits during the build-fix loop; reset --soft
-	// to the merge-base with the base branch collapses them into staged changes
-	// for one commit. Doing this before git add -A also picks up any unstaged
-	// work the agent left in the worktree.
 	mergeBase := exec.Command("git", "merge-base", "HEAD", "origin/"+baseBranch)
 	mergeBase.Dir = workdir
 	mbOut, mbErr := mergeBase.Output()
@@ -573,8 +507,6 @@ func finishTask(workdir, branch, baseBranch, label string) (string, error) {
 		return "", fmt.Errorf("git add: %w", err)
 	}
 
-	// Nothing staged means the agent wrote no files — treat as a real failure so
-	// the task is not falsely marked done with an empty diff.
 	if diff := exec.Command("git", "diff", "--cached", "--quiet"); runInDir(diff, workdir) == nil {
 		return "", fmt.Errorf("no changes to commit — agent produced an empty diff")
 	}
@@ -618,30 +550,28 @@ func finishTask(workdir, branch, baseBranch, label string) (string, error) {
 	return strings.TrimSpace(prURL.String()), nil
 }
 
-// runInDir runs cmd in dir and returns its error (nil = exit 0).
 func runInDir(cmd *exec.Cmd, dir string) error {
 	cmd.Dir = dir
 	return cmd.Run()
 }
 
-// escalateTask re-dispatches a max-cycled task on the escalation role.
-func escalateTask(ctx context.Context, cfg *config.Config, root string, store *storage.SQLiteStore, task *storage.Task, lang string, prevOut *mission.Output) error {
+func escalateTask(ctx context.Context, cfg *config.Config, root string, store *storage.SQLiteStore, task *storage.Task, lang string, prevOut *graph.Output) error {
 	input, err := taskInput(task)
 	if err != nil {
 		return err
 	}
-	opts := mission.BuildGateFixOpts{
+	opts := blueprint.BuildGateFixOpts{
 		Name:      "escalation-" + missionLabel(task),
 		Input:     input,
 		Lang:      lang,
 		MaxCycles: 1,
 	}
-	// Escalation uses a single-shot mission: builder → gate → output.
-	// The escalation role handles the fix.
-	opts.EscalationRole = mission.RoleEscalation
+	opts.EscalationRole = graph.RoleEscalation
 
-	m := mission.BuildGateFix(opts)
-	g, err := mission.BuildGraph(m, mission.DefaultRegistry, func(role string) config.LLMConfig {
+	m := blueprint.BuildGateFix(opts)
+	reg := graph.NewRegistry()
+	nodes.Register(reg)
+	g, err := graph.BuildGraph(m, reg, func(role string) config.LLMConfig {
 		return cfg.CommandRole("loop", role)
 	})
 	if err != nil {
@@ -658,7 +588,7 @@ func escalateTask(ctx context.Context, cfg *config.Config, root string, store *s
 		return err
 	}
 
-	runner := mission.NewRunner()
+	runner := graph.NewRunner()
 	_, runErr := runner.Run(ctx, m, g, sessID, store)
 	_ = store.UpdateSession(sessID, "completed", time.Now())
 
@@ -668,18 +598,14 @@ func escalateTask(ctx context.Context, cfg *config.Config, root string, store *s
 		return markTaskBlocked(store, task.ID)
 	}
 
-	// Escalation succeeded.
 	_ = store.UpdateTaskState(task.ID, "done", "")
 	return nil
 }
 
-// markTaskBlocked transitions a task to blocked state.
 func markTaskBlocked(store *storage.SQLiteStore, taskID string) error {
 	return store.UpdateTaskState(taskID, "blocked", "")
 }
 
-// requeueBlocked flips blocked tasks back to needs-fix so the loop picks them
-// up again, continuing in their existing worktree. Returns the count re-queued.
 func requeueBlocked(store *storage.SQLiteStore) (int, error) {
 	blocked, err := store.QueryTasks(storage.TaskFilter{States: []string{"blocked"}})
 	if err != nil {
@@ -693,7 +619,6 @@ func requeueBlocked(store *storage.SQLiteStore) (int, error) {
 	return len(blocked), nil
 }
 
-// openLoopStore opens the project's missions.db.
 func openLoopStore(root string) (*storage.SQLiteStore, error) {
 	dbPath := storage.DefaultDBPath()
 	if root != "" {
@@ -702,10 +627,6 @@ func openLoopStore(root string) (*storage.SQLiteStore, error) {
 	return storage.Open(dbPath)
 }
 
-// resolveWorktree returns the worktree dir and branch for a task. If the task
-// already has a branch whose worktree still exists, it is reused (continue);
-// otherwise a fresh worktree is created. The branch slug derives from the task
-// description, falling back to the spec filename or task ID so it is never empty.
 func resolveWorktree(root, projectName string, task *storage.Task) (workdir, branch string, err error) {
 	if task.Branch != "" {
 		path := module.WorktreePath(projectName, task.Branch)
@@ -723,9 +644,6 @@ func resolveWorktree(root, projectName string, task *storage.Task) (workdir, bra
 	return workdir, branch, err
 }
 
-// branchDesc returns a non-empty label for branch naming: the task description,
-// else the spec's title (read from its contents), else the spec filename
-// without extension, else the task ID.
 func branchDesc(task *storage.Task) string {
 	if task.Description != "" {
 		return task.Description
@@ -742,8 +660,6 @@ func branchDesc(task *storage.Task) string {
 	return task.ID
 }
 
-// missionLabel returns a readable mission-name suffix derived from the task's
-// description/spec, falling back to the task ID so it is never empty.
 func missionLabel(task *storage.Task) string {
 	if label := module.Slugify(branchDesc(task)); label != "" {
 		return label
@@ -751,9 +667,6 @@ func missionLabel(task *storage.Task) string {
 	return task.ID
 }
 
-// taskInput resolves the builder input for a task: the spec file contents when
-// --file was given, the inline description otherwise, or both combined when a
-// task has both. Returns an error if a referenced spec file cannot be read.
 func taskInput(task *storage.Task) (string, error) {
 	if task.SpecPath == "" {
 		return task.Description, nil
@@ -769,16 +682,12 @@ func taskInput(task *storage.Task) (string, error) {
 	return task.Description + "\n\n" + spec, nil
 }
 
-// extractFeedback returns a string representation of mission output or error
-// for use in last_feedback.
-func extractFeedback(out *mission.Output, runErr error) string {
-	// If the error captured the last rejecting gate output (max-cycles or
-	// stuck), use its feedback text — the real failing gate output.
-	var last *mission.Output
+func extractFeedback(out *graph.Output, runErr error) string {
+	var last *graph.Output
 	switch e := runErr.(type) {
-	case *mission.ErrMaxCycles:
+	case *graph.ErrMaxCycles:
 		last = e.LastOutput
-	case *mission.ErrStuck:
+	case *graph.ErrStuck:
 		last = e.LastOutput
 	}
 	if last != nil {
@@ -810,10 +719,6 @@ func extractFeedback(out *mission.Output, runErr error) string {
 	return ""
 }
 
-// runWatchDaemon is the long-lived --watch daemon: it manages the pidfile and
-// rotating log, then polls the queue continuously, running the same pass body
-// (pickNextTask → processTask) as the one-shot path plus an OBSERVE phase
-// (CI/PR) each cycle. It exits cleanly on SIGINT/SIGTERM or the stop sentinel.
 func runWatchDaemon(ctx context.Context, cfg *config.Config, root string) error {
 	colonyPath := filepath.Join(root, ".colony")
 	if err := os.MkdirAll(colonyPath, 0755); err != nil {
@@ -823,14 +728,11 @@ func runWatchDaemon(ctx context.Context, cfg *config.Config, root string) error 
 	pidPath := filepath.Join(colonyPath, "loop.pid")
 	logPath := filepath.Join(colonyPath, "loop.log")
 
-	// Pidfile lock: only one daemon per project. A stale pidfile (dead process)
-	// is cleared by writePidfile.
 	if err := writePidfile(pidPath); err != nil {
 		return err
 	}
 	defer func() { _ = os.Remove(pidPath) }()
 
-	// Clear stale stop sentinel on startup so the daemon does not self-stop.
 	_ = removeSentinel(root)
 
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
@@ -862,20 +764,16 @@ func runWatchDaemon(ctx context.Context, cfg *config.Config, root string) error 
 		default:
 		}
 
-		// Honour the stop sentinel at the top of each pass.
 		if sentinelExists(root) {
 			fmt.Fprintf(multiOut, "%sloop: stop sentinel detected, exiting%s\n", ansiBlue, ansiReset)
 			_ = removeSentinel(root)
 			return nil
 		}
 
-		// Rotate the daemon log if it has grown past the threshold.
 		if err := maybeRotate(logPath, 10<<20, 3); err != nil {
 			slog.Warn("log rotation failed", "error", err)
 		}
 
-		// One pass: pick the next actionable task and process it (reusing the
-		// full build→gate→fix engine and done-flow).
 		task, err := pickNextTask(ctx, store)
 		if err != nil {
 			slog.Error("pick task failed", "error", err)
@@ -886,11 +784,8 @@ func runWatchDaemon(ctx context.Context, cfg *config.Config, root string) error 
 			}
 		}
 
-		// OBSERVE phase: poll CI/PR for tasks with a pr_url. Runs only here, in
-		// --watch mode — the one-shot path never observes.
 		observeAllTasks(ctx, store)
 
-		// Sleep before the next poll, waking early on cancellation.
 		select {
 		case <-ctx.Done():
 			fmt.Fprintf(multiOut, "%sloop: daemon interrupted, exiting%s\n", ansiBlue, ansiReset)
@@ -900,11 +795,8 @@ func runWatchDaemon(ctx context.Context, cfg *config.Config, root string) error 
 	}
 }
 
-// observeAllTasks runs the OBSERVE phase: polls CI/PR for tasks with a pr_url
-// and applies any feedback via store.UpdateTaskState. Called only from the
-// --watch daemon.
 func observeAllTasks(ctx context.Context, store *storage.SQLiteStore) {
-	results, err := mission.ObserveTasksForPR(ctx, store)
+	results, err := observe.ObserveTasksForPR(ctx, store)
 	if err != nil {
 		slog.Warn("observe failed", "error", err)
 		return

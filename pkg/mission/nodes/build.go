@@ -1,4 +1,4 @@
-package mission
+package nodes
 
 import (
 	"bytes"
@@ -10,6 +10,7 @@ import (
 
 	"github.com/jirateep/colony/pkg/config"
 	"github.com/jirateep/colony/pkg/llm"
+	"github.com/jirateep/colony/pkg/mission/graph"
 	"github.com/jirateep/colony/pkg/prompt"
 )
 
@@ -25,7 +26,7 @@ func NewBuilderNode(agentID string, cfg config.LLMConfig) *BuilderNode {
 	return &BuilderNode{agentID: agentID, cfg: cfg}
 }
 
-func (n *BuilderNode) Run(ctx context.Context, in Input) (Output, error) {
+func (n *BuilderNode) Run(ctx context.Context, in graph.Input) (graph.Output, error) {
 	// Key validation is handled by the executor (RunAgent), which skips it for
 	// anthropic — the claude CLI manages its own auth.
 
@@ -37,7 +38,7 @@ func (n *BuilderNode) Run(ctx context.Context, in Input) (Output, error) {
 
 	promptText, err := prompt.Build(lang)
 	if err != nil {
-		return Output{}, fmt.Errorf("agent %q: build prompt: %w", n.agentID, err)
+		return graph.Output{}, fmt.Errorf("agent %q: build prompt: %w", n.agentID, err)
 	}
 
 	// Inject client config and input.
@@ -62,7 +63,7 @@ func NewFixerNode(agentID string, cfg config.LLMConfig) *FixerNode {
 	return &FixerNode{agentID: agentID, cfg: cfg}
 }
 
-func (n *FixerNode) Run(ctx context.Context, in Input) (Output, error) {
+func (n *FixerNode) Run(ctx context.Context, in graph.Input) (graph.Output, error) {
 	// Key validation is handled by the executor (RunAgent), which skips it for
 	// anthropic — the claude CLI manages its own auth.
 
@@ -78,7 +79,7 @@ func (n *FixerNode) Run(ctx context.Context, in Input) (Output, error) {
 	errText := in.Text
 	promptText, err := prompt.Fix(gateName, errText)
 	if err != nil {
-		return Output{}, fmt.Errorf("agent %q: fix prompt: %w", n.agentID, err)
+		return graph.Output{}, fmt.Errorf("agent %q: fix prompt: %w", n.agentID, err)
 	}
 
 	combined := promptText
@@ -91,7 +92,7 @@ func (n *FixerNode) Run(ctx context.Context, in Input) (Output, error) {
 }
 
 // workdirFrom returns the workdir param, defaulting to the current directory.
-func workdirFrom(in Input) string {
+func workdirFrom(in graph.Input) string {
 	if wd, ok := in.Params["workdir"].(string); ok && wd != "" {
 		return wd
 	}
@@ -104,31 +105,31 @@ func workdirFrom(in Input) string {
 // decision comes from the downstream gate node, to which builder/fixer route
 // unconditionally. So success here just means "the agent finished; run the
 // gate." We return an APPROVED envelope carrying the agent's output as context.
-func runLLMAndParse(ctx context.Context, agentID string, cfg config.LLMConfig, workdir, promptText string) (Output, error) {
+func runLLMAndParse(ctx context.Context, agentID string, cfg config.LLMConfig, workdir, promptText string) (graph.Output, error) {
 	exec := llm.New(cfg)
 	var buf bytes.Buffer
 	stream := io.MultiWriter(&buf, prefixedWriter(os.Stderr, "    "+agentID+" │ "))
 	fmt.Fprintf(os.Stderr, "    %s │ <streaming…>\n", agentID)
 	if err := exec.RunAgent(ctx, workdir, promptText, stream); err != nil {
 		raw := buf.String()
-		return Output{AgentID: agentID, Raw: raw},
+		return graph.Output{AgentID: agentID, Raw: raw},
 			fmt.Errorf("agent %q: llm call failed: %w\n--- agent output ---\n%s---", agentID, err, raw)
 	}
 
 	raw := buf.String()
-	return Output{
+	return graph.Output{
 		AgentID:  agentID,
-		Envelope: Envelope{Decision: APPROVED, Output: mustMarshal(raw)},
+		Envelope: graph.Envelope{Decision: graph.APPROVED, Output: mustMarshal(raw)},
 		Raw:      raw,
 	}, nil
 }
 
 // BuilderNodeFactory returns a NodeFactory for builder roles.
-func BuilderNodeFactory(agentID string, cfg config.LLMConfig) (Node, error) {
+func BuilderNodeFactory(agentID string, cfg config.LLMConfig) (graph.Node, error) {
 	return NewBuilderNode(agentID, cfg), nil
 }
 
 // FixerNodeFactory returns a NodeFactory for fixer roles.
-func FixerNodeFactory(agentID string, cfg config.LLMConfig) (Node, error) {
+func FixerNodeFactory(agentID string, cfg config.LLMConfig) (graph.Node, error) {
 	return NewFixerNode(agentID, cfg), nil
 }

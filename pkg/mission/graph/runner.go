@@ -1,4 +1,4 @@
-package mission
+package graph
 
 import (
 	"bufio"
