@@ -2,6 +2,7 @@ package module
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -145,10 +146,41 @@ func TestRunGateCaptureScopesLintCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("printenv failed: %v\noutput: %s", err, out)
 	}
-	want := dir + "/.golangci-cache\n"
-	if out != want {
-		t.Errorf("GOLANGCI_LINT_CACHE = %q, want %q", out, want)
+	// The cache dir should be outside the worktree (in a temp dir).
+	cacheDir := strings.TrimSpace(out)
+	if strings.HasPrefix(cacheDir, dir) {
+		t.Errorf("GOLANGCI_LINT_CACHE %q is inside worktree %q", cacheDir, dir)
 	}
+	if cacheDir == "" {
+		t.Error("GOLANGCI_LINT_CACHE is empty")
+	}
+}
+
+// TestLintCacheDir_Cleanup verifies LintCacheDir creates a temp dir and
+// CleanupLintCache removes it.
+func TestLintCacheDir_Cleanup(t *testing.T) {
+	// Reset state so the test starts clean.
+	lintCacheDirMu.Lock()
+	lintCacheDir = ""
+	lintCacheDirMu.Unlock()
+
+	dir, err := LintCacheDir()
+	if err != nil {
+		t.Fatalf("LintCacheDir: %v", err)
+	}
+	if dir == "" {
+		t.Fatal("LintCacheDir returned empty string")
+	}
+	// Dir should exist.
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		t.Fatal("LintCacheDir does not exist on disk")
+	}
+	CleanupLintCache()
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Error("lint cache dir still exists after CleanupLintCache")
+	}
+	// Calling CleanupLintCache again should be safe.
+	CleanupLintCache()
 }
 
 // Helpers

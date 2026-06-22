@@ -7,7 +7,40 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 )
+
+var (
+	lintCacheDirMu sync.Mutex
+	lintCacheDir   string
+)
+
+// LintCacheDir returns the current lint cache temp dir, creating it if needed.
+// The caller must call CleanupLintCache when done. Multiple calls return the
+// same dir until CleanupLintCache is called.
+func LintCacheDir() (string, error) {
+	lintCacheDirMu.Lock()
+	defer lintCacheDirMu.Unlock()
+	if lintCacheDir != "" {
+		return lintCacheDir, nil
+	}
+	dir, err := os.MkdirTemp("", "golangci-lint-cache-*")
+	if err != nil {
+		return "", err
+	}
+	lintCacheDir = dir
+	return dir, nil
+}
+
+// CleanupLintCache removes the lint cache temp dir.
+func CleanupLintCache() {
+	lintCacheDirMu.Lock()
+	defer lintCacheDirMu.Unlock()
+	if lintCacheDir != "" {
+		os.RemoveAll(lintCacheDir) //nolint:errcheck
+		lintCacheDir = ""
+	}
+}
 
 type LangCommands struct {
 	Format    string
@@ -108,12 +141,14 @@ func RunGateCapture(command, workdir string) (string, error) {
 	}
 	cmd := exec.Command(parts[0], parts[1:]...)
 	cmd.Dir = workdir
-	// Scope golangci-lint's cache to this worktree. Colony runs gates in
-	// throwaway worktrees; a shared cache retains results keyed by the old
-	// worktree's absolute paths, so once that worktree is pruned the linter
-	// reports phantom errors against files it can no longer read. A per-worktree
-	// cache dir is torn down with the worktree and never leaks across runs.
-	cmd.Env = append(os.Environ(), "GOLANGCI_LINT_CACHE="+filepath.Join(workdir, ".golangci-cache"))
+	// GOLANGCI_LINT_CACHE is set to a temp dir outside the worktree, preventing
+	// stale cached results keyed by a pruned worktree's absolute paths and
+	// avoiding artifact directories inside the worktree.
+	lintDir, err := LintCacheDir()
+	if err != nil {
+		return "", fmt.Errorf("lint cache dir: %w", err)
+	}
+	cmd.Env = append(os.Environ(), "GOLANGCI_LINT_CACHE="+lintDir)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }

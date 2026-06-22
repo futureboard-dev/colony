@@ -350,14 +350,22 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 
 	_ = store.UpdateSession(sessID, "completed", time.Now())
 
-	// Gate green — finish the task like craft: drop SPEC.md, commit, push, open PR.
+	// Gate green — run integration gate: merge origin/<base> into the worktree
+	// and re-run the deterministic gate. This catches breakage from naming
+	// collisions or semantic conflicts that the builder's isolated branch cannot
+	// detect. Only a clean merge + green gate proceeds to finishTask.
 	baseBranch := task.BaseBranch
 	if baseBranch == "" {
 		baseBranch = module.DefaultBranch()
 	}
-	// The gate has passed, so the build is complete — the task is done regardless
-	// of whether delivery (push/PR) succeeds. A delivery failure is an operational
-	// issue to surface, never a reason to re-run the builder: the code is already
+	if err := integrateTask(workdir, branch, baseBranch, lang, task, store); err != nil {
+		// integrateTask handles marking the task blocked on failure.
+		return nil
+	}
+
+	// The integration gate passed — finish the task like craft: drop SPEC.md,
+	// commit, push, open PR. A delivery failure is an operational issue to
+	// surface, never a reason to re-run the builder: the code is already
 	// committed, so a re-run would only produce an empty diff and spin forever.
 	prURL, finishErr := finishTask(workdir, branch, baseBranch, missionLabel(task))
 	if finishErr != nil {
@@ -371,6 +379,74 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 	return nil
 }
 
+// integrateTask fetches origin/<base>, merges it into the worktree branch, and
+// re-runs the deterministic gate. On merge conflict or gate failure the task is
+// marked blocked and never reaches finishTask.
+func integrateTask(workdir, branch, baseBranch, lang string, task *storage.Task, store *storage.SQLiteStore) error {
+	out := os.Stderr
+	fmt.Fprintf(out, "%sloop: integrating %s with origin/%s%s\n", ansiBlue, branch, baseBranch, ansiReset)
+
+	// Fetch the base branch from origin.
+	fetch := exec.Command("git", "fetch", "origin", baseBranch)
+	fetch.Dir = workdir
+	fetch.Stdout = out
+	fetch.Stderr = out
+	if err := fetch.Run(); err != nil {
+		_ = store.UpdateTaskState(task.ID, "blocked", fmt.Sprintf("git fetch origin/%s failed: %v", baseBranch, err))
+		return fmt.Errorf("git fetch: %w", err)
+	}
+
+	// Merge FETCH_HEAD into the worktree branch.
+	merge := exec.Command("git", "merge", "FETCH_HEAD")
+	merge.Dir = workdir
+	merge.Stdout = out
+	merge.Stderr = out
+	if err := merge.Run(); err != nil {
+		// Merge conflict — abort and block the task.
+		abort := exec.Command("git", "merge", "--abort")
+		abort.Dir = workdir
+		_ = abort.Run()
+
+		// Collect conflicting file list.
+		conflictFiles := getConflictFiles(workdir)
+		feedback := fmt.Sprintf("merge conflict with origin/%s. Conflicting files: %s", baseBranch, strings.Join(conflictFiles, ", "))
+		_ = store.UpdateTaskState(task.ID, "blocked", feedback)
+		fmt.Fprintf(out, "%sloop: task %q blocked — merge conflict with origin/%s%s\n", ansiRed, task.ID, baseBranch, ansiReset)
+		return fmt.Errorf("merge conflict with origin/%s", baseBranch)
+	}
+
+	// Merge succeeded — re-run the deterministic gate.
+	fmt.Fprintf(out, "%sloop: merge clean — re-running gates%s\n", ansiBlue, ansiReset)
+	gateOutput, gateErr := module.RunGateCaptureAll(lang, workdir, nil)
+	if gateErr != nil {
+		feedback := fmt.Sprintf("integration gate failed after merge with origin/%s:\n%s", baseBranch, gateOutput)
+		_ = store.UpdateTaskState(task.ID, "blocked", feedback)
+		fmt.Fprintf(out, "%sloop: task %q blocked — integration gate failed after merge%s\n", ansiRed, task.ID, ansiReset)
+		return fmt.Errorf("integration gate after merge: %w\n%s", gateErr, gateOutput)
+	}
+
+	fmt.Fprintf(out, "%sloop: integration gate passed%s\n", ansiBlue, ansiReset)
+	return nil
+}
+
+// getConflictFiles returns the list of files with merge conflicts in the worktree.
+func getConflictFiles(workdir string) []string {
+	cmd := exec.Command("git", "diff", "--name-only", "--diff-filter=U")
+	cmd.Dir = workdir
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	var files []string
+	for _, f := range lines {
+		if f != "" {
+			files = append(files, f)
+		}
+	}
+	return files
+}
+
 // finishTask mirrors craft's done-flow for a completed loop task: it removes the
 // transient SPEC.md, commits all worktree changes on the task branch, pushes the
 // branch to origin, and opens a PR against baseBranch. It returns the PR URL.
@@ -378,6 +454,23 @@ func finishTask(workdir, branch, baseBranch, label string) (string, error) {
 	out := os.Stderr
 
 	_ = os.Remove(filepath.Join(workdir, "SPEC.md"))
+
+	// Squash all WIP commits down to a single clean commit. The agent may have
+	// made multiple intermediate commits during the build-fix loop; reset --soft
+	// to the merge-base with the base branch collapses them into staged changes
+	// for one commit. Doing this before git add -A also picks up any unstaged
+	// work the agent left in the worktree.
+	mergeBase := exec.Command("git", "merge-base", "HEAD", "origin/"+baseBranch)
+	mergeBase.Dir = workdir
+	mbOut, mbErr := mergeBase.Output()
+	if mbErr == nil {
+		mb := strings.TrimSpace(string(mbOut))
+		reset := exec.Command("git", "reset", "--soft", mb)
+		reset.Dir = workdir
+		if err := reset.Run(); err != nil {
+			return "", fmt.Errorf("git reset --soft: %w", err)
+		}
+	}
 
 	add := exec.Command("git", "add", "-A")
 	add.Dir = workdir
