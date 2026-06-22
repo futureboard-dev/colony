@@ -31,8 +31,13 @@ func NewReviewNode(agentID string, cfg config.LLMConfig) *ReviewNode {
 }
 
 func (n *ReviewNode) Run(ctx context.Context, in Input) (Output, error) {
-	if err := n.cfg.ValidateKey(); err != nil {
-		return Output{}, err
+	// Skip key validation for anthropic — the claude CLI manages its own auth
+	// and does not need ANTHROPIC_API_KEY. If we required it, a valid-looking key
+	// set in env would be forwarded to the subprocess and rejected by the CLI.
+	if n.cfg.Provider != "anthropic" {
+		if err := n.cfg.ValidateKey(); err != nil {
+			return Output{}, err
+		}
 	}
 
 	workdir := workdirFrom(in)
@@ -55,13 +60,13 @@ func (n *ReviewNode) Run(ctx context.Context, in Input) (Output, error) {
 	combined := injectInput(prompt.ReviewLoop(),
 		"## Specification\n\n"+spec+"\n\n## Git diff of implementation\n\n"+diff)
 
-	exec := llm.New(n.cfg)
+	runner := llm.New(n.cfg)
 	var buf bytes.Buffer
 	stream := io.MultiWriter(&buf, prefixedWriter(os.Stderr, "    "+n.agentID+" │ "))
 	fmt.Fprintf(os.Stderr, "    %s │ <streaming…>\n", n.agentID)
 	// Review runs headless (read-only judgement): it inspects the diff and emits
 	// a decision envelope; it must not modify the worktree.
-	if err := exec.RunHeadless(ctx, workdir, combined, stream); err != nil {
+	if err := runner.RunHeadless(ctx, workdir, combined, stream); err != nil {
 		raw := buf.String()
 		var env Envelope
 		if jsonErr := json.Unmarshal([]byte(extractJSON(raw)), &env); jsonErr == nil && env.Decision != "" {
