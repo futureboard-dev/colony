@@ -1,10 +1,28 @@
-package mission
+package blueprint
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/jirateep/colony/pkg/config"
+	"github.com/jirateep/colony/pkg/mission/graph"
 )
+
+// fakeNode is a test Node that returns a fixed decision and output.
+type fakeNode struct {
+	decision graph.Decision
+	output   string
+}
+
+func (n *fakeNode) Run(ctx context.Context, in graph.Input) (graph.Output, error) {
+	rawOut, _ := json.Marshal(n.output)
+	return graph.Output{
+		Envelope: graph.Envelope{Decision: n.decision, Output: json.RawMessage(rawOut)},
+		Raw:      fmt.Sprintf(`{"decision":%q,"feedback":"","output":%q}`, n.decision, n.output),
+	}, nil
+}
 
 // TestBuildGateFix_HasBuilderGateFixer verifies the mission has builder, gate,
 // and fixer nodes with expected roles and edges.
@@ -24,27 +42,27 @@ func TestBuildGateFix_HasBuilderGateFixer(t *testing.T) {
 	}
 
 	// Check agents.
-	agentByID := make(map[string]*Agent)
+	agentByID := make(map[string]*graph.Agent)
 	for i := range m.Agents {
 		agentByID[m.Agents[i].ID] = &m.Agents[i]
 	}
 
 	if a, ok := agentByID["builder"]; !ok {
 		t.Error("missing builder agent")
-	} else if a.Role != RoleBuilder {
-		t.Errorf("builder role: expected %q, got %q", RoleBuilder, a.Role)
+	} else if a.Role != graph.RoleBuilder {
+		t.Errorf("builder role: expected %q, got %q", graph.RoleBuilder, a.Role)
 	}
 
 	if a, ok := agentByID["gate"]; !ok {
 		t.Error("missing gate agent")
-	} else if a.Role != RoleGate {
-		t.Errorf("gate role: expected %q, got %q", RoleGate, a.Role)
+	} else if a.Role != graph.RoleGate {
+		t.Errorf("gate role: expected %q, got %q", graph.RoleGate, a.Role)
 	}
 
 	if a, ok := agentByID["fixer"]; !ok {
 		t.Error("missing fixer agent")
-	} else if a.Role != RoleFixer {
-		t.Errorf("fixer role: expected %q, got %q", RoleFixer, a.Role)
+	} else if a.Role != graph.RoleFixer {
+		t.Errorf("fixer role: expected %q, got %q", graph.RoleFixer, a.Role)
 	}
 
 	// Check edges.
@@ -149,18 +167,18 @@ func TestBuildGateFix_ReviewNode(t *testing.T) {
 		Input:      "test",
 		Lang:       "go",
 		MaxCycles:  3,
-		ReviewRole: RoleReview,
+		ReviewRole: graph.RoleReview,
 	})
 
 	found := false
 	for _, a := range m.Agents {
-		if a.ID == "review" && a.Role == RoleReview {
+		if a.ID == "review" && a.Role == graph.RoleReview {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatalf("expected review agent with role %q", RoleReview)
+		t.Fatalf("expected review agent with role %q", graph.RoleReview)
 	}
 
 	var gateToReview, gateToOutput, reviewToOutput, reviewToFixer bool
@@ -191,7 +209,20 @@ func TestBuildGateFix_ReviewNode(t *testing.T) {
 
 	// The wired mission must build into a valid graph. The review→fixer→gate
 	// cycle is bounded by the existing fixer→gate back-edge (max_cycles).
-	g, err := BuildGraph(m, DefaultRegistry, func(string) config.LLMConfig {
+	reg := graph.NewRegistry()
+	reg.Register(graph.RoleBuilder, func(agentID string, cfg config.LLMConfig) (graph.Node, error) {
+		return &fakeNode{decision: graph.APPROVED, output: "ok"}, nil
+	})
+	reg.Register(graph.RoleGate, func(agentID string, cfg config.LLMConfig) (graph.Node, error) {
+		return &fakeNode{decision: graph.APPROVED, output: "ok"}, nil
+	})
+	reg.Register(graph.RoleFixer, func(agentID string, cfg config.LLMConfig) (graph.Node, error) {
+		return &fakeNode{decision: graph.APPROVED, output: "ok"}, nil
+	})
+	reg.Register(graph.RoleReview, func(agentID string, cfg config.LLMConfig) (graph.Node, error) {
+		return &fakeNode{decision: graph.APPROVED, output: "ok"}, nil
+	})
+	g, err := graph.BuildGraph(m, reg, func(string) config.LLMConfig {
 		return config.LLMConfig{Provider: "anthropic", Model: "claude-opus-4-8"}
 	})
 	if err != nil {

@@ -1,4 +1,4 @@
-package mission
+package graph
 
 import (
 	"fmt"
@@ -37,12 +37,4 @@ func (r *Registry) Create(role, agentID string, cfg config.LLMConfig) (Node, err
 		return nil, fmt.Errorf("unknown role %q: not registered", role)
 	}
 	return factory(agentID, cfg)
-}
-
-// DefaultRegistry is the package-level registry; roles register themselves via init().
-var DefaultRegistry = NewRegistry()
-
-// Register adds a factory to the default registry.
-func Register(role string, factory NodeFactory) {
-	DefaultRegistry.Register(role, factory)
 }

@@ -1,4 +1,8 @@
-package mission
+package blueprint
+
+import (
+	"github.com/jirateep/colony/pkg/mission/graph"
+)
 
 // BuildGateFixOpts configures the BuildGateFix mission template.
 type BuildGateFixOpts struct {
@@ -28,13 +32,13 @@ type BuildGateFixOpts struct {
 //
 // The graph is: __input__ → builder → gate → (APPROVED → __output__) /
 // (REJECTED → fixer → gate → ...) bounded by max_cycles.
-func BuildGateFix(opts BuildGateFixOpts) *Mission {
-	agents := []Agent{
-		{ID: "builder", Role: RoleBuilder},
-		{ID: "gate", Role: RoleGate},
-		{ID: "fixer", Role: RoleFixer},
+func BuildGateFix(opts BuildGateFixOpts) *graph.Mission {
+	agents := []graph.Agent{
+		{ID: "builder", Role: graph.RoleBuilder},
+		{ID: "gate", Role: graph.RoleGate},
+		{ID: "fixer", Role: graph.RoleFixer},
 	}
-	flow := []Edge{
+	flow := []graph.Edge{
 		{From: "__input__", To: "builder"},
 		{From: "builder", To: "gate"},
 		{From: "gate", OnApprove: "__output__"},
@@ -43,7 +47,7 @@ func BuildGateFix(opts BuildGateFixOpts) *Mission {
 	}
 
 	if opts.ReviewRole != "" {
-		agents = append(agents, Agent{ID: "review", Role: opts.ReviewRole})
+		agents = append(agents, graph.Agent{ID: "review", Role: opts.ReviewRole})
 		// Redirect the green gate to review instead of straight to output.
 		for i := range flow {
 			if flow[i].From == "gate" && flow[i].OnApprove == "__output__" {
@@ -51,15 +55,15 @@ func BuildGateFix(opts BuildGateFixOpts) *Mission {
 			}
 		}
 		flow = append(flow,
-			Edge{From: "review", OnApprove: "__output__"},
-			Edge{From: "review", OnReject: "fixer"}, // back-edge: review → fixer
+			graph.Edge{From: "review", OnApprove: "__output__"},
+			graph.Edge{From: "review", OnReject: "fixer"}, // back-edge: review → fixer
 		)
 	}
 
 	if opts.EscalationRole != "" {
-		agents = append(agents, Agent{ID: "escalation", Role: opts.EscalationRole})
-		flow = append(flow, Edge{From: "gate", OnReject: "escalation"})
-		flow = append(flow, Edge{From: "escalation", To: "__output__"})
+		agents = append(agents, graph.Agent{ID: "escalation", Role: opts.EscalationRole})
+		flow = append(flow, graph.Edge{From: "gate", OnReject: "escalation"})
+		flow = append(flow, graph.Edge{From: "escalation", To: "__output__"})
 	}
 
 	maxCycles := opts.MaxCycles
@@ -67,7 +71,7 @@ func BuildGateFix(opts BuildGateFixOpts) *Mission {
 		maxCycles = 3 // default
 	}
 
-	return &Mission{
+	return &graph.Mission{
 		Name:      opts.Name,
 		Input:     opts.Input,
 		MaxCycles: maxCycles,

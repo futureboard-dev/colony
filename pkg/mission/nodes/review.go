@@ -1,4 +1,4 @@
-package mission
+package nodes
 
 import (
 	"bytes"
@@ -12,6 +12,7 @@ import (
 
 	"github.com/jirateep/colony/pkg/config"
 	"github.com/jirateep/colony/pkg/llm"
+	"github.com/jirateep/colony/pkg/mission/graph"
 	"github.com/jirateep/colony/pkg/prompt"
 )
 
@@ -47,10 +48,10 @@ func (n *ReviewNode) Run(ctx context.Context, in Input) (Output, error) {
 	if diff == "" {
 		// No diff means the agent produced no changes — reject so the task is
 		// not approved on an empty implementation.
-		return Output{
+		return graph.Output{
 			AgentID: n.agentID,
-			Envelope: Envelope{
-				Decision: REJECTED,
+			Envelope: graph.Envelope{
+				Decision: graph.REJECTED,
 				Feedback: "review: the implementation produced no changes (empty diff)",
 				Output:   mustMarshal(""),
 			},
@@ -68,26 +69,26 @@ func (n *ReviewNode) Run(ctx context.Context, in Input) (Output, error) {
 	// a decision envelope; it must not modify the worktree.
 	if err := runner.RunHeadless(ctx, workdir, combined, stream); err != nil {
 		raw := buf.String()
-		var env Envelope
+		var env graph.Envelope
 		if jsonErr := json.Unmarshal([]byte(extractJSON(raw)), &env); jsonErr == nil && env.Decision != "" {
-			return Output{AgentID: n.agentID, Envelope: env, Raw: raw}, nil
+			return graph.Output{AgentID: n.agentID, Envelope: env, Raw: raw}, nil
 		}
-		return Output{AgentID: n.agentID, Raw: raw},
+		return graph.Output{AgentID: n.agentID, Raw: raw},
 			fmt.Errorf("agent %q: review call failed: %w\n--- agent output ---\n%s\n---", n.agentID, err, raw)
 	}
 
 	raw := buf.String()
-	var env Envelope
+	var env graph.Envelope
 	if err := json.Unmarshal([]byte(extractJSON(raw)), &env); err != nil {
 		preview := raw
 		if len(preview) > 500 {
 			preview = preview[:500] + "...(truncated)"
 		}
-		return Output{AgentID: n.agentID, Raw: raw},
+		return graph.Output{AgentID: n.agentID, Raw: raw},
 			fmt.Errorf("agent %q: invalid review envelope: %w\n--- raw output ---\n%s\n---", n.agentID, err, preview)
 	}
 
-	return Output{AgentID: n.agentID, Envelope: env, Raw: raw}, nil
+	return graph.Output{AgentID: n.agentID, Envelope: env, Raw: raw}, nil
 }
 
 // readSpec returns the contents of SPEC.md in workdir, or "" if absent.
@@ -118,6 +119,6 @@ func gitDiff(workdir string) string {
 }
 
 // ReviewNodeFactory returns a NodeFactory for the review role.
-func ReviewNodeFactory(agentID string, cfg config.LLMConfig) (Node, error) {
+func ReviewNodeFactory(agentID string, cfg config.LLMConfig) (graph.Node, error) {
 	return NewReviewNode(agentID, cfg), nil
 }

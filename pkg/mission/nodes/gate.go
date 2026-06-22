@@ -1,4 +1,4 @@
-package mission
+package nodes
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/jirateep/colony/pkg/config"
+	"github.com/jirateep/colony/pkg/mission/graph"
 	"github.com/jirateep/colony/pkg/module"
 )
 
@@ -24,27 +25,27 @@ func NewGateNode(agentID, lang string, skip map[string]bool) *GateNode {
 	return &GateNode{agentID: agentID, lang: lang, skip: skip}
 }
 
-func (n *GateNode) Run(ctx context.Context, in Input) (Output, error) {
+func (n *GateNode) Run(ctx context.Context, in graph.Input) (graph.Output, error) {
 	workdir := "."
 	if wd, ok := in.Params["workdir"].(string); ok && wd != "" {
 		workdir = wd
 	}
 	output, err := module.RunGateCaptureAll(n.lang, workdir, n.skip)
 	if err == nil {
-		return Output{
+		return graph.Output{
 			AgentID: n.agentID,
-			Envelope: Envelope{
-				Decision: APPROVED,
+			Envelope: graph.Envelope{
+				Decision: graph.APPROVED,
 				Feedback: "",
 				Output:   mustMarshal("all gates passed"),
 			},
 		}, nil
 	}
 	// Gate failed — return REJECTED with the captured output as feedback.
-	return Output{
+	return graph.Output{
 		AgentID: n.agentID,
-		Envelope: Envelope{
-			Decision: REJECTED,
+		Envelope: graph.Envelope{
+			Decision: graph.REJECTED,
 			Feedback: fmt.Sprintf("Gate %q failed.\n\n%s", n.lang, output),
 			Output:   mustMarshal(output),
 		},
@@ -53,8 +54,8 @@ func (n *GateNode) Run(ctx context.Context, in Input) (Output, error) {
 
 // GateNodeFactory returns a NodeFactory that creates GateNode instances.
 // The lang and skip are captured at registration time.
-func GateNodeFactory(lang string, skip map[string]bool) NodeFactory {
-	return func(agentID string, cfg config.LLMConfig) (Node, error) {
+func GateNodeFactory(lang string, skip map[string]bool) graph.NodeFactory {
+	return func(agentID string, cfg config.LLMConfig) (graph.Node, error) {
 		return NewGateNode(agentID, lang, skip), nil
 	}
 }
