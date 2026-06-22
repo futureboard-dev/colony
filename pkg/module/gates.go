@@ -7,13 +7,48 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 )
+
+var (
+	lintCacheDirMu sync.Mutex
+	lintCacheDir   string
+)
+
+// LintCacheDir returns the current lint cache temp dir, creating it if needed.
+// The caller must call CleanupLintCache when done. Multiple calls return the
+// same dir until CleanupLintCache is called.
+func LintCacheDir() (string, error) {
+	lintCacheDirMu.Lock()
+	defer lintCacheDirMu.Unlock()
+	if lintCacheDir != "" {
+		return lintCacheDir, nil
+	}
+	dir, err := os.MkdirTemp("", "golangci-lint-cache-*")
+	if err != nil {
+		return "", err
+	}
+	lintCacheDir = dir
+	return dir, nil
+}
+
+// CleanupLintCache removes the lint cache temp dir.
+func CleanupLintCache() {
+	lintCacheDirMu.Lock()
+	defer lintCacheDirMu.Unlock()
+	if lintCacheDir != "" {
+		os.RemoveAll(lintCacheDir) //nolint:errcheck
+		lintCacheDir = ""
+	}
+}
 
 type LangCommands struct {
 	Format    string
+	Vet       string
 	Lint      string
 	TypeCheck string
 	Test      string
+	Build     string
 }
 
 func CommandsFor(lang string) (LangCommands, error) {
@@ -21,23 +56,29 @@ func CommandsFor(lang string) (LangCommands, error) {
 	case "typescript", "ts":
 		return LangCommands{
 			Format:    "pnpm prettier --write .",
+			Vet:       "pnpm tsc --noEmit",
 			Lint:      "pnpm eslint .",
 			TypeCheck: "pnpm tsc --noEmit",
 			Test:      "pnpm build",
+			Build:     "pnpm build",
 		}, nil
 	case "python", "py":
 		return LangCommands{
 			Format:    "ruff format .",
+			Vet:       "mypy . --ignore-missing-imports",
 			Lint:      "ruff check .",
 			TypeCheck: "mypy . --ignore-missing-imports",
 			Test:      "pytest --tb=short",
+			Build:     "",
 		}, nil
 	case "go":
 		return LangCommands{
-			Format:    "gofmt -w ./...",
+			Format:    "go fmt ./...",
+			Vet:       "go vet ./...",
 			Lint:      "golangci-lint run ./...",
 			TypeCheck: "go build ./...",
 			Test:      "go test ./... -count=1",
+			Build:     "go build ./...",
 		}, nil
 	default:
 		return LangCommands{}, fmt.Errorf("unknown language %q — use: typescript, python, go", lang)
@@ -64,7 +105,7 @@ func InstallDeps(lang, worktree string, out io.Writer) {
 	switch strings.ToLower(lang) {
 	case "typescript", "ts":
 		fmt.Fprintf(out, "   Installing dependencies (pnpm)...\n")
-		RunShell("pnpm install --frozen-lockfile", worktree, out) //nolint:errcheck
+		_ = RunShell("pnpm install --frozen-lockfile", worktree, out)
 	case "python", "py":
 		if _, err := os.Stat(filepath.Join(worktree, "requirements.txt")); err != nil {
 			return
@@ -73,9 +114,9 @@ func InstallDeps(lang, worktree string, out io.Writer) {
 		// pip install -r requirements.txt`, but RunShell has no shell so we
 		// create the venv and invoke its pip by absolute path.
 		fmt.Fprintf(out, "   Installing dependencies (pip into .venv)...\n")
-		RunShell("python3 -m venv .venv", worktree, out) //nolint:errcheck
+		_ = RunShell("python3 -m venv .venv", worktree, out)
 		pip := filepath.Join(worktree, ".venv", "bin", "pip")
-		RunShell(pip+" install -r requirements.txt", worktree, out) //nolint:errcheck
+		_ = RunShell(pip+" install -r requirements.txt", worktree, out)
 	case "go":
 		if _, err := os.Stat(filepath.Join(worktree, "go.mod")); err != nil {
 			return
@@ -100,6 +141,49 @@ func RunGateCapture(command, workdir string) (string, error) {
 	}
 	cmd := exec.Command(parts[0], parts[1:]...)
 	cmd.Dir = workdir
+	// GOLANGCI_LINT_CACHE is set to a temp dir outside the worktree, preventing
+	// stale cached results keyed by a pruned worktree's absolute paths and
+	// avoiding artifact directories inside the worktree.
+	lintDir, err := LintCacheDir()
+	if err != nil {
+		return "", fmt.Errorf("lint cache dir: %w", err)
+	}
+	cmd.Env = append(os.Environ(), "GOLANGCI_LINT_CACHE="+lintDir)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
+}
+
+// RunGateCaptureAll runs all quality gates for the given language in sequence:
+// format, vet, lint, typecheck, test, build. Skips gates in the skip set and
+// those whose commands are empty. Returns on the first non-zero exit: combined
+// output + exit error. Returns empty string and nil when all gates pass.
+func RunGateCaptureAll(lang string, workdir string, skip map[string]bool) (string, error) {
+	cmds, err := CommandsFor(lang)
+	if err != nil {
+		return "", err
+	}
+	type gateStep struct {
+		name string
+		cmd  string
+	}
+	steps := []gateStep{
+		{"format", cmds.Format},
+		{"vet", cmds.Vet},
+		{"lint", cmds.Lint},
+		{"typecheck", cmds.TypeCheck},
+		{"test", cmds.Test},
+		{"build", cmds.Build},
+	}
+	var combined strings.Builder
+	for _, s := range steps {
+		if skip[s.name] || s.cmd == "" {
+			continue
+		}
+		out, err := RunGateCapture(s.cmd, workdir)
+		if err != nil {
+			fmt.Fprintf(&combined, "--- %s ---\n%s", s.name, out)
+			return combined.String(), fmt.Errorf("%s failed: %w", s.name, err)
+		}
+	}
+	return "", nil
 }

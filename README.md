@@ -305,3 +305,149 @@ Edit `.colony/config.json` — no code changes needed. Anthropic uses the
 ```bash
 rm ~/.local/bin/colony
 ```
+
+## Running the loop
+
+The `colony loop` subcommands manage an autonomous build-gate-fix cycle that
+picks tasks from the queue, builds/attempts them, gates the result, and loops
+back on failure. A human can stop the loop, inspect status, or schedule it at
+the OS level.
+
+### Queueing tasks
+
+The loop processes tasks from a queue stored in `.colony/missions.db`. Enqueue
+work with `colony task add` — each call inserts an `open` task that the loop
+picks up on its next pass (it selects tasks in state `open` or `needs-fix`).
+
+```bash
+# Queue an inline description
+colony task add "add rate limiting to the API"
+
+# Queue an authored spec — the loop writes it to SPEC.md inside the task's
+# isolated worktree, where the build/fix prompts expect to read it
+colony task add --file SPEC.md
+
+# Set the base branch the task's worktree branches from
+colony task add --file SPEC.md --base develop
+
+# Skip the format gate for this task
+colony task add --file SPEC.md --no-format
+```
+
+| Flag          | Default | Description                                  |
+| ------------- | ------- | -------------------------------------------- |
+| `--file`      | ""      | Path to a spec file (stored in `spec_path`)  |
+| `--base`      | ""      | Base branch the worktree branches from       |
+| `--no-format` | false   | Skip the format gate for this task           |
+
+`colony task add` prints the new task ID on success. Verify the queue with
+`colony loop status`.
+
+> **`colony task add` vs `colony task`.** `task add` enqueues a task for the
+> autonomous loop. Plain `colony task "…"` instead creates a worktree and opens
+> an **interactive** agent session — it does not touch the loop queue.
+
+A typical spec-to-loop flow:
+
+```bash
+colony task add --file SPEC.md   # 1. enqueue the spec
+colony loop --once               # 2. process one task and exit (or `colony loop` / `--watch`)
+colony loop status               # 3. inspect queue, feedback, and sessions
+```
+
+### Loop lifecycle
+
+```bash
+# Start the loop (interactive / ad-hoc)
+colony loop [--once] [--max-passes 10] [--max-cycles 5]
+
+# Stop the loop gracefully (sentinel-based)
+colony loop stop
+```
+
+| Flag            | Default | Description                                |
+| --------------- | ------- | ------------------------------------------ |
+| `--once`        | false   | Run a single pass and exit                 |
+| `--max-passes`  | 0       | Stop after N total passes (0 = unlimited)  |
+| `--max-cycles`  | 5       | Cap the inner fix loop per task            |
+| `--escalate-to` | ""      | Model for escalation role (off by default) |
+| `--lang`        | go      | Language for gates                         |
+| `--idle`        | 10      | Consecutive idle passes before stopping    |
+
+### Inspecting loop status
+
+```bash
+# Show queue, feedback, and recent loop / escalation sessions
+colony loop status
+
+# Filter queue by state
+colony loop status --state blocked
+
+# Structured JSON output
+colony loop status --json
+```
+
+The status command displays three sections:
+
+- **Queue** — open, needs-fix, and blocked tasks (omits done tasks unless `--state` filters them in).
+- **Feedback** — `last_feedback` text for blocked/needs-fix tasks. When a task hits
+  `max-cycles`, the feedback contains the last gate output verbatim (e.g. a
+  failing test output), not the generic `max_cycles exceeded` string.
+- **Recent Sessions** — the 10 most recent sessions with a `loop-` or
+  `escalation-` mission name, newest first. Running sessions show `–` for
+  duration.
+
+### OS-level scheduling
+
+Install the loop as a launchd service (macOS) or crontab entry (Linux) so it
+runs automatically on an interval:
+
+```bash
+# Install / update: run every 10 minutes
+colony loop schedule start --every 10m
+
+# Check whether the schedule is active
+colony loop schedule status
+
+# Remove the schedule
+colony loop schedule stop
+```
+
+| Flag      | Default | Description                          |
+| --------- | ------- | ------------------------------------ |
+| `--every` | `10m`   | Interval between runs (min 1 minute) |
+
+- **macOS (launchd):** Creates `~/Library/LaunchAgents/com.colony.loop.<hash>.plist`.
+  The plist includes `RunAtLoad` (starts immediately after install), serialised
+  execution via launchd's built-in process management, and stderr/stdout
+  redirected to `.colony/logs/loop.{stdout,stderr}.log`.
+- **Linux (crontab):** Appends a `*/N * * * *` entry to the user's crontab with
+  `flock -n` for overlap prevention. Logs go to `.colony/logs/loop.log`.
+- **Start is idempotent:** Re-running `start` updates the interval.
+- **Stop is safe:** Calling `stop` when nothing is installed is a clean no-op.
+
+#### Manual crontab / systemd (self-managed)
+
+If you prefer not to use the built-in scheduler, add an entry manually:
+
+```cron
+# Run every 10 minutes, overlap-safe
+*/10 * * * * /usr/local/bin/colony loop >> /path/to/project/.colony/logs/loop.log 2>&1
+```
+
+For systemd:
+
+```
+# /etc/systemd/system/colony-loop.service
+[Unit]
+Description=colony autonomous loop
+
+[Service]
+Type=simple
+WorkingDirectory=/path/to/project
+ExecStart=/usr/local/bin/colony loop
+Restart=always
+
+[Install]
+WantedBy=default.target
+```

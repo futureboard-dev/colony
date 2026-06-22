@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/jirateep/colony/pkg/config"
@@ -41,7 +42,7 @@ func (e *Executor) RunHeadless(ctx context.Context, workdir, prompt string, out 
 	}
 	cmd := exec.CommandContext(ctx, cli, e.headlessArgs(prompt)...)
 	cmd.Dir = workdir
-	cmd.Env = os.Environ()
+	cmd.Env = cleanEnvForClaude()
 	cmd.Stdout = out
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -63,7 +64,7 @@ func (e *Executor) RunAgent(ctx context.Context, workdir, prompt string, out io.
 	}
 	cmd := exec.CommandContext(ctx, cli, e.agentArgs(prompt)...)
 	cmd.Dir = workdir
-	cmd.Env = os.Environ()
+	cmd.Env = cleanEnvForClaude()
 
 	stdoutW, stderrW := out, out
 	if out == nil {
@@ -212,6 +213,31 @@ func (e *Executor) validateKeyIfNeeded() error {
 		return nil
 	}
 	return e.cfg.ValidateKey()
+}
+
+// cleanEnvForClaude returns os.Environ() prepared for spawning the claude CLI.
+// Two vars are stripped so claude always authenticates with its own native
+// credentials (the keychain OAuth / subscription set up via `claude` login):
+//
+//   - CLAUDE_CODE_CHILD_SESSION: tells claude it's a tool subprocess inside
+//     Claude Code and should use API-key auth, which fails under a subscription.
+//   - ANTHROPIC_API_KEY: when present, claude prefers it (API billing) over the
+//     subscription. We drop it so colony defaults to the user's subscription,
+//     matching whatever auth the user's claude CLI itself uses.
+func cleanEnvForClaude() []string {
+	drop := map[string]bool{
+		"CLAUDE_CODE_CHILD_SESSION": true,
+		"ANTHROPIC_API_KEY":         true,
+	}
+	env := os.Environ()
+	out := make([]string, 0, len(env))
+	for _, e := range env {
+		key, _, _ := strings.Cut(e, "=")
+		if !drop[key] {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 func checkInstalled(cli string) error {

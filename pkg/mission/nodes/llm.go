@@ -1,4 +1,4 @@
-package mission
+package nodes
 
 import (
 	"bytes"
@@ -11,6 +11,7 @@ import (
 
 	"github.com/jirateep/colony/pkg/config"
 	"github.com/jirateep/colony/pkg/llm"
+	"github.com/jirateep/colony/pkg/mission/graph"
 	"github.com/jirateep/colony/pkg/prompt"
 )
 
@@ -28,16 +29,16 @@ func NewLLMNode(agentID, role string, cfg config.LLMConfig) *LLMNode {
 	return &LLMNode{agentID: agentID, role: role, cfg: cfg}
 }
 
-func (n *LLMNode) Run(ctx context.Context, in Input) (Output, error) {
+func (n *LLMNode) Run(ctx context.Context, in graph.Input) (graph.Output, error) {
 	// Validate API key before any LLM call.
 	if err := n.cfg.ValidateKey(); err != nil {
-		return Output{}, err
+		return graph.Output{}, err
 	}
 
 	// Load module prompt for this role.
 	promptText, err := prompt.LoadModulePrompt(n.role)
 	if err != nil {
-		return Output{}, fmt.Errorf("agent %q: load prompt for role %q: %w", n.agentID, n.role, err)
+		return graph.Output{}, fmt.Errorf("agent %q: load prompt for role %q: %w", n.agentID, n.role, err)
 	}
 
 	// Inject client config (if provided) then input text.
@@ -59,27 +60,27 @@ func (n *LLMNode) Run(ctx context.Context, in Input) (Output, error) {
 		raw := buf.String()
 		// Recover if the buffer contains a valid envelope despite the non-zero exit
 		// (e.g. claude CLI prints a warning to stderr and exits 1 after full output).
-		var env Envelope
+		var env graph.Envelope
 		if jsonErr := json.Unmarshal([]byte(extractJSON(raw)), &env); jsonErr == nil && env.Decision != "" {
-			return Output{AgentID: n.agentID, Envelope: env, Raw: raw}, nil
+			return graph.Output{AgentID: n.agentID, Envelope: env, Raw: raw}, nil
 		}
-		return Output{AgentID: n.agentID, Raw: raw}, fmt.Errorf("agent %q: llm call failed: %w\n--- agent output ---\n%s\n---", n.agentID, err, raw)
+		return graph.Output{AgentID: n.agentID, Raw: raw}, fmt.Errorf("agent %q: llm call failed: %w\n--- agent output ---\n%s\n---", n.agentID, err, raw)
 	}
 
 	raw := buf.String()
 
 	// Parse JSON envelope.
-	var env Envelope
+	var env graph.Envelope
 	if err := json.Unmarshal([]byte(extractJSON(raw)), &env); err != nil {
 		preview := raw
 		if len(preview) > 500 {
 			preview = preview[:500] + "...(truncated)"
 		}
-		return Output{AgentID: n.agentID, Raw: raw},
+		return graph.Output{AgentID: n.agentID, Raw: raw},
 			fmt.Errorf("agent %q: invalid JSON envelope: %w\n--- raw output ---\n%s\n---", n.agentID, err, preview)
 	}
 
-	return Output{AgentID: n.agentID, Envelope: env, Raw: raw}, nil
+	return graph.Output{AgentID: n.agentID, Envelope: env, Raw: raw}, nil
 }
 
 // prefixedWriter returns an io.Writer that prepends prefix to each line written
@@ -195,18 +196,8 @@ func injectInput(promptText, inputText string) string {
 }
 
 // LLMNodeFactory returns a NodeFactory that creates LLMNode instances.
-func LLMNodeFactory(role string) NodeFactory {
-	return func(agentID string, cfg config.LLMConfig) (Node, error) {
+func LLMNodeFactory(role string) graph.NodeFactory {
+	return func(agentID string, cfg config.LLMConfig) (graph.Node, error) {
 		return NewLLMNode(agentID, role, cfg), nil
-	}
-}
-
-func init() {
-	// Register built-in roles backed by module prompts.
-	for _, role := range []string{"business-analyst", "architect", "project-manager", "estimator"} {
-		r := role // capture
-		Register(r, func(agentID string, cfg config.LLMConfig) (Node, error) {
-			return NewLLMNode(agentID, r, cfg), nil
-		})
 	}
 }

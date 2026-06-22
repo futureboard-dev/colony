@@ -65,9 +65,12 @@ func init() {
 
 	taskCmd.AddCommand(taskDoneCmd)
 	taskCmd.AddCommand(taskListCmd)
+	taskCmd.AddCommand(taskAddCmd)
 	rootCmd.AddCommand(taskCmd)
 
 	rootCmd.AddCommand(installCmd)
 	rootCmd.AddCommand(uninstallCmd)
 	rootCmd.AddCommand(missionCmd)
+	rootCmd.AddCommand(loopCmd)
+	rootCmd.AddCommand(gateCmd)
 }

@@ -28,16 +28,35 @@ Subcommands:
 }
 
 var taskFrom string
+var taskFile string
+var taskNoFormat bool
 
 func init() {
 	taskCmd.Flags().StringVar(&taskFrom, "from", "", "base branch (default: current or main)")
+	taskCmd.Flags().StringVar(&taskFile, "file", "", "path to a spec file to use as the task description")
+	taskCmd.Flags().BoolVar(&taskNoFormat, "no-format", false, "skip format gate in loop mode")
 }
 
 func runTask(cmd *cobra.Command, args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("task description required\n\nExample:\n  colony task \"fix login bug\"\n  colony task \"add banner component\" --from feature/homepage")
+	if len(args) == 0 && taskFile == "" {
+		return fmt.Errorf("task description required or --file required\n\nExample:\n  colony task \"fix login bug\"\n  colony task \"add banner component\" --from feature/homepage\n  colony task --file SPEC.md")
 	}
 	taskDesc := strings.Join(args, " ")
+
+	// If --file is specified, read the file for the description body.
+	specPath := taskFile
+	if specPath != "" {
+		if _, err := os.Stat(specPath); err != nil {
+			return fmt.Errorf("spec file not found: %s", specPath)
+		}
+		if taskDesc == "" {
+			data, err := os.ReadFile(specPath)
+			if err != nil {
+				return fmt.Errorf("read spec file: %w", err)
+			}
+			taskDesc = string(data)
+		}
+	}
 
 	cfg, root, err := loadConfig()
 	if err != nil {

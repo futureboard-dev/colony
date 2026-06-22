@@ -34,7 +34,12 @@ func (c LLMConfig) KeyEnvName() string {
 }
 
 // ValidateKey checks that the required API key environment variable is set.
+// Anthropic is skipped — the claude CLI manages its own auth and does not need
+// ANTHROPIC_API_KEY; forwarding a key from env would be rejected by the CLI.
 func (c LLMConfig) ValidateKey() error {
+	if c.Provider == "anthropic" {
+		return nil
+	}
 	key := c.KeyEnvName()
 	if key == "" {
 		return fmt.Errorf("unknown provider %q: cannot derive API key env var — set api_key_env in config", c.Provider)
@@ -96,6 +101,20 @@ func (c *Config) CommandRole(command, role string) LLMConfig {
 	return c.Role(role)
 }
 
+// HasCommandRole reports whether a role is explicitly configured for a command
+// scope or globally — i.e. resolvable to something other than the default LLM.
+// Used to auto-enable optional graph nodes (e.g. the loop review gate) when the
+// user has assigned a model to that role in config.json.
+func (c *Config) HasCommandRole(command, role string) bool {
+	if scope, ok := c.Commands[command]; ok {
+		if _, ok := scope.Roles[role]; ok {
+			return true
+		}
+	}
+	_, ok := c.Roles[role]
+	return ok
+}
+
 // LensRole returns the LLMConfig for a specific lens, checking "<lens>_lens" first,
 // then the shared "lens_reviewer" role, then the default LLM config.
 func (c *Config) LensRole(lens string) LLMConfig {
@@ -155,6 +174,20 @@ func Init(projectRoot string) error {
 			"bugs_lens": {
 				Provider: "anthropic",
 				Model:    "claude-sonnet-4-6",
+			},
+		},
+		Commands: map[string]ScopeConfig{
+			// The loop's review gate runs before a task is committed; pin it to
+			// Opus so a strong model catches stubs/unimplemented specs that a
+			// cheaper builder model (e.g. deepseek) leaves behind. Defining this
+			// role auto-enables the review gate — remove it to disable.
+			"loop": {
+				Roles: map[string]LLMConfig{
+					"review": {
+						Provider: "anthropic",
+						Model:    "claude-opus-4-8",
+					},
+				},
 			},
 		},
 	}

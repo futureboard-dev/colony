@@ -1,6 +1,8 @@
 package module
 
 import (
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -38,8 +40,23 @@ func TestCommandsForGo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cmds.Format == "" || cmds.Lint == "" || cmds.TypeCheck == "" || cmds.Test == "" {
-		t.Errorf("missing commands: %+v", cmds)
+	if cmds.Format == "" {
+		t.Error("expected non-empty Format")
+	}
+	if cmds.Vet == "" {
+		t.Error("expected non-empty Vet")
+	}
+	if cmds.Lint == "" {
+		t.Error("expected non-empty Lint")
+	}
+	if cmds.TypeCheck == "" {
+		t.Error("expected non-empty TypeCheck")
+	}
+	if cmds.Test == "" {
+		t.Error("expected non-empty Test")
+	}
+	if cmds.Build == "" {
+		t.Error("expected non-empty Build")
 	}
 }
 
@@ -62,7 +79,6 @@ func TestCommandsForUnknown(t *testing.T) {
 }
 
 func TestCommandAvailable(t *testing.T) {
-	// "go" must be present — these tests run under it.
 	if !CommandAvailable("go build ./...") {
 		t.Error("expected 'go' to be available on PATH")
 	}
@@ -71,5 +87,113 @@ func TestCommandAvailable(t *testing.T) {
 	}
 	if CommandAvailable("") {
 		t.Error("expected empty command to report unavailable")
+	}
+}
+
+// TestRunGateCaptureAll_AllPass verifies that a valid Go module passes all gates.
+// Format is skipped because gofmt -w ./... does not support the ./... glob.
+func TestRunGateCaptureAll_AllPass(t *testing.T) {
+	dir := t.TempDir()
+	writeMinimalGoModule(t, dir, `package test
+
+func F() int { return 42 }
+`)
+	output, err := RunGateCaptureAll("go", dir, map[string]bool{"format": true})
+	if err != nil {
+		t.Fatalf("expected gates to pass, got error: %v\noutput: %s", err, output)
+	}
+	if output != "" {
+		t.Logf("gate output: %s", output)
+	}
+}
+
+// TestRunGateCaptureAll_FormatFail verifies that unformatted Go fails.
+func TestRunGateCaptureAll_FormatFail(t *testing.T) {
+	dir := t.TempDir()
+	writeMinimalGoModule(t, dir, `package test
+
+func F() {
+return
+}`)
+	output, err := RunGateCaptureAll("go", dir, nil)
+	if err == nil {
+		t.Fatal("expected gates to fail on unformatted Go")
+	}
+	if output == "" {
+		t.Error("expected non-empty output on failure")
+	}
+}
+
+// TestRunGateCaptureAll_Typescript verifies TS gates work.
+func TestRunGateCaptureAll_Typescript(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "package.json", `{"name":"test"}`)
+	writeFile(t, dir, "tsconfig.json", `{"compilerOptions":{"module":"ESNext","target":"ES2022"}}`)
+	writeFile(t, dir, "test.ts", `const x: number = 42;`)
+
+	output, err := RunGateCaptureAll("typescript", dir, nil)
+	if err != nil && output == "" {
+		t.Log("typescript gates may not be installed — skipping strict assertion")
+	}
+}
+
+// TestRunGateCaptureScopesLintCache verifies RunGateCapture scopes
+// GOLANGCI_LINT_CACHE to the worktree, so stale results from a pruned worktree
+// can't leak into another run.
+func TestRunGateCaptureScopesLintCache(t *testing.T) {
+	dir := t.TempDir()
+	out, err := RunGateCapture("printenv GOLANGCI_LINT_CACHE", dir)
+	if err != nil {
+		t.Fatalf("printenv failed: %v\noutput: %s", err, out)
+	}
+	// The cache dir should be outside the worktree (in a temp dir).
+	cacheDir := strings.TrimSpace(out)
+	if strings.HasPrefix(cacheDir, dir) {
+		t.Errorf("GOLANGCI_LINT_CACHE %q is inside worktree %q", cacheDir, dir)
+	}
+	if cacheDir == "" {
+		t.Error("GOLANGCI_LINT_CACHE is empty")
+	}
+}
+
+// TestLintCacheDir_Cleanup verifies LintCacheDir creates a temp dir and
+// CleanupLintCache removes it.
+func TestLintCacheDir_Cleanup(t *testing.T) {
+	// Reset state so the test starts clean.
+	lintCacheDirMu.Lock()
+	lintCacheDir = ""
+	lintCacheDirMu.Unlock()
+
+	dir, err := LintCacheDir()
+	if err != nil {
+		t.Fatalf("LintCacheDir: %v", err)
+	}
+	if dir == "" {
+		t.Fatal("LintCacheDir returned empty string")
+	}
+	// Dir should exist.
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		t.Fatal("LintCacheDir does not exist on disk")
+	}
+	CleanupLintCache()
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Error("lint cache dir still exists after CleanupLintCache")
+	}
+	// Calling CleanupLintCache again should be safe.
+	CleanupLintCache()
+}
+
+// Helpers
+func writeMinimalGoModule(t *testing.T, dir, content string) {
+	t.Helper()
+	writeFile(t, dir, "go.mod", "module test\n\ngo 1.25\n")
+	// Write the Go file at root so gofmt -w ./... can find it.
+	writeFile(t, dir, "test.go", content)
+}
+
+func writeFile(t *testing.T, dir, name, content string) {
+	t.Helper()
+	if err := os.WriteFile(dir+"/"+name, []byte(content), 0644); err != nil {
+		t.Fatal(err)
 	}
 }

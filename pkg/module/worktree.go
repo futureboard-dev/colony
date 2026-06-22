@@ -23,6 +23,12 @@ func NewBranch(desc string) string {
 	return fmt.Sprintf("agent/%s-%s", Slugify(desc), ts)
 }
 
+// WorktreePath returns the filesystem path a worktree for the given project and
+// branch would occupy. Used to check whether an existing worktree is present.
+func WorktreePath(projectName, branch string) string {
+	return filepath.Join(WorktreeBase(), projectName, branch)
+}
+
 // SetupWorktree creates an isolated git worktree on a new branch.
 func SetupWorktree(projectRoot, projectName, branch, baseBranch string) (string, error) {
 	base := WorktreeBase()
@@ -43,12 +49,49 @@ func SetupWorktree(projectRoot, projectName, branch, baseBranch string) (string,
 
 	// propagate .claude config and .env into the worktree
 	if info, err := os.Stat(filepath.Join(projectRoot, ".claude")); err == nil && info.IsDir() {
-		exec.Command("cp", "-r", filepath.Join(projectRoot, ".claude")+"/",
-			filepath.Join(worktreePath, ".claude")+"/").Run() //nolint:errcheck
+		_ = exec.Command("cp", "-r", filepath.Join(projectRoot, ".claude")+"/",
+			filepath.Join(worktreePath, ".claude")+"/").Run()
 	}
 	if _, err := os.Stat(filepath.Join(projectRoot, ".env")); err == nil {
-		exec.Command("cp", filepath.Join(projectRoot, ".env"),
-			filepath.Join(worktreePath, ".env")).Run() //nolint:errcheck
+		_ = exec.Command("cp", filepath.Join(projectRoot, ".env"),
+			filepath.Join(worktreePath, ".env")).Run()
+	}
+
+	return worktreePath, nil
+}
+
+// SetupWorktreeLocal creates an isolated git worktree branched from a local
+// base ref. Unlike SetupWorktree it does not require an "origin" remote: it
+// branches from the local baseBranch (falling back to current HEAD). Used by
+// the loop, which must work in local-only repos.
+func SetupWorktreeLocal(projectRoot, projectName, branch, baseBranch string) (string, error) {
+	base := WorktreeBase()
+	worktreePath := filepath.Join(base, projectName, branch)
+
+	if err := os.MkdirAll(filepath.Dir(worktreePath), 0755); err != nil {
+		return "", err
+	}
+
+	baseRef := baseBranch
+	if baseRef == "" {
+		baseRef = "HEAD"
+	} else if err := exec.Command("git", "-C", projectRoot, "rev-parse", "--verify", baseRef).Run(); err != nil {
+		return "", fmt.Errorf("base branch %q not found locally", baseRef)
+	}
+
+	if err := gitCmd(projectRoot, "worktree", "add", worktreePath, "-b", branch,
+		baseRef, "--quiet"); err != nil {
+		return "", fmt.Errorf("create worktree: %w", err)
+	}
+
+	// propagate .claude config and .env into the worktree
+	if info, err := os.Stat(filepath.Join(projectRoot, ".claude")); err == nil && info.IsDir() {
+		_ = exec.Command("cp", "-r", filepath.Join(projectRoot, ".claude")+"/",
+			filepath.Join(worktreePath, ".claude")+"/").Run()
+	}
+	if _, err := os.Stat(filepath.Join(projectRoot, ".env")); err == nil {
+		_ = exec.Command("cp", filepath.Join(projectRoot, ".env"),
+			filepath.Join(worktreePath, ".env")).Run()
 	}
 
 	return worktreePath, nil

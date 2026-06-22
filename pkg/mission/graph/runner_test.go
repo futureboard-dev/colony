@@ -1,4 +1,4 @@
-package mission
+package graph
 
 import (
 	"context"
@@ -301,6 +301,66 @@ type countingNode struct {
 func (n *countingNode) Run(ctx context.Context, in Input) (Output, error) {
 	atomic.AddInt64(n.count, 1)
 	return n.inner.Run(ctx, in)
+}
+
+// TestErrMaxCyclesLastOutput asserts that when a max-cycles error is returned,
+// ErrMaxCycles.LastOutput carries the last rejecting gate's output.
+func TestErrMaxCyclesLastOutput(t *testing.T) {
+	const maxCycles = 2
+
+	m := buildTestMission("last-output", []Agent{
+		{ID: "writer"}, {ID: "reviewer"},
+	}, []Edge{
+		{From: "__input__", To: "writer"},
+		{From: "writer", OnApprove: "__output__", OnReject: "reviewer"},
+		{From: "reviewer", To: "writer"},
+	}, maxCycles)
+
+	nodes := map[string]Node{
+		"writer":   &fakeNode{decision: REJECTED, output: "draft-v1"},
+		"reviewer": &fakeNode{decision: REJECTED, output: "needs more testing"},
+	}
+	g := buildTestGraph(t, m, nodes)
+
+	store := openTestStore(t)
+	sessID := "last-output-test"
+	seedSession(t, store, sessID, m.Name)
+
+	runner := NewRunner()
+	_, err := runner.Run(context.Background(), m, g, sessID, store)
+	if err == nil {
+		t.Fatal("expected error from max_cycles exceeded")
+	}
+
+	var maxErr *ErrMaxCycles
+	if !As(err, &maxErr) {
+		t.Fatalf("expected *ErrMaxCycles, got %T: %v", err, err)
+	}
+	if maxErr.LastOutput == nil {
+		t.Fatal("expected LastOutput to be set on ErrMaxCycles")
+	}
+
+	// The last output before hitting the cycle limit should be from the reviewer
+	// since the cycle is writer→reviewer→writer and max_cycles is checked
+	// when re-dispatching the writer (the back-edge target).
+	if txt := maxErr.LastOutput.Envelope.OutputText(); txt != "needs more testing" {
+		t.Errorf("expected LastOutput output text 'needs more testing', got %q", txt)
+	}
+	if maxErr.LastOutput.Envelope.Decision != REJECTED {
+		t.Errorf("expected REJECTED decision on LastOutput, got %s", maxErr.LastOutput.Envelope.Decision)
+	}
+}
+
+// As is a type-assertion helper mirroring errors.As for *ErrMaxCycles.
+func As(err error, target interface{}) bool {
+	switch e := err.(type) {
+	case *ErrMaxCycles:
+		if t, ok := target.(**ErrMaxCycles); ok {
+			*t = e
+			return true
+		}
+	}
+	return false
 }
 
 // TestCyclicApproveSkipsBackEdge: APPROVED exits the cycle.

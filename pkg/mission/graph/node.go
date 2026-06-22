@@ -1,8 +1,17 @@
-package mission
+package graph
 
 import (
 	"context"
 	"encoding/json"
+)
+
+// Role names used for registry registration of built-in agent roles.
+const (
+	RoleGate       = "gate"
+	RoleBuilder    = "builder"
+	RoleFixer      = "fixer"
+	RoleEscalation = "escalation"
+	RoleReview     = "review"
 )
 
 // Decision is the routing decision returned by a node.

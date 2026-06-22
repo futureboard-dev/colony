@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -76,6 +77,29 @@ type SessionFilter struct {
 	Status      string
 }
 
+// Task represents a task in the loop queue with optional spec and gate overrides.
+type Task struct {
+	ID            string
+	Description   string
+	State         string // "open", "needs-fix", "done", "blocked"
+	SpecPath      string // path to the spec file (--file)
+	BaseBranch    string // base branch (--base)
+	GateOverrides string // comma-joined gate names to skip, e.g. "format,lint"
+	Lang          string
+	CycleCount    int
+	LastFeedback  string
+	Branch        string // worktree branch created for this task (for continue/reuse)
+	PRURL         string // PR URL linked to this task (for OBSERVE CI/PR polling)
+	CreatedAt     time.Time
+	UpdatedAt     *time.Time
+}
+
+// TaskFilter controls which tasks to return from QueryTasks.
+type TaskFilter struct {
+	ID     string   // optional — filter by exact task ID
+	States []string // optional — filter by one or more states
+}
+
 // Store is the persistence interface for mission runs.
 type Store interface {
 	InsertSession(s Session) error
@@ -88,6 +112,14 @@ type Store interface {
 	UpdateRun(r Run) error
 	QueryRuns(f RunFilter) ([]Run, error)
 	Close() error
+
+	// Task CRUD
+	InsertTask(t Task) error
+	QueryTasks(f TaskFilter) ([]Task, error)
+	UpdateTaskState(id, state, feedback string) error
+	UpdateTaskBranch(id, branch string) error
+	IncrementCycle(id string) error
+	PickNextOpenTask() (*Task, error)
 }
 
 // SQLiteStore implements Store using modernc.org/sqlite.
@@ -118,6 +150,19 @@ func Open(dbPath string) (*SQLiteStore, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate schema: %w", err)
 	}
+	// Idempotent column adds for existing databases (SQLite lacks IF NOT EXISTS
+	// for ALTER TABLE), so retries reuse the same worktree. Duplicate-column
+	// errors are expected on already-migrated databases and ignored.
+	for _, alter := range []string{
+		`ALTER TABLE tasks ADD COLUMN branch TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE tasks ADD COLUMN pr_url TEXT NOT NULL DEFAULT ''`,
+	} {
+		if _, err := db.Exec(alter); err != nil &&
+			!strings.Contains(err.Error(), "duplicate column") {
+			db.Close()
+			return nil, fmt.Errorf("migrate tasks columns: %w", err)
+		}
+	}
 	return &SQLiteStore{db: db}, nil
 }
 
@@ -127,7 +172,7 @@ func (s *SQLiteStore) Close() error {
 
 func (s *SQLiteStore) InsertSession(sess Session) error {
 	_, err := s.db.Exec(
-		`INSERT INTO sessions (id, mission_name, started_at, status) VALUES (?,?,?,?)`,
+		`INSERT OR REPLACE INTO sessions (id, mission_name, started_at, status) VALUES (?,?,?,?)`,
 		sess.ID, sess.MissionName, sess.StartedAt.UTC().Format(time.RFC3339), sess.Status,
 	)
 	return err
