@@ -172,7 +172,7 @@ func (s *SQLiteStore) Close() error {
 
 func (s *SQLiteStore) InsertSession(sess Session) error {
 	_, err := s.db.Exec(
-		`INSERT INTO sessions (id, mission_name, started_at, status) VALUES (?,?,?,?)`,
+		`INSERT OR REPLACE INTO sessions (id, mission_name, started_at, status) VALUES (?,?,?,?)`,
 		sess.ID, sess.MissionName, sess.StartedAt.UTC().Format(time.RFC3339), sess.Status,
 	)
 	return err
