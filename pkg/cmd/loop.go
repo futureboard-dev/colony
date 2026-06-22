@@ -193,9 +193,6 @@ func runLoop(cmd *cobra.Command, args []string) error {
 	}
 
 	maxPasses := loopMaxPasses
-	if maxPasses <= 0 {
-		maxPasses = 0
-	}
 	idleLimit := loopIdleLimit
 	if idleLimit <= 0 {
 		idleLimit = 10
@@ -219,7 +216,7 @@ func runLoop(cmd *cobra.Command, args []string) error {
 		}
 		if task == nil {
 			consecutiveIdle++
-			fmt.Fprintf(os.Stderr, "%sidle%s\n", ansiBlue, ansiReset)
+			fmt.Fprintf(os.Stderr, "%sidle: no tasks ready (%d/%d)%s\n", ansiBlue, consecutiveIdle, idleLimit, ansiReset)
 			if consecutiveIdle >= idleLimit {
 				fmt.Fprintf(os.Stderr, "%sloop: idle limit reached (%d consecutive), exiting%s\n", ansiBlue, idleLimit, ansiReset)
 				break
@@ -308,10 +305,6 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 		lang = loopLang
 	}
 
-	if err := store.IncrementCycle(task.ID); err != nil {
-		return fmt.Errorf("increment cycle: %w", err)
-	}
-
 	input, err := taskInput(task)
 	if err != nil {
 		return err
@@ -326,6 +319,10 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 		if err := store.UpdateTaskBranch(task.ID, branch); err != nil {
 			return fmt.Errorf("record task branch: %w", err)
 		}
+	}
+
+	if err := store.IncrementCycle(task.ID); err != nil {
+		return fmt.Errorf("increment cycle: %w", err)
 	}
 
 	if err := os.WriteFile(filepath.Join(workdir, "SPEC.md"), []byte(input), 0644); err != nil {
