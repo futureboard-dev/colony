@@ -226,12 +226,20 @@ func TestValidateKeySuccess(t *testing.T) {
 	}
 }
 
-func TestValidateKeyMissingEnvVar(t *testing.T) {
+func TestValidateKeyAnthropicSkipsKeyCheck(t *testing.T) {
 	os.Unsetenv("ANTHROPIC_API_KEY")
 	c := LLMConfig{Provider: "anthropic"}
+	if err := c.ValidateKey(); err != nil {
+		t.Errorf("anthropic should not require API key (claude CLI manages auth), got: %v", err)
+	}
+}
+
+func TestValidateKeyMissingEnvVar(t *testing.T) {
+	os.Unsetenv("OPENAI_API_KEY")
+	c := LLMConfig{Provider: "openai"}
 	err := c.ValidateKey()
 	if err == nil {
-		t.Fatal("expected error when key is unset")
+		t.Fatal("expected error when key is unset for non-anthropic provider")
 	}
 }
 

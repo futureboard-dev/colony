@@ -31,14 +31,9 @@ func NewReviewNode(agentID string, cfg config.LLMConfig) *ReviewNode {
 	return &ReviewNode{agentID: agentID, cfg: cfg}
 }
 
-func (n *ReviewNode) Run(ctx context.Context, in Input) (Output, error) {
-	// Skip key validation for anthropic — the claude CLI manages its own auth
-	// and does not need ANTHROPIC_API_KEY. If we required it, a valid-looking key
-	// set in env would be forwarded to the subprocess and rejected by the CLI.
-	if n.cfg.Provider != "anthropic" {
-		if err := n.cfg.ValidateKey(); err != nil {
-			return Output{}, err
-		}
+func (n *ReviewNode) Run(ctx context.Context, in graph.Input) (graph.Output, error) {
+	if err := n.cfg.ValidateKey(); err != nil {
+		return graph.Output{}, err
 	}
 
 	workdir := workdirFrom(in)

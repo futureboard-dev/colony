@@ -115,15 +115,15 @@ func runLoopRetryReview(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("worktree %q not found — cannot retry review without existing build", workdir)
 	}
 
-	reviewCfg := cfg.CommandRole("loop", mission.RoleReview)
+	reviewCfg := cfg.CommandRole("loop", graph.RoleReview)
 	if reviewCfg.Provider == "" {
 		return fmt.Errorf("no review role configured in .colony/config.json under commands.loop.roles.review")
 	}
 
 	fmt.Fprintf(os.Stderr, "%sloop: retrying review for task %q on worktree %s%s\n", ansiBlue, taskID, workdir, ansiReset)
 
-	node := mission.NewReviewNode("review", reviewCfg)
-	out, runErr := node.Run(cmd.Context(), mission.Input{
+	node := nodes.NewReviewNode("review", reviewCfg)
+	out, runErr := node.Run(cmd.Context(), graph.Input{
 		Params: map[string]any{"workdir": workdir},
 	})
 
@@ -132,7 +132,7 @@ func runLoopRetryReview(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("review failed: %w", runErr)
 	}
 
-	if out.Envelope.Decision != mission.APPROVED {
+	if out.Envelope.Decision != graph.APPROVED {
 		feedback := out.Envelope.Feedback
 		_ = store.UpdateTaskState(task.ID, "blocked", feedback)
 		fmt.Fprintf(os.Stderr, "%sloop: review REJECTED — task blocked\n%s%s\n", ansiRed, feedback, ansiReset)
