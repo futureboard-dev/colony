@@ -91,6 +91,16 @@ func (s *SQLiteStore) UpdateTaskBranch(id, branch string) error {
 	return err
 }
 
+// UpdateTaskLang records the language used for a task's quality gates so a
+// later resume runs the correct toolchain.
+func (s *SQLiteStore) UpdateTaskLang(id, lang string) error {
+	_, err := s.db.Exec(
+		`UPDATE tasks SET lang=?, updated_at=? WHERE id=?`,
+		lang, time.Now().UTC().Format(time.RFC3339), id,
+	)
+	return err
+}
+
 // DeleteTask removes a task row by id. Deleting a missing id is a no-op.
 func (s *SQLiteStore) DeleteTask(id string) error {
 	_, err := s.db.Exec(`DELETE FROM tasks WHERE id=?`, id)

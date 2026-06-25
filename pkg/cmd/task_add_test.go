@@ -21,6 +21,7 @@ func TestTaskAdd_InlineDescription(t *testing.T) {
 
 	taskAddFile = ""
 	taskAddBase = ""
+	taskAddLang = "go"
 	taskAddNoFormat = false
 
 	cmd := &cobra.Command{}
@@ -70,6 +71,7 @@ func TestTaskAdd_FileFlag(t *testing.T) {
 
 	taskAddFile = specPath
 	taskAddBase = ""
+	taskAddLang = "go"
 	taskAddNoFormat = false
 
 	cmd := &cobra.Command{}
@@ -107,6 +109,7 @@ func TestTaskAdd_FileFlagMissing(t *testing.T) {
 
 	taskAddFile = filepath.Join(dir, "nonexistent.md")
 	taskAddBase = ""
+	taskAddLang = "go"
 	taskAddNoFormat = false
 
 	cmd := &cobra.Command{}
@@ -129,6 +132,7 @@ func TestTaskAdd_BaseFlag(t *testing.T) {
 
 	taskAddFile = ""
 	taskAddBase = "feature/foo"
+	taskAddLang = "go"
 	taskAddNoFormat = false
 
 	cmd := &cobra.Command{}
@@ -166,6 +170,7 @@ func TestTaskAdd_NoFormatFlag(t *testing.T) {
 
 	taskAddFile = ""
 	taskAddBase = ""
+	taskAddLang = "go"
 	taskAddNoFormat = true
 
 	cmd := &cobra.Command{}
@@ -209,6 +214,7 @@ func TestTaskAdd_AllFlags(t *testing.T) {
 
 	taskAddFile = specPath
 	taskAddBase = "develop"
+	taskAddLang = "typescript"
 	taskAddNoFormat = true
 
 	cmd := &cobra.Command{}
@@ -243,6 +249,55 @@ func TestTaskAdd_AllFlags(t *testing.T) {
 	if tasks[0].GateOverrides != "format" {
 		t.Errorf("expected gate_overrides %q, got %q", "format", tasks[0].GateOverrides)
 	}
+	if tasks[0].Lang != "typescript" {
+		t.Errorf("expected lang %q, got %q", "typescript", tasks[0].Lang)
+	}
+}
+
+func TestTaskAdd_LangRequired(t *testing.T) {
+	dir := initTestRepo(t)
+	setupMinimalProject(t, dir)
+
+	origWd, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(origWd)
+
+	taskAddFile = ""
+	taskAddBase = ""
+	taskAddLang = ""
+	taskAddNoFormat = false
+
+	cmd := &cobra.Command{}
+	err := taskAddCmd.RunE(cmd, []string{"desc"})
+	if err == nil {
+		t.Fatal("expected error for missing --lang, got nil")
+	}
+	if !strings.Contains(err.Error(), "--lang is required") {
+		t.Errorf("expected error about --lang required, got %v", err)
+	}
+}
+
+func TestTaskAdd_LangInvalid(t *testing.T) {
+	dir := initTestRepo(t)
+	setupMinimalProject(t, dir)
+
+	origWd, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(origWd)
+
+	taskAddFile = ""
+	taskAddBase = ""
+	taskAddLang = "rust"
+	taskAddNoFormat = false
+
+	cmd := &cobra.Command{}
+	err := taskAddCmd.RunE(cmd, []string{"desc"})
+	if err == nil {
+		t.Fatal("expected error for invalid --lang, got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown language") {
+		t.Errorf("expected error about unknown language, got %v", err)
+	}
 }
 
 func TestTaskAdd_NoLLM(t *testing.T) {
@@ -255,6 +310,7 @@ func TestTaskAdd_NoLLM(t *testing.T) {
 
 	taskAddFile = ""
 	taskAddBase = ""
+	taskAddLang = "go"
 	taskAddNoFormat = false
 
 	cmd := &cobra.Command{}

@@ -70,6 +70,9 @@ func init() {
 	loopCmd.AddCommand(loopScheduleCmd)
 	loopCmd.AddCommand(loopClearCmd)
 	loopCmd.AddCommand(loopRetryReviewCmd)
+
+	loopRunCmd.Flags().StringVar(&loopRunLang, "lang", "", "language for gates: typescript, python, go (required)")
+	loopCmd.AddCommand(loopRunCmd)
 }
 
 // loopRetryReviewCmd runs just the review step on a blocked task's existing
@@ -163,6 +166,68 @@ func runLoopRetryReview(cmd *cobra.Command, args []string) error {
 
 	fmt.Fprintf(os.Stderr, "%sloop: task %q done → %s%s\n", ansiGreen, task.ID, prURL, ansiReset)
 	_ = store.UpdateTaskState(task.ID, "done", prURL)
+	return nil
+}
+
+var loopRunLang string
+
+// loopRunCmd processes a single task by ID through the full build-gate-fix
+// flow, bypassing queue selection. The --lang flag is required and is persisted
+// to the task so later resumes use the same toolchain.
+var loopRunCmd = &cobra.Command{
+	Use:   "run <task-id>",
+	Short: "Run a single task by ID with an explicit gate language",
+	Long: `Processes one task by its ID through the full build-gate-fix flow,
+regardless of its current queue position. --lang is required and overrides any
+language stored on the task (and is persisted for later resumes).`,
+	Args: cobra.ExactArgs(1),
+	RunE: runLoopRun,
+}
+
+func runLoopRun(cmd *cobra.Command, args []string) error {
+	taskID := args[0]
+
+	if loopRunLang == "" {
+		return fmt.Errorf("--lang is required (typescript, python, go)")
+	}
+	if _, err := module.CommandsFor(loopRunLang); err != nil {
+		return err
+	}
+
+	cfg, root, err := loadConfig()
+	if err != nil {
+		return err
+	}
+
+	store, err := openLoopStore(root)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = store.Close() }()
+
+	tasks, err := store.QueryTasks(storage.TaskFilter{ID: taskID})
+	if err != nil {
+		return fmt.Errorf("query task: %w", err)
+	}
+	if len(tasks) == 0 {
+		return fmt.Errorf("task %q not found", taskID)
+	}
+	task := &tasks[0]
+
+	if task.Lang != loopRunLang {
+		if err := store.UpdateTaskLang(task.ID, loopRunLang); err != nil {
+			return fmt.Errorf("persist lang: %w", err)
+		}
+		task.Lang = loopRunLang
+	}
+
+	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := processTask(ctx, cfg, root, store, task); err != nil {
+		_ = markTaskBlocked(store, task.ID)
+		return fmt.Errorf("task %q failed: %w", task.ID, err)
+	}
 	return nil
 }
 

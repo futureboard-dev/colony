@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jirateep/colony/pkg/module"
 	"github.com/jirateep/colony/pkg/storage"
 	"github.com/spf13/cobra"
 )
@@ -14,6 +15,7 @@ import (
 var (
 	taskAddFile     string
 	taskAddBase     string
+	taskAddLang     string
 	taskAddNoFormat bool
 )
 
@@ -26,12 +28,20 @@ var taskAddCmd = &cobra.Command{
 Flags:
   --file <path>     Path to a spec file (stored in spec_path)
   --base <branch>   Base branch (stored in base_branch)
+  --lang <lang>     Language for gates: typescript, python, go (required)
   --no-format       Comma-joined gate names to skip (e.g. --no-format skips "format")`,
 	Args: cobra.ArbitraryArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		description := strings.Join(args, " ")
 		if description == "" && taskAddFile == "" {
 			return fmt.Errorf("task description or --file is required")
+		}
+
+		if taskAddLang == "" {
+			return fmt.Errorf("--lang is required (typescript, python, go)")
+		}
+		if _, err := module.CommandsFor(taskAddLang); err != nil {
+			return err
 		}
 
 		specPath := taskAddFile
@@ -71,6 +81,7 @@ Flags:
 			Description:   description,
 			SpecPath:      specPath,
 			BaseBranch:    taskAddBase,
+			Lang:          taskAddLang,
 			GateOverrides: gateOverrides,
 			State:         "open",
 			CreatedAt:     time.Now(),
@@ -87,5 +98,6 @@ Flags:
 func init() {
 	taskAddCmd.Flags().StringVar(&taskAddFile, "file", "", "path to a spec file")
 	taskAddCmd.Flags().StringVar(&taskAddBase, "base", "", "base branch")
+	taskAddCmd.Flags().StringVar(&taskAddLang, "lang", "", "language for gates: typescript, python, go (required)")
 	taskAddCmd.Flags().BoolVar(&taskAddNoFormat, "no-format", false, "skip format gate")
 }
