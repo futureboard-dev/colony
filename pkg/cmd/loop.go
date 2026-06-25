@@ -380,6 +380,7 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 	if err != nil {
 		return fmt.Errorf("setup worktree: %w", err)
 	}
+	module.InstallDeps(lang, workdir, os.Stderr)
 	if task.Branch != branch {
 		if err := store.UpdateTaskBranch(task.ID, branch); err != nil {
 			return fmt.Errorf("record task branch: %w", err)
