@@ -14,11 +14,13 @@ import (
 	"time"
 
 	"github.com/jirateep/colony/pkg/config"
+	"github.com/jirateep/colony/pkg/llm"
 	"github.com/jirateep/colony/pkg/mission/blueprint"
 	"github.com/jirateep/colony/pkg/mission/graph"
 	"github.com/jirateep/colony/pkg/mission/nodes"
 	"github.com/jirateep/colony/pkg/module"
 	"github.com/jirateep/colony/pkg/observe"
+	"github.com/jirateep/colony/pkg/prompt"
 	"github.com/jirateep/colony/pkg/storage"
 	"github.com/spf13/cobra"
 )
@@ -70,6 +72,7 @@ func init() {
 	loopCmd.AddCommand(loopScheduleCmd)
 	loopCmd.AddCommand(loopClearCmd)
 	loopCmd.AddCommand(loopRetryReviewCmd)
+	loopCmd.AddCommand(loopRetryGateCmd)
 
 	loopRunCmd.Flags().StringVar(&loopRunLang, "lang", "", "language for gates: typescript, python, go (required)")
 	loopCmd.AddCommand(loopRunCmd)
@@ -153,13 +156,136 @@ func runLoopRetryReview(cmd *cobra.Command, args []string) error {
 		baseBranch = module.DefaultBranch()
 	}
 
-	if err := integrateTask(workdir, task.Branch, baseBranch, lang, task, store); err != nil {
+	if err := integrateTask(cmd.Context(), cfg, workdir, task.Branch, baseBranch, lang, task, store); err != nil {
 		return nil // integrateTask already marked blocked
 	}
 
 	prURL, finishErr := finishTask(workdir, task.Branch, baseBranch, missionLabel(task))
 	if finishErr != nil {
 		fmt.Fprintf(os.Stderr, "%sloop: task %q done (review passed) but delivery failed: %v%s\n", ansiYellow, task.ID, finishErr, ansiReset)
+		_ = store.UpdateTaskState(task.ID, "done", "delivery failed: "+finishErr.Error())
+		return nil
+	}
+
+	fmt.Fprintf(os.Stderr, "%sloop: task %q done → %s%s\n", ansiGreen, task.ID, prURL, ansiReset)
+	_ = store.UpdateTaskState(task.ID, "done", prURL)
+	return nil
+}
+
+// loopRetryGateCmd re-runs the gate→fix flow on a task's existing worktree,
+// skipping the builder. Useful when the code is already written and only the
+// gate (and optional review) needs to pass.
+var loopRetryGateCmd = &cobra.Command{
+	Use:   "retry-gate <task-id>",
+	Short: "Re-run from the gate step on a blocked task's existing worktree",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runLoopRetryGate,
+}
+
+func runLoopRetryGate(cmd *cobra.Command, args []string) error {
+	taskID := args[0]
+
+	cfg, root, err := loadConfig()
+	if err != nil {
+		return err
+	}
+
+	store, err := openLoopStore(root)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = store.Close() }()
+
+	tasks, err := store.QueryTasks(storage.TaskFilter{ID: taskID})
+	if err != nil {
+		return fmt.Errorf("query task: %w", err)
+	}
+	if len(tasks) == 0 {
+		return fmt.Errorf("task %q not found", taskID)
+	}
+	task := &tasks[0]
+
+	if task.Branch == "" {
+		return fmt.Errorf("task %q has no recorded branch — has it been built yet?", taskID)
+	}
+
+	projectName := module.ProjectName(root)
+	workdir := module.WorktreePath(projectName, task.Branch)
+	if info, statErr := os.Stat(workdir); statErr != nil || !info.IsDir() {
+		return fmt.Errorf("worktree %q not found — cannot retry gate without existing build", workdir)
+	}
+
+	lang := task.Lang
+	if lang == "" {
+		lang = loopLang
+	}
+
+	fmt.Fprintf(os.Stderr, "%sloop: retrying from gate for task %q on worktree %s%s\n", ansiBlue, taskID, workdir, ansiReset)
+
+	input, err := taskInput(task)
+	if err != nil {
+		return err
+	}
+
+	opts := blueprint.BuildGateFixOpts{
+		Name:        "retry-gate-" + missionLabel(task),
+		Input:       input,
+		Lang:        lang,
+		Workdir:     workdir,
+		MaxCycles:   loopMaxCycles,
+		SkipBuilder: true,
+	}
+	if loopReview || cfg.HasCommandRole("loop", graph.RoleReview) {
+		opts.ReviewRole = graph.RoleReview
+	}
+
+	m := blueprint.BuildGateFix(opts)
+
+	reg := graph.NewRegistry()
+	nodes.Register(reg)
+	g, buildErr := graph.BuildGraph(m, reg, func(role string) config.LLMConfig {
+		return cfg.CommandRole("loop", role)
+	})
+	if buildErr != nil {
+		return fmt.Errorf("build graph: %w", buildErr)
+	}
+
+	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	sessID := "retry-gate-" + strings.TrimPrefix(task.Branch, "agent/")
+	if err := store.InsertSession(storage.Session{
+		ID:          sessID,
+		MissionName: m.Name,
+		StartedAt:   time.Now(),
+		Status:      "running",
+	}); err != nil {
+		return fmt.Errorf("insert session: %w", err)
+	}
+
+	runner := graph.NewRunner()
+	out, runErr := runner.Run(ctx, m, g, sessID, store)
+
+	if runErr != nil {
+		_ = store.UpdateSession(sessID, "failed", time.Now())
+		feedback := extractFeedback(out, runErr)
+		_ = store.UpdateTaskState(task.ID, "blocked", feedback)
+		return fmt.Errorf("gate/fix failed: %w", runErr)
+	}
+
+	_ = store.UpdateSession(sessID, "completed", time.Now())
+
+	baseBranch := task.BaseBranch
+	if baseBranch == "" {
+		baseBranch = module.DefaultBranch()
+	}
+	if err := integrateTask(cmd.Context(), cfg, workdir, task.Branch, baseBranch, lang, task, store); err != nil {
+		return nil // integrateTask already marked blocked
+	}
+
+	prURL, finishErr := finishTask(workdir, task.Branch, baseBranch, missionLabel(task))
+	if finishErr != nil {
+		fmt.Fprintf(os.Stderr, "%sloop: task %q done (gate passed) but delivery failed: %v%s\n", ansiYellow, task.ID, finishErr, ansiReset)
 		_ = store.UpdateTaskState(task.ID, "done", "delivery failed: "+finishErr.Error())
 		return nil
 	}
@@ -472,7 +598,7 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 	if baseBranch == "" {
 		baseBranch = module.DefaultBranch()
 	}
-	if err := integrateTask(workdir, branch, baseBranch, lang, task, store); err != nil {
+	if err := integrateTask(ctx, cfg, workdir, branch, baseBranch, lang, task, store); err != nil {
 		return nil
 	}
 
@@ -488,7 +614,7 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 	return nil
 }
 
-func integrateTask(workdir, branch, baseBranch, lang string, task *storage.Task, store *storage.SQLiteStore) error {
+func integrateTask(ctx context.Context, cfg *config.Config, workdir, branch, baseBranch, lang string, task *storage.Task, store *storage.SQLiteStore) error {
 	out := os.Stderr
 	fmt.Fprintf(out, "%sloop: integrating %s with origin/%s%s\n", ansiBlue, branch, baseBranch, ansiReset)
 
@@ -522,6 +648,18 @@ func integrateTask(workdir, branch, baseBranch, lang string, task *storage.Task,
 		module.InstallDeps(lang, workdir, out)
 	}
 	gateOutput, gateErr := module.RunGateCaptureAll(lang, workdir, nil)
+	if gateErr != nil {
+		fmt.Fprintf(out, "%sloop: integration gate failed — asking fixer agent to repair%s\n", ansiYellow, ansiReset)
+		fixerCfg := cfg.CommandRole("loop", graph.RoleFixer)
+		ex := llm.New(fixerCfg)
+		fixPrompt, ferr := prompt.Fix("integration gate", gateOutput)
+		if ferr == nil {
+			if aerr := ex.RunAgent(ctx, workdir, fixPrompt, out); aerr != nil {
+				fmt.Fprintf(out, "%sloop: fixer agent error: %v%s\n", ansiYellow, aerr, ansiReset)
+			}
+		}
+		gateOutput, gateErr = module.RunGateCaptureAll(lang, workdir, nil)
+	}
 	if gateErr != nil {
 		feedback := fmt.Sprintf("integration gate failed after merge with origin/%s:\n%s", baseBranch, gateOutput)
 		_ = store.UpdateTaskState(task.ID, "blocked", feedback)

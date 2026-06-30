@@ -6,12 +6,13 @@ import (
 
 // BuildGateFixOpts configures the BuildGateFix mission template.
 type BuildGateFixOpts struct {
-	Name      string
-	Input     string
-	Lang      string
-	Workdir   string          // directory the builder/fixer/gate operate in (worktree path); "" = current dir
-	SkipGates map[string]bool // gate names to skip (e.g. {"format": true})
-	MaxCycles int
+	Name        string
+	Input       string
+	Lang        string
+	Workdir     string          // directory the builder/fixer/gate operate in (worktree path); "" = current dir
+	SkipGates   map[string]bool // gate names to skip (e.g. {"format": true})
+	SkipBuilder bool            // start from gate instead of builder (use when worktree already has code)
+	MaxCycles   int
 	// EscalationRole, when non-nil, wires an escalation node that runs after
 	// max-cycles with a red gate. The mission itself does not enforce the
 	// escalation transition — the caller (loop steward) handles it.
@@ -34,16 +35,23 @@ type BuildGateFixOpts struct {
 // (REJECTED → fixer → gate → ...) bounded by max_cycles.
 func BuildGateFix(opts BuildGateFixOpts) *graph.Mission {
 	agents := []graph.Agent{
-		{ID: "builder", Role: graph.RoleBuilder},
 		{ID: "gate", Role: graph.RoleGate},
 		{ID: "fixer", Role: graph.RoleFixer},
 	}
 	flow := []graph.Edge{
-		{From: "__input__", To: "builder"},
-		{From: "builder", To: "gate"},
 		{From: "gate", OnApprove: "__output__"},
 		{From: "gate", OnReject: "fixer"},
-		{From: "fixer", To: "gate"}, // back-edge: fixer → gate
+		{From: "fixer", To: "gate"},
+	}
+
+	if !opts.SkipBuilder {
+		agents = append([]graph.Agent{{ID: "builder", Role: graph.RoleBuilder}}, agents...)
+		flow = append([]graph.Edge{
+			{From: "__input__", To: "builder"},
+			{From: "builder", To: "gate"},
+		}, flow...)
+	} else {
+		flow = append([]graph.Edge{{From: "__input__", To: "gate"}}, flow...)
 	}
 
 	if opts.ReviewRole != "" {
