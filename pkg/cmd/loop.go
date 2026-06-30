@@ -518,6 +518,9 @@ func integrateTask(workdir, branch, baseBranch, lang string, task *storage.Task,
 	}
 
 	fmt.Fprintf(out, "%sloop: merge clean — re-running gates%s\n", ansiBlue, ansiReset)
+	if l := strings.ToLower(lang); l == "typescript" || l == "ts" {
+		module.InstallDeps(lang, workdir, out)
+	}
 	gateOutput, gateErr := module.RunGateCaptureAll(lang, workdir, nil)
 	if gateErr != nil {
 		feedback := fmt.Sprintf("integration gate failed after merge with origin/%s:\n%s", baseBranch, gateOutput)
