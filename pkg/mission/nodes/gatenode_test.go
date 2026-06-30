@@ -3,6 +3,7 @@ package nodes
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/jirateep/colony/pkg/mission/graph"
@@ -67,6 +68,34 @@ func F() {}
 	}
 	if out.Envelope.Decision != graph.APPROVED {
 		t.Errorf("expected APPROVED, got %s", out.Envelope.Decision)
+	}
+}
+
+// TestGateNode_LangParamOverridesFactory verifies the lang mission param takes
+// precedence over the factory-time lang. A node built with "go" but run with a
+// "typescript" param must gate as TypeScript, not run go commands in a dir with
+// no go.mod. Regression test for the loop running Go gates on TS tasks.
+func TestGateNode_LangParamOverridesFactory(t *testing.T) {
+	dir := t.TempDir()
+	// Factory default is "go", but the mission param says typescript.
+	node := NewGateNode("test-gate", "go", nil)
+
+	out, err := node.Run(context.Background(), graph.Input{
+		Params: map[string]any{"workdir": dir, "lang": "typescript"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// With no package.json/tsc, the TS gate fails — but the feedback must name
+	// the TypeScript gate, proving the param (not the "go" factory) was used.
+	if out.Envelope.Decision != graph.REJECTED {
+		t.Errorf("expected REJECTED, got %s", out.Envelope.Decision)
+	}
+	if !strings.Contains(out.Envelope.Feedback, `Gate "typescript"`) {
+		t.Errorf("expected feedback to reference the typescript gate, got: %s", out.Envelope.Feedback)
+	}
+	if strings.Contains(out.Envelope.Feedback, "main module") {
+		t.Errorf("feedback contains a Go toolchain error — gate ran go instead of typescript: %s", out.Envelope.Feedback)
 	}
 }
 
