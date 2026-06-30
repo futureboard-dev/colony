@@ -30,7 +30,18 @@ func (n *GateNode) Run(ctx context.Context, in graph.Input) (graph.Output, error
 	if wd, ok := in.Params["workdir"].(string); ok && wd != "" {
 		workdir = wd
 	}
-	output, err := module.RunGateCaptureAll(n.lang, workdir, n.skip)
+	// lang and skip gates are configured via Mission Params at runtime, falling
+	// back to the factory-time values. Without this the gate would always run
+	// the registration default, gating e.g. a TypeScript task with Go commands.
+	lang := n.lang
+	if l, ok := in.Params["lang"].(string); ok && l != "" {
+		lang = l
+	}
+	skip := n.skip
+	if s, ok := in.Params["skip_gates"].(map[string]bool); ok && s != nil {
+		skip = s
+	}
+	output, err := module.RunGateCaptureAll(lang, workdir, skip)
 	if err == nil {
 		return graph.Output{
 			AgentID: n.agentID,
@@ -46,7 +57,7 @@ func (n *GateNode) Run(ctx context.Context, in graph.Input) (graph.Output, error
 		AgentID: n.agentID,
 		Envelope: graph.Envelope{
 			Decision: graph.REJECTED,
-			Feedback: fmt.Sprintf("Gate %q failed.\n\n%s", n.lang, output),
+			Feedback: fmt.Sprintf("Gate %q failed.\n\n%s", lang, output),
 			Output:   mustMarshal(output),
 		},
 	}, nil

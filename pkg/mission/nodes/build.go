@@ -109,7 +109,7 @@ func runLLMAndParse(ctx context.Context, agentID string, cfg config.LLMConfig, w
 	exec := llm.New(cfg)
 	var buf bytes.Buffer
 	stream := io.MultiWriter(&buf, prefixedWriter(os.Stderr, "    "+agentID+" │ "))
-	fmt.Fprintf(os.Stderr, "    %s │ <streaming…>\n", agentID)
+	fmt.Fprintf(os.Stderr, "    %s │ <streaming…> [%s %s]\n", agentID, cfg.Provider, cfg.Model)
 	if err := exec.RunAgent(ctx, workdir, promptText, stream); err != nil {
 		raw := buf.String()
 		return graph.Output{AgentID: agentID, Raw: raw},

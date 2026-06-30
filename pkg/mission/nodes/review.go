@@ -59,7 +59,7 @@ func (n *ReviewNode) Run(ctx context.Context, in graph.Input) (graph.Output, err
 	runner := llm.New(n.cfg)
 	var buf bytes.Buffer
 	stream := io.MultiWriter(&buf, prefixedWriter(os.Stderr, "    "+n.agentID+" │ "))
-	fmt.Fprintf(os.Stderr, "    %s │ <streaming…>\n", n.agentID)
+	fmt.Fprintf(os.Stderr, "    %s │ <streaming…> [%s %s]\n", n.agentID, n.cfg.Provider, n.cfg.Model)
 	// Review runs headless (read-only judgement): it inspects the diff and emits
 	// a decision envelope; it must not modify the worktree.
 	if err := runner.RunHeadless(ctx, workdir, combined, stream); err != nil {
