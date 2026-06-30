@@ -55,7 +55,7 @@ func (n *LLMNode) Run(ctx context.Context, in graph.Input) (graph.Output, error)
 	exec := llm.New(n.cfg)
 	var buf bytes.Buffer
 	stream := io.MultiWriter(&buf, prefixedWriter(os.Stderr, "    "+n.agentID+" │ "))
-	fmt.Fprintf(os.Stderr, "    %s │ <streaming…>\n", n.agentID)
+	fmt.Fprintf(os.Stderr, "    %s │ <streaming…> [%s %s]\n", n.agentID, n.cfg.Provider, n.cfg.Model)
 	if err := exec.RunHeadless(ctx, ".", combined, stream); err != nil {
 		raw := buf.String()
 		// Recover if the buffer contains a valid envelope despite the non-zero exit
