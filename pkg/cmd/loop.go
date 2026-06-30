@@ -614,6 +614,19 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 	return nil
 }
 
+// maxFixerOutput bounds the gate output handed to the fixer agent. crush takes
+// its prompt as a CLI argument, so an unbounded gate dump (e.g. thousands of
+// lint errors) blows past ARG_MAX and the exec fails with "argument list too
+// long". Scoping the gate already keeps this small; the cap is a hard backstop.
+const maxFixerOutput = 16 * 1024
+
+func capGateOutput(s string) string {
+	if len(s) <= maxFixerOutput {
+		return s
+	}
+	return s[:maxFixerOutput] + "\n…(truncated — fix the errors shown above first)\n"
+}
+
 func integrateTask(ctx context.Context, cfg *config.Config, workdir, branch, baseBranch, lang string, task *storage.Task, store *storage.SQLiteStore) error {
 	out := os.Stderr
 	fmt.Fprintf(out, "%sloop: integrating %s with origin/%s%s\n", ansiBlue, branch, baseBranch, ansiReset)
@@ -644,21 +657,44 @@ func integrateTask(ctx context.Context, cfg *config.Config, workdir, branch, bas
 	}
 
 	fmt.Fprintf(out, "%sloop: merge clean — re-running gates%s\n", ansiBlue, ansiReset)
+	isTS := false
 	if l := strings.ToLower(lang); l == "typescript" || l == "ts" {
+		isTS = true
 		module.InstallDeps(lang, workdir, out)
 	}
-	gateOutput, gateErr := module.RunGateCaptureAll(lang, workdir, nil)
+
+	// Before gating, auto-fix deterministically and scope format/lint to the
+	// task's own changed files. This keeps formatting and mechanically-fixable
+	// lint off the (token-costing) fixer agent, and stops pre-existing whole-repo
+	// violations on the base branch from failing every integration.
+	var changed []string
+	skip := map[string]bool{}
+	gate := func() (string, error) { return module.RunGateCaptureAll(lang, workdir, skip) }
+	if isTS {
+		changed = module.ChangedFiles(workdir, "origin/"+baseBranch)
+		if len(changed) > 0 {
+			module.AutoFix(lang, workdir, changed, out)
+		} else {
+			skip["format"], skip["lint"] = true, true // nothing lintable changed
+		}
+		gate = func() (string, error) { return module.RunGateCaptureScoped(lang, workdir, changed, skip) }
+	}
+
+	gateOutput, gateErr := gate()
 	if gateErr != nil {
 		fmt.Fprintf(out, "%sloop: integration gate failed — asking fixer agent to repair%s\n", ansiYellow, ansiReset)
 		fixerCfg := cfg.CommandRole("loop", graph.RoleFixer)
 		ex := llm.New(fixerCfg)
-		fixPrompt, ferr := prompt.Fix("integration gate", gateOutput)
+		fixPrompt, ferr := prompt.Fix("integration gate", capGateOutput(gateOutput))
 		if ferr == nil {
 			if aerr := ex.RunAgent(ctx, workdir, fixPrompt, out); aerr != nil {
 				fmt.Fprintf(out, "%sloop: fixer agent error: %v%s\n", ansiYellow, aerr, ansiReset)
 			}
 		}
-		gateOutput, gateErr = module.RunGateCaptureAll(lang, workdir, nil)
+		if isTS && len(changed) > 0 {
+			module.AutoFix(lang, workdir, changed, out) // re-apply deterministic fixes after the agent's edits
+		}
+		gateOutput, gateErr = gate()
 	}
 	if gateErr != nil {
 		feedback := fmt.Sprintf("integration gate failed after merge with origin/%s:\n%s", baseBranch, gateOutput)

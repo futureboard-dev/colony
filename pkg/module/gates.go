@@ -133,13 +133,71 @@ func RunFormat(command, workdir string, out io.Writer) {
 	}
 }
 
+// ChangedFiles returns the lintable files that differ between base and the
+// worktree HEAD, restricted to paths that still exist on disk. Used to scope
+// auto-fix and the format/lint gates to a task's own changes. Best-effort:
+// returns nil on any git error.
+func ChangedFiles(workdir, base string) []string {
+	cmd := exec.Command("git", "diff", "--name-only", "--diff-filter=ACMR", base+"...HEAD")
+	cmd.Dir = workdir
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	var files []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		switch strings.ToLower(filepath.Ext(line)) {
+		case ".ts", ".tsx", ".js", ".jsx", ".cjs", ".mjs", ".json", ".css", ".scss":
+		default:
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(workdir, line)); err != nil {
+			continue // deleted or renamed away
+		}
+		files = append(files, line)
+	}
+	return files
+}
+
+// AutoFix runs deterministic auto-fixers on the given files before gates run, so
+// formatting and mechanically-fixable lint never reach the (token-costing) fixer
+// agent. Best-effort and non-fatal; a no-op when files is empty.
+func AutoFix(lang, workdir string, files []string, out io.Writer) {
+	if len(files) == 0 {
+		return
+	}
+	switch strings.ToLower(lang) {
+	case "typescript", "ts":
+		runFix(append([]string{"pnpm", "eslint", "--fix"}, files...), workdir, out)
+		runFix(append([]string{"pnpm", "prettier", "--write"}, files...), workdir, out)
+	}
+}
+
+func runFix(argv []string, workdir string, out io.Writer) {
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Dir = workdir
+	cmd.Stdout = out
+	cmd.Stderr = out
+	_ = cmd.Run() // best-effort: the gate re-checks whatever couldn't be fixed
+}
+
 // RunGateCapture runs a gate command and returns (combined output, error).
 func RunGateCapture(command, workdir string) (string, error) {
-	parts := strings.Fields(command)
-	if len(parts) == 0 {
+	return runGateArgv(strings.Fields(command), workdir)
+}
+
+// runGateArgv runs a gate as an explicit argv (no shell) and returns its
+// combined output. Splitting RunGateCapture this way lets scoped gates pass a
+// changed-file list as real arguments instead of re-splitting a command string.
+func runGateArgv(argv []string, workdir string) (string, error) {
+	if len(argv) == 0 {
 		return "", nil
 	}
-	cmd := exec.Command(parts[0], parts[1:]...)
+	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = workdir
 	// GOLANGCI_LINT_CACHE is set to a temp dir outside the worktree, preventing
 	// stale cached results keyed by a pruned worktree's absolute paths and
@@ -158,32 +216,59 @@ func RunGateCapture(command, workdir string) (string, error) {
 // those whose commands are empty. Returns on the first non-zero exit: combined
 // output + exit error. Returns empty string and nil when all gates pass.
 func RunGateCaptureAll(lang string, workdir string, skip map[string]bool) (string, error) {
+	return runGates(lang, workdir, nil, skip)
+}
+
+// RunGateCaptureScoped is like RunGateCaptureAll but restricts the format and
+// lint gates to the given changed files. Whole-repo lint/format on a base
+// branch that already carries violations would fail every integration; scoping
+// keeps the gate — and its output — about the task's own changes. vet, typecheck,
+// test, and build stay whole-project because they can't be scoped to a subset.
+func RunGateCaptureScoped(lang string, workdir string, files []string, skip map[string]bool) (string, error) {
+	return runGates(lang, workdir, files, skip)
+}
+
+func runGates(lang string, workdir string, files []string, skip map[string]bool) (string, error) {
 	cmds, err := CommandsFor(lang)
 	if err != nil {
 		return "", err
 	}
 	type gateStep struct {
-		name string
-		cmd  string
+		name   string
+		cmd    string
+		scoped bool // format/lint may be restricted to changed files
 	}
 	steps := []gateStep{
-		{"format", cmds.Format},
-		{"vet", cmds.Vet},
-		{"lint", cmds.Lint},
-		{"typecheck", cmds.TypeCheck},
-		{"test", cmds.Test},
-		{"build", cmds.Build},
+		{"format", cmds.Format, true},
+		{"vet", cmds.Vet, false},
+		{"lint", cmds.Lint, true},
+		{"typecheck", cmds.TypeCheck, false},
+		{"test", cmds.Test, false},
+		{"build", cmds.Build, false},
 	}
 	var combined strings.Builder
 	for _, s := range steps {
 		if skip[s.name] || s.cmd == "" {
 			continue
 		}
-		out, err := RunGateCapture(s.cmd, workdir)
+		argv := strings.Fields(s.cmd)
+		if s.scoped && len(files) > 0 {
+			argv = scopeArgv(argv, files)
+		}
+		out, err := runGateArgv(argv, workdir)
 		if err != nil {
 			fmt.Fprintf(&combined, "--- %s ---\n%s", s.name, out)
 			return combined.String(), fmt.Errorf("%s failed: %w", s.name, err)
 		}
 	}
 	return "", nil
+}
+
+// scopeArgv replaces a trailing whole-repo target (e.g. the "." in `eslint .`)
+// with an explicit file list so the tool runs only on the changed files.
+func scopeArgv(argv []string, files []string) []string {
+	if n := len(argv); n > 0 && (argv[n-1] == "." || argv[n-1] == "./...") {
+		argv = argv[:n-1]
+	}
+	return append(argv, files...)
 }

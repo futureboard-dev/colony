@@ -183,6 +183,27 @@ func TestLintCacheDir_Cleanup(t *testing.T) {
 	CleanupLintCache()
 }
 
+func TestScopeArgv(t *testing.T) {
+	files := []string{"a.ts", "b/c.tsx"}
+	cases := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{"trailing dot", []string{"pnpm", "eslint", "."}, []string{"pnpm", "eslint", "a.ts", "b/c.tsx"}},
+		{"trailing go target", []string{"golangci-lint", "run", "./..."}, []string{"golangci-lint", "run", "a.ts", "b/c.tsx"}},
+		{"no whole-repo target", []string{"pnpm", "prettier", "--write"}, []string{"pnpm", "prettier", "--write", "a.ts", "b/c.tsx"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := scopeArgv(tc.in, files)
+			if strings.Join(got, " ") != strings.Join(tc.want, " ") {
+				t.Errorf("scopeArgv = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // Helpers
 func writeMinimalGoModule(t *testing.T, dir, content string) {
 	t.Helper()
