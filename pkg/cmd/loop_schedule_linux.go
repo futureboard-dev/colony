@@ -19,7 +19,9 @@ func init() {
 func (s *loopSchedulerLinux) Install(binaryPath, projectRoot string, d time.Duration) error {
 	hash := projectHash(projectRoot)
 	logDir := filepath.Join(projectRoot, ".colony", "logs")
-	os.MkdirAll(logDir, 0755)
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		return fmt.Errorf("failed to create log dir: %w", err)
+	}
 
 	intervalMin := int(d.Minutes())
 	// Build the cron line with flock for overlap prevention and a comment identifier.
