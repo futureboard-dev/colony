@@ -19,7 +19,7 @@ jobs:
           cache: true
 
       - name: Install golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v7
         with:
           install-mode: binary
           args: --version
@@ -45,4 +45,4 @@ jobs:
           cache: true
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v7
