@@ -61,11 +61,11 @@ temp/
 *.tmp
 
 # Project specific
-.colony
-.claude
-.crush
-.ai-docs
+.colony/
+.claude/
+.crush/
+.ai-docs/
 CRUSH.md
 CLAUDE.md
-.haadex
-.golangci-cache
+.haadex/
+.golangci-cache/

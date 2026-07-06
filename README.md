@@ -1,5 +1,9 @@
 # colony
 
+[![CI](https://github.com/futureboard-dev/colony/actions/workflows/ci.yml/badge.svg)](https://github.com/futureboard-dev/colony/actions/workflows/ci.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/futureboard-dev/colony)](https://goreportcard.com/report/github.com/futureboard-dev/colony)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 **Colony is an agentic engineering toolkit.**
 
 It is a CLI-first toolkit that drives an autonomous swarm of role-specialised
