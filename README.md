@@ -204,6 +204,10 @@ and task prompts sit at the top level (`coordinator.md`, `build.md`, `fix.md`,
   export OPENAI_API_KEY=***   # only for non-anthropic providers
   ```
 
+> **Required, not optional.** Colony delegates the agent loop to `claude` or
+> `crush` — at least one must be installed and on your `PATH`, or every
+> agent-driven command will fail with a "not installed" error.
+
 ### First-time setup
 
 ```bash

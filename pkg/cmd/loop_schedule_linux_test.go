@@ -85,21 +85,28 @@ func TestScheduleRoundTrip(t *testing.T) {
 	}
 }
 
-// stubScheduler implements loopScheduler against a temp directory for testing.
+// stubScheduler implements loopScheduler in memory for testing, recording the
+// installed state and interval so round-trip install/status/remove can be verified.
 type stubScheduler struct {
-	dir string
+	dir       string
+	installed bool
+	interval  time.Duration
 }
 
 func (s *stubScheduler) Install(binaryPath, projectRoot string, d time.Duration) error {
+	s.installed = true
+	s.interval = d
 	return nil
 }
 
 func (s *stubScheduler) Remove() error {
+	s.installed = false
+	s.interval = 0
 	return nil
 }
 
 func (s *stubScheduler) Status() (bool, time.Duration, error) {
-	return false, 0, nil
+	return s.installed, s.interval, nil
 }
 
 func (s *stubScheduler) Label() string { return "stub" }

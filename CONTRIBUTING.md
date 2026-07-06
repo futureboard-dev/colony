@@ -37,6 +37,22 @@ golangci-lint run ./... # zero issues
 go test ./...           # 100% pass
 ```
 
+## Testing
+
+Colony orchestrates the `claude` and `crush` CLIs, so a handful of tests drive a
+real agent end-to-end. These are **automatically skipped** when neither CLI is
+found on `PATH` — which is the case in CI and on contributor machines that
+haven't installed an agent. You'll see them reported as `SKIP`:
+
+```
+--- SKIP: TestLoop_SentinelStop (0.00s)
+    no agent CLI (claude or crush) found on PATH; skipping live-agent test
+```
+
+To exercise the full suite locally, install `claude` or `crush` (see
+[Prerequisites](#prerequisites)) and run `go test ./...` without `-short`. The
+rest of the suite runs everywhere and is what CI gates on.
+
 ## Code Standards
 
 - Match the style of the surrounding code.

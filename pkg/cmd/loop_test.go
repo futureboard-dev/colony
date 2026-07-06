@@ -553,13 +553,30 @@ func TestMissionLabel(t *testing.T) {
 	}
 }
 
-// skipIfShort skips tests that drive a real agent CLI (claude/crush), which is
-// unavailable/slow in CI. Run the full suite locally with `go test` (no -short).
+// skipIfShort skips tests that drive a real agent CLI. colony orchestrates the
+// claude and crush CLIs, which are unavailable in public CI and on contributor
+// machines that haven't installed them. These tests run for anyone who has an
+// agent CLI on PATH and skip cleanly everywhere else. They are also skipped in
+// -short mode. Run the full suite locally with `go test` (no -short) once claude
+// or crush is installed.
 func skipIfShort(t *testing.T) {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("invokes a live agent CLI; skipped in -short mode")
 	}
+	if !agentCLIAvailable() {
+		t.Skip("no agent CLI (claude or crush) found on PATH; skipping live-agent test")
+	}
+}
+
+// agentCLIAvailable reports whether an agent CLI colony can drive is installed.
+func agentCLIAvailable() bool {
+	for _, cli := range []string{"claude", "crush"} {
+		if _, err := exec.LookPath(cli); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func setupMinimalProject(t *testing.T, dir string) {
