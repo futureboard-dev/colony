@@ -7,7 +7,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/jirateep/colony/pkg/storage"
+	"github.com/futureboard-dev/colony/pkg/storage"
 )
 
 // ObserveResult describes what happened during a single task observation.

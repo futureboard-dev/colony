@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/jirateep/colony/pkg/cmd"
+	"github.com/futureboard-dev/colony/pkg/cmd"
 )
 
 func main() {

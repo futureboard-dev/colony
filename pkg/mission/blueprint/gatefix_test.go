@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/jirateep/colony/pkg/config"
-	"github.com/jirateep/colony/pkg/mission/graph"
+	"github.com/futureboard-dev/colony/pkg/config"
+	"github.com/futureboard-dev/colony/pkg/mission/graph"
 )
 
 // fakeNode is a test Node that returns a fixed decision and output.

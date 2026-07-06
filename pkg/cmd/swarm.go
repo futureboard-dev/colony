@@ -10,12 +10,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jirateep/colony/pkg/config"
-	"github.com/jirateep/colony/pkg/llm"
-	"github.com/jirateep/colony/pkg/module"
-	"github.com/jirateep/colony/pkg/output"
-	"github.com/jirateep/colony/pkg/prompt"
-	"github.com/jirateep/colony/pkg/storage"
+	"github.com/futureboard-dev/colony/pkg/config"
+	"github.com/futureboard-dev/colony/pkg/llm"
+	"github.com/futureboard-dev/colony/pkg/module"
+	"github.com/futureboard-dev/colony/pkg/output"
+	"github.com/futureboard-dev/colony/pkg/prompt"
+	"github.com/futureboard-dev/colony/pkg/storage"
 	"github.com/spf13/cobra"
 )
 

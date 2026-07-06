@@ -3,8 +3,8 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/jirateep/colony/pkg/config"
-	"github.com/jirateep/colony/pkg/module"
+	"github.com/futureboard-dev/colony/pkg/config"
+	"github.com/futureboard-dev/colony/pkg/module"
 	"github.com/spf13/cobra"
 )
 

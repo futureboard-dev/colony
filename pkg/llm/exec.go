@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jirateep/colony/pkg/config"
+	"github.com/futureboard-dev/colony/pkg/config"
 )
 
 // Executor delegates agent execution to claude (Anthropic) or crush (all other providers).

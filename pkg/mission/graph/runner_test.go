@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jirateep/colony/pkg/config"
-	"github.com/jirateep/colony/pkg/storage"
+	"github.com/futureboard-dev/colony/pkg/config"
+	"github.com/futureboard-dev/colony/pkg/storage"
 )
 
 // fakeNode is a test Node that returns a fixed decision and output, optionally with a delay.

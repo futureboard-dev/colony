@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jirateep/colony/pkg/prompt"
+	"github.com/futureboard-dev/colony/pkg/prompt"
 )
 
 // TestReviewLoopPrompt_HasRejectionInstructions verifies the review prompt

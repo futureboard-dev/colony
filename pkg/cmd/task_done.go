@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/jirateep/colony/pkg/module"
+	"github.com/futureboard-dev/colony/pkg/module"
 	"github.com/spf13/cobra"
 )
 

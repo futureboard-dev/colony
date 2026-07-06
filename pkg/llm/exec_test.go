@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jirateep/colony/pkg/config"
+	"github.com/futureboard-dev/colony/pkg/config"
 )
 
 func argsContain(args []string, want string) bool {

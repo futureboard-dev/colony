@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jirateep/colony/pkg/mission/graph"
+	"github.com/futureboard-dev/colony/pkg/mission/graph"
 )
 
 // TestGateNode_Approved: mocked capture returning 0 → APPROVED.

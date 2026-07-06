@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jirateep/colony/pkg/config"
+	"github.com/futureboard-dev/colony/pkg/config"
 )
 
 // testRegistry returns a registry with a fake "always-approve" role for testing.

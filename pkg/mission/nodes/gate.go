@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/jirateep/colony/pkg/config"
-	"github.com/jirateep/colony/pkg/mission/graph"
-	"github.com/jirateep/colony/pkg/module"
+	"github.com/futureboard-dev/colony/pkg/config"
+	"github.com/futureboard-dev/colony/pkg/mission/graph"
+	"github.com/futureboard-dev/colony/pkg/module"
 )
 
 // GateNode is a Node that runs quality gates via RunGateCaptureAll and returns

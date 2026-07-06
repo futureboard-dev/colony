@@ -1,7 +1,7 @@
 package blueprint
 
 import (
-	"github.com/jirateep/colony/pkg/mission/graph"
+	"github.com/futureboard-dev/colony/pkg/mission/graph"
 )
 
 // BuildGateFixOpts configures the BuildGateFix mission template.

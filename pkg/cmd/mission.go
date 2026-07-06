@@ -8,10 +8,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/jirateep/colony/pkg/config"
-	"github.com/jirateep/colony/pkg/mission/graph"
-	"github.com/jirateep/colony/pkg/mission/nodes"
-	"github.com/jirateep/colony/pkg/storage"
+	"github.com/futureboard-dev/colony/pkg/config"
+	"github.com/futureboard-dev/colony/pkg/mission/graph"
+	"github.com/futureboard-dev/colony/pkg/mission/nodes"
+	"github.com/futureboard-dev/colony/pkg/storage"
 )
 
 var missionCmd = &cobra.Command{

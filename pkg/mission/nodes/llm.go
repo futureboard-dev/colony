@@ -9,10 +9,10 @@ import (
 	"os"
 	"strings"
 
-	"github.com/jirateep/colony/pkg/config"
-	"github.com/jirateep/colony/pkg/llm"
-	"github.com/jirateep/colony/pkg/mission/graph"
-	"github.com/jirateep/colony/pkg/prompt"
+	"github.com/futureboard-dev/colony/pkg/config"
+	"github.com/futureboard-dev/colony/pkg/llm"
+	"github.com/futureboard-dev/colony/pkg/mission/graph"
+	"github.com/futureboard-dev/colony/pkg/prompt"
 )
 
 // LLMNode is a Node backed by an LLM via the colony executor.

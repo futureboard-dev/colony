@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jirateep/colony/pkg/storage"
+	"github.com/futureboard-dev/colony/pkg/storage"
 	"github.com/spf13/cobra"
 )
 

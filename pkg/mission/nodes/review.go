@@ -10,10 +10,10 @@ import (
 	"os/exec"
 	"path/filepath"
 
-	"github.com/jirateep/colony/pkg/config"
-	"github.com/jirateep/colony/pkg/llm"
-	"github.com/jirateep/colony/pkg/mission/graph"
-	"github.com/jirateep/colony/pkg/prompt"
+	"github.com/futureboard-dev/colony/pkg/config"
+	"github.com/futureboard-dev/colony/pkg/llm"
+	"github.com/futureboard-dev/colony/pkg/mission/graph"
+	"github.com/futureboard-dev/colony/pkg/prompt"
 )
 
 // ReviewNode is an LLM-backed semantic gate that runs after the deterministic

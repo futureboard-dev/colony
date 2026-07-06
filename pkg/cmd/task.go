@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jirateep/colony/pkg/llm"
-	"github.com/jirateep/colony/pkg/module"
+	"github.com/futureboard-dev/colony/pkg/llm"
+	"github.com/futureboard-dev/colony/pkg/module"
 	"github.com/spf13/cobra"
 )
 

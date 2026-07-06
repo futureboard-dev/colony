@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/jirateep/colony/pkg/config"
+	"github.com/futureboard-dev/colony/pkg/config"
 )
 
 // NodeFactory creates a Node for a given agent ID and LLM config.

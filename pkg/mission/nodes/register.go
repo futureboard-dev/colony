@@ -1,8 +1,8 @@
 package nodes
 
 import (
-	"github.com/jirateep/colony/pkg/config"
-	"github.com/jirateep/colony/pkg/mission/graph"
+	"github.com/futureboard-dev/colony/pkg/config"
+	"github.com/futureboard-dev/colony/pkg/mission/graph"
 )
 
 // Register registers all built-in node factories with the given registry.

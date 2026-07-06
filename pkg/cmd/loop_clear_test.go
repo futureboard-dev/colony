@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jirateep/colony/pkg/storage"
+	"github.com/futureboard-dev/colony/pkg/storage"
 )
 
 func TestValidateClearSelector(t *testing.T) {

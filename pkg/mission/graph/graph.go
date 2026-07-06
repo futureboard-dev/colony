@@ -3,7 +3,7 @@ package graph
 import (
 	"fmt"
 
-	"github.com/jirateep/colony/pkg/config"
+	"github.com/futureboard-dev/colony/pkg/config"
 )
 
 // EdgeCondition controls when an edge fires.
