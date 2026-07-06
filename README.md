@@ -197,7 +197,7 @@ and task prompts sit at the top level (`coordinator.md`, `build.md`, `fix.md`,
 - Or, for non-Anthropic providers, the `crush` CLI —
   `brew install charmbracelet/tap/crush` and the matching API key:
   ```bash
-  export OPENAI_API_KEY=sk-...   # only for non-anthropic providers
+  export OPENAI_API_KEY=***   # only for non-anthropic providers
   ```
 
 ### First-time setup
