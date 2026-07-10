@@ -977,3 +977,34 @@ func atoi(s string) int {
 	}
 	return n
 }
+
+// TestParseGateOverrides verifies task.GateOverrides is turned into a skip set
+// so `task add --no-format` actually skips the format gate in the loop.
+func TestParseGateOverrides(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want map[string]bool
+	}{
+		{"empty", "", map[string]bool{}},
+		{"format", "format", map[string]bool{"format": true}},
+		{"multiple", "format,lint", map[string]bool{"format": true, "lint": true}},
+		{"whitespace and blanks", " format , , lint ", map[string]bool{"format": true, "lint": true}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseGateOverrides(tc.in)
+			if got == nil {
+				t.Fatal("expected non-nil map")
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+			for k := range tc.want {
+				if !got[k] {
+					t.Errorf("expected %q to be skipped, got %v", k, got)
+				}
+			}
+		})
+	}
+}

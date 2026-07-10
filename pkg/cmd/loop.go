@@ -490,6 +490,19 @@ func pickNextTask(ctx context.Context, store *storage.SQLiteStore) (*storage.Tas
 	return &tasks[0], nil
 }
 
+// parseGateOverrides converts a task's comma-joined GateOverrides (e.g.
+// "format,lint", as set by `task add --no-format`) into a skip set. Blank
+// entries are ignored. Always returns a non-nil map so callers can add to it.
+func parseGateOverrides(s string) map[string]bool {
+	skip := map[string]bool{}
+	for _, name := range strings.Split(s, ",") {
+		if name = strings.TrimSpace(name); name != "" {
+			skip[name] = true
+		}
+	}
+	return skip
+}
+
 func processTask(ctx context.Context, cfg *config.Config, root string, store *storage.SQLiteStore, task *storage.Task) error {
 	lang := task.Lang
 	if lang == "" {
@@ -527,6 +540,7 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 		Lang:      lang,
 		Workdir:   workdir,
 		MaxCycles: loopMaxCycles,
+		SkipGates: parseGateOverrides(task.GateOverrides),
 	}
 	if loopEscalateTo != "" {
 		opts.EscalationRole = graph.RoleEscalation
@@ -668,7 +682,7 @@ func integrateTask(ctx context.Context, cfg *config.Config, workdir, branch, bas
 	// lint off the (token-costing) fixer agent, and stops pre-existing whole-repo
 	// violations on the base branch from failing every integration.
 	var changed []string
-	skip := map[string]bool{}
+	skip := parseGateOverrides(task.GateOverrides)
 	gate := func() (string, error) { return module.RunGateCaptureAll(lang, workdir, skip) }
 	if isTS {
 		changed = module.ChangedFiles(workdir, "origin/"+baseBranch)
