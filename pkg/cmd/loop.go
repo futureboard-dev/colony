@@ -227,10 +227,15 @@ func runLoopRetryGate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	baseBranch := task.BaseBranch
+	if baseBranch == "" {
+		baseBranch = module.DefaultBranch()
+	}
 	opts := blueprint.BuildGateFixOpts{
 		Name:        "retry-gate-" + missionLabel(task),
 		Input:       input,
 		Lang:        lang,
+		Base:        baseBranch,
 		Workdir:     workdir,
 		MaxCycles:   loopMaxCycles,
 		SkipBuilder: true,
@@ -275,10 +280,6 @@ func runLoopRetryGate(cmd *cobra.Command, args []string) error {
 
 	_ = store.UpdateSession(sessID, "completed", time.Now())
 
-	baseBranch := task.BaseBranch
-	if baseBranch == "" {
-		baseBranch = module.DefaultBranch()
-	}
 	if err := integrateTask(cmd.Context(), cfg, workdir, task.Branch, baseBranch, lang, task, store); err != nil {
 		return nil // integrateTask already marked blocked
 	}
@@ -534,10 +535,15 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 		return fmt.Errorf("write SPEC.md: %w", err)
 	}
 
+	baseBranch := task.BaseBranch
+	if baseBranch == "" {
+		baseBranch = module.DefaultBranch()
+	}
 	opts := blueprint.BuildGateFixOpts{
 		Name:      "loop-" + missionLabel(task),
 		Input:     input,
 		Lang:      lang,
+		Base:      baseBranch,
 		Workdir:   workdir,
 		MaxCycles: loopMaxCycles,
 		SkipGates: parseGateOverrides(task.GateOverrides),
@@ -608,10 +614,6 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 
 	_ = store.UpdateSession(sessID, "completed", time.Now())
 
-	baseBranch := task.BaseBranch
-	if baseBranch == "" {
-		baseBranch = module.DefaultBranch()
-	}
 	if err := integrateTask(ctx, cfg, workdir, branch, baseBranch, lang, task, store); err != nil {
 		return nil
 	}

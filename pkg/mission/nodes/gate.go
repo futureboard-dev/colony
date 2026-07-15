@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"maps"
 
 	"github.com/futureboard-dev/colony/pkg/config"
 	"github.com/futureboard-dev/colony/pkg/mission/graph"
@@ -41,7 +43,31 @@ func (n *GateNode) Run(ctx context.Context, in graph.Input) (graph.Output, error
 	if s, ok := in.Params["skip_gates"].(map[string]bool); ok && s != nil {
 		skip = s
 	}
-	output, err := module.RunGateCaptureAll(lang, workdir, skip)
+	// When a base branch is provided, scope the format/lint gates to the files
+	// this worktree changed relative to origin/base. Without this the gate runs
+	// whole-repo (e.g. `pnpm eslint .`) and fails on pre-existing violations the
+	// task never touched. AutoFix runs the deterministic fixers first so mechanical
+	// issues never reach the fixer agent. vet/typecheck/test stay whole-repo.
+	base, _ := in.Params["base"].(string)
+	var output string
+	var err error
+	if base != "" {
+		changed := module.ChangedFiles(workdir, "origin/"+base)
+		if len(changed) > 0 {
+			module.AutoFix(lang, workdir, changed, io.Discard)
+		} else {
+			// No lintable files changed vs base. RunGateCaptureScoped would run
+			// format/lint whole-repo (it only scopes when the file list is
+			// non-empty), re-introducing pre-existing base violations; skip them.
+			// Copy first — skip may alias the shared factory/param map.
+			merged := map[string]bool{"format": true, "lint": true}
+			maps.Copy(merged, skip)
+			skip = merged
+		}
+		output, err = module.RunGateCaptureScoped(lang, workdir, changed, skip)
+	} else {
+		output, err = module.RunGateCaptureAll(lang, workdir, skip)
+	}
 	if err == nil {
 		return graph.Output{
 			AgentID: n.agentID,

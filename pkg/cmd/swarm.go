@@ -372,7 +372,7 @@ func swarmBuild(ctx context.Context, root, projectName, baseBranch, lang string,
 	if err := ex.RunAgent(ctx, worktreePath, writePrompt, out); err != nil {
 		return "", "", fmt.Errorf("build agent: %w", err)
 	}
-	if err := runGates(ctx, worktreePath, langs, ex, out, skipFormat); err != nil {
+	if err := runGates(ctx, worktreePath, baseBranch, lang, langs, ex, out, skipFormat); err != nil {
 		return "", "", err
 	}
 	commitMsg := fmt.Sprintf("feat: %s\n\nSwarm subtask | Language: %s | Gates: format, typecheck, tests", taskDesc, lang)

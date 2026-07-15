@@ -2,6 +2,7 @@ package module
 
 import (
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -202,6 +203,63 @@ func TestScopeArgv(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestScopeCommand(t *testing.T) {
+	files := []string{"a.ts", "b/c.tsx"}
+	cases := []struct {
+		name    string
+		command string
+		files   []string
+		want    string
+	}{
+		{"trailing dot", "pnpm eslint .", files, "pnpm eslint a.ts b/c.tsx"},
+		{"no whole-repo target", "pnpm prettier --write", files, "pnpm prettier --write a.ts b/c.tsx"},
+		{"empty command", "", files, ""},
+		{"empty files unchanged", "pnpm eslint .", nil, "pnpm eslint ."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ScopeCommand(tc.command, tc.files); got != tc.want {
+				t.Errorf("ScopeCommand(%q, %v) = %q, want %q", tc.command, tc.files, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestResolveBase(t *testing.T) {
+	dir := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init", "-q", "-b", "master")
+	run("config", "user.email", "t@t")
+	run("config", "user.name", "t")
+	run("commit", "-q", "--allow-empty", "-m", "init")
+	// Simulate an origin whose default branch is master (mirrors the reported repo).
+	run("update-ref", "refs/remotes/origin/master", "HEAD")
+	run("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/master")
+
+	t.Run("resolvable base kept", func(t *testing.T) {
+		if got := resolveBase(dir, "origin/master"); got != "origin/master" {
+			t.Errorf("got %q, want origin/master", got)
+		}
+	})
+	t.Run("missing base falls back to origin/HEAD", func(t *testing.T) {
+		if got := resolveBase(dir, "origin/main"); got != "origin/master" {
+			t.Errorf("got %q, want origin/master (fallback)", got)
+		}
+	})
+	t.Run("empty base falls back to origin/HEAD", func(t *testing.T) {
+		if got := resolveBase(dir, ""); got != "origin/master" {
+			t.Errorf("got %q, want origin/master (fallback)", got)
+		}
+	})
 }
 
 // Helpers

@@ -173,7 +173,7 @@ func runCraft(cmd *cobra.Command, args []string) error {
 		craftBanner(out, "🔄 CRAFT RESUME", map[string]string{
 			"Worktree": craftResume, "Branch": branch, "Language": craftLang,
 		})
-		if err := runGates(ctx, craftResume, langs, ex, out, craftNoFormat); err != nil {
+		if err := runGates(ctx, craftResume, craftBase, craftLang, langs, ex, out, craftNoFormat); err != nil {
 			return craftBlocked(craftResume, logPath, err, out, store, runID)
 		}
 		fmt.Fprintf(out, "%s✓ Resumed and passed gates on branch: %s%s\n", ansiGreen, branch, ansiReset)
@@ -204,7 +204,7 @@ func runCraft(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("continue agent failed: %w", err)
 		}
 		fmt.Fprintf(out, "%s✓ Agent finished continuing code%s\n", ansiGreen, ansiReset)
-		if err := runGates(ctx, craftContinue, langs, ex, out, craftNoFormat); err != nil {
+		if err := runGates(ctx, craftContinue, craftBase, craftLang, langs, ex, out, craftNoFormat); err != nil {
 			return craftBlocked(craftContinue, logPath, err, out, store, runID)
 		}
 		if err := craftCommit(craftContinue, branch, "feat: continue after interruption — gates passed", out); err != nil {
@@ -270,7 +270,7 @@ func runCraft(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(out, "%s✓ Agent finished writing code%s\n", ansiGreen, ansiReset)
 
 	// Steps 3–4: Quality gates
-	if err := runGates(ctx, worktreePath, langs, ex, out, craftNoFormat); err != nil {
+	if err := runGates(ctx, worktreePath, baseBranch, craftLang, langs, ex, out, craftNoFormat); err != nil {
 		return craftBlocked(worktreePath, logPath, err, out, store, runID)
 	}
 
@@ -316,21 +316,45 @@ func runCodegen(ctx context.Context, ex *llm.Executor, workdir, agentPrompt stri
 // runGates runs format → lint (with fix) → typecheck (with fix) → tests (with fix).
 // Lint is skipped when its linter isn't installed, mirroring the CLI hook.
 // Exported so swarm.go can reuse it.
-func runGates(ctx context.Context, worktreePath string, langs module.LangCommands, ex *llm.Executor, out io.Writer, skipFormat bool) error {
+//
+// base is the branch this worktree was cut from. The format and lint commands are
+// scoped to the files that differ from origin/base so a whole-repo lint (pnpm
+// eslint .) can't fail the gate on pre-existing violations the task never touched.
+// base may be empty (e.g. --resume without --base): module.ChangedFiles then falls
+// back to the worktree's own origin/HEAD. When the scoped set is empty (nothing
+// lintable changed vs base), format/lint are skipped entirely — running them
+// unscoped would re-introduce the whole-repo problem. vet/typecheck/test stay
+// whole-repo — they can't be scoped to a subset.
+func runGates(ctx context.Context, worktreePath, base, lang string, langs module.LangCommands, ex *llm.Executor, out io.Writer, skipFormat bool) error {
 	statusLine.SetState(output.StateWorking)
 	statusLine.SetMessage("running gates")
 	const maxAttempts = 2
 	fmt.Fprintf(out, "\n%s▶ GATES  format → lint → typecheck → tests%s\n", ansiCyan, ansiReset)
-	if !skipFormat {
-		module.RunFormat(langs.Format, worktreePath, out)
+
+	// Scope format/lint to the task's own changed files. ChangedFiles resolves
+	// base against the worktree (falling back to its origin/HEAD when base is empty
+	// or unknown), so this works even for --resume without --base. AutoFix runs the
+	// deterministic fixers first so mechanical issues never reach the fix agent.
+	scope := module.ChangedFiles(worktreePath, base)
+	if len(scope) > 0 {
+		module.AutoFix(lang, worktreePath, scope, out) // no-op for non-TS langs
+	} else {
+		fmt.Fprintf(out, "%s⚠ format/lint skipped — no lintable files changed vs base%s\n", ansiYellow, ansiReset)
+		skipFormat = true
 	}
-	if langs.Lint != "" {
-		if module.CommandAvailable(langs.Lint) {
-			if err := gateWithFix(ctx, "Lint", langs.Lint, worktreePath, maxAttempts, ex, out); err != nil {
+	formatCmd := module.ScopeCommand(langs.Format, scope)
+	lintCmd := module.ScopeCommand(langs.Lint, scope)
+
+	if !skipFormat {
+		module.RunFormat(formatCmd, worktreePath, out)
+	}
+	if len(scope) > 0 && lintCmd != "" {
+		if module.CommandAvailable(lintCmd) {
+			if err := gateWithFix(ctx, "Lint", lintCmd, worktreePath, maxAttempts, ex, out); err != nil {
 				return err
 			}
 		} else {
-			fmt.Fprintf(out, "%s⚠ Lint skipped — %q not installed%s\n", ansiYellow, strings.Fields(langs.Lint)[0], ansiReset)
+			fmt.Fprintf(out, "%s⚠ Lint skipped — %q not installed%s\n", ansiYellow, strings.Fields(lintCmd)[0], ansiReset)
 		}
 	}
 	if err := gateWithFix(ctx, "Type check", langs.TypeCheck, worktreePath, maxAttempts, ex, out); err != nil {

@@ -9,6 +9,7 @@ type BuildGateFixOpts struct {
 	Name        string
 	Input       string
 	Lang        string
+	Base        string          // base branch the worktree was cut from; scopes the gate's format/lint to changed files (empty = whole-repo)
 	Workdir     string          // directory the builder/fixer/gate operate in (worktree path); "" = current dir
 	SkipGates   map[string]bool // gate names to skip (e.g. {"format": true})
 	SkipBuilder bool            // start from gate instead of builder (use when worktree already has code)
@@ -87,6 +88,7 @@ func BuildGateFix(opts BuildGateFixOpts) *graph.Mission {
 		Flow:      flow,
 		Params: map[string]any{
 			"lang":       opts.Lang,
+			"base":       opts.Base,
 			"skip_gates": opts.SkipGates,
 			"workdir":    opts.Workdir,
 		},
