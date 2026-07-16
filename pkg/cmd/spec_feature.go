@@ -23,7 +23,7 @@ a filled-in Agent Task Spec, and writes it to .colony/specs/<name>/TASK.md.
 Examples:
   colony spec_feature add-user-auth "users log in with email and password"
   colony spec_feature payment-flow --file requirements.md`,
-	Args: cobra.ExactArgs(1),
+	Args: cobra.RangeArgs(1, 2),
 	RunE: runSpecFeature,
 }
 
@@ -74,11 +74,8 @@ func runSpecFeature(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("read requirements file: %w", err)
 		}
 		input = string(data)
-	} else {
-		// remaining words after feature name come from stdin prompt — but
-		// cobra gives us only 1 arg (ExactArgs(1)), so read extra from flags.
-		// For inline text the user passes it as the single quoted arg.
-		input = featureName
+	} else if len(args) > 1 {
+		input = args[1]
 	}
 
 	if strings.TrimSpace(input) == "" {

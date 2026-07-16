@@ -38,6 +38,26 @@ func TestSpecHash(t *testing.T) {
 	})
 }
 
+func TestSpecFeatureArgsAccepted(t *testing.T) {
+	t.Run("one arg (feature name only) is valid", func(t *testing.T) {
+		if err := specFeatureCmd.Args(specFeatureCmd, []string{"fix-upload-error"}); err != nil {
+			t.Errorf("expected 1 arg to be accepted, got error: %v", err)
+		}
+	})
+
+	t.Run("two args (feature name + inline requirements) is valid", func(t *testing.T) {
+		if err := specFeatureCmd.Args(specFeatureCmd, []string{"fix-upload-error", "fix ECONNRESET on upload"}); err != nil {
+			t.Errorf("expected 2 args to be accepted, got error: %v", err)
+		}
+	})
+
+	t.Run("three args is rejected", func(t *testing.T) {
+		if err := specFeatureCmd.Args(specFeatureCmd, []string{"a", "b", "c"}); err == nil {
+			t.Error("expected 3 args to be rejected")
+		}
+	})
+}
+
 func TestSpecHashSidecar(t *testing.T) {
 	dir := t.TempDir()
 	taskFile := filepath.Join(dir, "TASK.md")
