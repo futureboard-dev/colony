@@ -218,15 +218,19 @@ func ChangedFiles(workdir, base string) []string {
 
 // AutoFix runs deterministic auto-fixers on the given files before gates run, so
 // formatting and mechanically-fixable lint never reach the (token-costing) fixer
-// agent. Best-effort and non-fatal; a no-op when files is empty.
-func AutoFix(lang, workdir string, files []string, out io.Writer) {
+// agent. Best-effort and non-fatal; a no-op when files is empty. skipFormat omits
+// the prettier pass (e.g. --no-format), mirroring the format gate's own skip so
+// AutoFix can't reformat files the gate was told to leave alone.
+func AutoFix(lang, workdir string, files []string, skipFormat bool, out io.Writer) {
 	if len(files) == 0 {
 		return
 	}
 	switch strings.ToLower(lang) {
 	case "typescript", "ts":
 		runFix(append([]string{"pnpm", "eslint", "--fix"}, files...), workdir, out)
-		runFix(append([]string{"pnpm", "prettier", "--write"}, files...), workdir, out)
+		if !skipFormat {
+			runFix(append([]string{"pnpm", "prettier", "--write"}, files...), workdir, out)
+		}
 	}
 }
 

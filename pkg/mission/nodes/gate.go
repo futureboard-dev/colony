@@ -54,7 +54,7 @@ func (n *GateNode) Run(ctx context.Context, in graph.Input) (graph.Output, error
 	if base != "" {
 		changed := module.ChangedFiles(workdir, "origin/"+base)
 		if len(changed) > 0 {
-			module.AutoFix(lang, workdir, changed, io.Discard)
+			module.AutoFix(lang, workdir, changed, skip["format"], io.Discard)
 		} else {
 			// No lintable files changed vs base. RunGateCaptureScoped would run
 			// format/lint whole-repo (it only scopes when the file list is

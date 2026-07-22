@@ -3,6 +3,7 @@ package module
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -136,6 +137,49 @@ func TestRunGateCaptureAll_Typescript(t *testing.T) {
 	if err != nil && output == "" {
 		t.Log("typescript gates may not be installed — skipping strict assertion")
 	}
+}
+
+// TestAutoFix_SkipFormat verifies AutoFix omits the prettier --write call when
+// skipFormat is true (e.g. --no-format), while still running eslint --fix.
+// Uses a real stub "pnpm" binary on PATH — recording actual process
+// invocations — rather than mocking AutoFix's internals.
+func TestAutoFix_SkipFormat(t *testing.T) {
+	dir := t.TempDir()
+	binDir := t.TempDir()
+	callLog := filepath.Join(binDir, "calls.log")
+
+	writeFile(t, binDir, "pnpm", "#!/bin/sh\necho \"$@\" >> "+callLog+"\n")
+	if err := os.Chmod(filepath.Join(binDir, "pnpm"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	writeFile(t, dir, "a.ts", "const x = 1;")
+
+	AutoFix("typescript", dir, []string{"a.ts"}, true, os.Stdout)
+	calls := readFileOrEmpty(t, callLog)
+	if strings.Contains(calls, "prettier") {
+		t.Errorf("expected prettier to be skipped with skipFormat=true, calls:\n%s", calls)
+	}
+	if !strings.Contains(calls, "eslint") {
+		t.Errorf("expected eslint --fix to still run, calls:\n%s", calls)
+	}
+
+	os.Remove(callLog) //nolint:errcheck
+	AutoFix("typescript", dir, []string{"a.ts"}, false, os.Stdout)
+	calls = readFileOrEmpty(t, callLog)
+	if !strings.Contains(calls, "prettier") {
+		t.Errorf("expected prettier to run with skipFormat=false, calls:\n%s", calls)
+	}
+}
+
+func readFileOrEmpty(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
 
 // TestRunGateCaptureScopesLintCache verifies RunGateCapture scopes

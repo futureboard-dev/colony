@@ -689,7 +689,7 @@ func integrateTask(ctx context.Context, cfg *config.Config, workdir, branch, bas
 	if isTS {
 		changed = module.ChangedFiles(workdir, "origin/"+baseBranch)
 		if len(changed) > 0 {
-			module.AutoFix(lang, workdir, changed, out)
+			module.AutoFix(lang, workdir, changed, skip["format"], out)
 		} else {
 			skip["format"], skip["lint"] = true, true // nothing lintable changed
 		}
@@ -708,7 +708,7 @@ func integrateTask(ctx context.Context, cfg *config.Config, workdir, branch, bas
 			}
 		}
 		if isTS && len(changed) > 0 {
-			module.AutoFix(lang, workdir, changed, out) // re-apply deterministic fixes after the agent's edits
+			module.AutoFix(lang, workdir, changed, skip["format"], out) // re-apply deterministic fixes after the agent's edits
 		}
 		gateOutput, gateErr = gate()
 	}
