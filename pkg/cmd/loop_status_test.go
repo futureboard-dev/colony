@@ -118,6 +118,54 @@ func TestLoopStatus_JSON(t *testing.T) {
 	}
 }
 
+func TestLoopStatus_JSONIncludesPidAndStepOutput(t *testing.T) {
+	dir, store, cleanup := setupStatusTest(t)
+	defer cleanup()
+
+	now := time.Now().Truncate(time.Second).UTC()
+	store.InsertTask(storage.Task{ID: "j1", Description: "json task", State: "blocked", CreatedAt: now})
+	store.InsertSession(storage.Session{
+		ID: "loop-j1-0000", MissionName: "loop-j1", StartedAt: now, Status: "failed",
+		FinishedAt: timePtr(now.Add(30 * time.Second)),
+	})
+	// Insert a gate step with captured output.
+	store.InsertStep(storage.Step{
+		SessionID: "loop-j1-0000", StepNum: 1, Role: "gate", Decision: "REJECTED",
+		Output: "FAIL: TestRateLimit_Burst", StartedAt: now, FinishedAt: now,
+	})
+
+	out := runStatusCmd(t, dir, []string{"--json"})
+
+	var parsed struct {
+		Queue    []json.RawMessage `json:"queue"`
+		Sessions []json.RawMessage `json:"sessions"`
+		Daemon   struct {
+			Running bool   `json:"running"`
+			Pid     int    `json:"pid"`
+			Status  string `json:"status"`
+		} `json:"daemon"`
+	}
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("expected valid JSON: %v\nraw: %s", err, out)
+	}
+
+	// Daemon PID + status are present (idle/stale acceptable depending on env).
+	if parsed.Daemon.Status == "" {
+		t.Error("expected daemon.status in JSON output")
+	}
+	if parsed.Daemon.Pid < 0 {
+		t.Errorf("unexpected pid: %d", parsed.Daemon.Pid)
+	}
+
+	// Step output should surface the captured gate feedback.
+	if !strings.Contains(out, "FAIL: TestRateLimit_Burst") {
+		t.Errorf("expected step output in JSON, got: %s", out)
+	}
+	if !strings.Contains(out, "step_output") {
+		t.Errorf("expected step_output field in JSON, got: %s", out)
+	}
+}
+
 func TestLoopStatus_SessionsDisplay(t *testing.T) {
 	dir, store, cleanup := setupStatusTest(t)
 	defer cleanup()

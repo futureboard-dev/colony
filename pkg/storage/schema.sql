@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS steps (
     input_text  TEXT,
     output_json TEXT,
     decision    TEXT,
+    output      TEXT    NOT NULL DEFAULT '',
     duration_ms INTEGER,
     started_at  DATETIME NOT NULL,
     finished_at DATETIME,
