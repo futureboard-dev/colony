@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbletea"
 	"github.com/futureboard-dev/colony/pkg/storage"
 )
@@ -102,11 +103,11 @@ type DBResultMsg struct {
 }
 
 type (
-	pollTickMsg     struct{}
-	toastTickMsg    struct{}
-	dbLockedMsg     struct{}
-	asyncEventMsg   struct{}
-	clearLockedMsg  struct{}
+	pollTickMsg    struct{}
+	toastTickMsg   struct{}
+	dbLockedMsg    struct{}
+	asyncEventMsg  struct{}
+	clearLockedMsg struct{}
 )
 
 // Model is the Bubble Tea application state. It owns the view router and the
@@ -119,32 +120,47 @@ type Model struct {
 
 	store Store
 
-	view       View
-	modal      Modal
-	confirm    *ConfirmState
-	cursor     int
-	queue      QueueFilter
+	view    View
+	modal   Modal
+	confirm *ConfirmState
+	cursor  int
+	queue   QueueFilter
 
-	tasks     []storage.Task
-	sessions  []storage.Session
-	steps     []storage.Step
-	dbLocked  bool
+	tasks      []storage.Task
+	sessions   []storage.Session
+	steps      []storage.Step
+	dbLocked   bool
 	lockBanner bool
 
-	width  int
-	height int
+	width    int
+	height   int
 	tooSmall bool
+
+	// Queue search: '/' focuses the filter bar and routes keys to searchInput.
+	searching   bool
+	searchInput textinput.Model
+
+	// Live Output state.
+	output    *ringBuffer
+	frozen    bool
+	wrapLines bool
 
 	refresh      time.Duration
 	refreshCount int
 
 	lastActive map[string]time.Time
 
-	// AddTask modal fields
-	addDesc    string
-	addSpec    string
-	addErr     string
+	// AddTask modal fields. addDesc/addSpec mirror the inputs so tests and
+	// callers can set them without driving the text inputs.
+	addDesc   string
+	addSpec   string
+	addErr    string
+	addInputs []textinput.Model
+	addFocus  int
 }
+
+// addFieldCount is the number of focusable fields in the Add Task modal.
+const addFieldCount = 2
 
 // ConfirmState describes a pending destructive-action confirmation.
 type ConfirmState struct {
@@ -167,17 +183,31 @@ func New(opts Options, store Store) *Model {
 	if refresh < 100*time.Millisecond {
 		refresh = time.Second
 	}
+	desc := textinput.New()
+	desc.Placeholder = "what should the agent do?"
+	desc.CharLimit = 500
+	spec := textinput.New()
+	spec.Placeholder = ".colony/specs/<feature>/TASK.md (optional)"
+	spec.CharLimit = 300
+
+	search := textinput.New()
+	search.Placeholder = "filter descriptions"
+	search.CharLimit = 100
+
 	m := &Model{
-		opts:     opts,
-		theme:    DefaultTheme(opts.NoColor),
-		notifier: NewNotifier(nil),
-		poller:   NewPoller(nil),
-		store:    store,
-		view:     opts.StartView,
-		modal:    ModalNone,
-		queue:    QueueFilter{State: "", Sort: "created", Search: ""},
-		refresh:  refresh,
-		lastActive: make(map[string]time.Time),
+		opts:        opts,
+		theme:       DefaultTheme(opts.NoColor),
+		notifier:    NewNotifier(nil),
+		poller:      NewPoller(nil),
+		store:       store,
+		view:        opts.StartView,
+		modal:       ModalNone,
+		queue:       QueueFilter{State: "", Sort: "created", Search: ""},
+		refresh:     refresh,
+		lastActive:  make(map[string]time.Time),
+		searchInput: search,
+		output:      newRingBuffer(LiveOutputCapacity),
+		addInputs:   []textinput.Model{desc, spec},
 	}
 	if m.view == ViewTaskDetail {
 		m.view = ViewQueue // task detail requires a selected task
@@ -341,8 +371,14 @@ func (m *Model) handleViewRouting(v View) {
 	m.cursor = 0
 }
 
-// handleKey dispatches global + view keys.
+// handleKey dispatches search input, then view-local keys, then globals.
 func (m *Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.searching {
+		return m.handleSearchKey(key)
+	}
+	if handled, cmd := m.handleViewKey(key); handled {
+		return m, cmd
+	}
 	switch key.String() {
 	case "q", "ctrl+c":
 		if m.modal == ModalNone {
@@ -369,9 +405,7 @@ func (m *Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.handleViewRouting(ViewLiveOutput)
 		return m, nil
 	case "a":
-		m.modal = ModalAddTask
-		m.addErr = ""
-		return m, nil
+		return m, m.openAddTask()
 	case "l":
 		m.modal = ModalLoopControl
 		return m, nil
@@ -409,6 +443,55 @@ func (m *Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// handleViewKey handles keys that mean different things per view. It reports
+// whether the key was consumed.
+func (m *Model) handleViewKey(key tea.KeyMsg) (bool, tea.Cmd) {
+	switch m.view {
+	case ViewQueue:
+		if key.String() == "/" {
+			m.searching = true
+			m.searchInput.SetValue(m.queue.Search)
+			return true, m.searchInput.Focus()
+		}
+	case ViewLiveOutput:
+		switch key.String() {
+		case "f":
+			m.frozen = !m.frozen
+			return true, nil
+		case "w":
+			m.wrapLines = !m.wrapLines
+			return true, nil
+		case "C":
+			m.output.Clear()
+			m.notifier.Push("Output cleared", ToastOK)
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// handleSearchKey routes keys to the queue search field while it has focus.
+func (m *Model) handleSearchKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch key.String() {
+	case "esc":
+		m.searching = false
+		m.searchInput.Blur()
+		m.searchInput.SetValue("")
+		m.queue.Search = ""
+		m.cursor = 0
+		return m, nil
+	case "enter":
+		m.searching = false
+		m.searchInput.Blur()
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.searchInput, cmd = m.searchInput.Update(key)
+	m.queue.Search = m.searchInput.Value()
+	m.cursor = 0
+	return m, cmd
+}
+
 // handleDrillIn moves into a more detailed view (Enter).
 func (m *Model) handleDrillIn() (tea.Model, tea.Cmd) {
 	switch m.view {
@@ -433,24 +516,33 @@ func (m *Model) dispatchModalMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ModalConfirm:
 		return m.handleConfirmKey(key)
 	case ModalAddTask:
-		m.addErr = ""
 		switch key.String() {
 		case "enter":
+			m.syncAddFields()
 			if err := m.addTaskNow(); err != nil {
 				m.addErr = err.Error()
 				m.notifier.Push("Add task failed: "+err.Error(), ToastErr)
 				return m, nil
 			}
-			m.modal = ModalNone
-			m.notifier.Push("Task added ✓", ToastOK)
+			m.closeAddTask()
+			m.notifier.Push("Task added "+m.theme.icon(iconApproved), ToastOK)
 			return m, nil
 		case "esc":
-			m.modal = ModalNone
+			m.closeAddTask()
 			return m, nil
-		case "tab", "down":
-			// No-op placeholder to keep keyboard-first flow.
+		case "tab", "down", "shift+tab", "up":
+			step := 1
+			if key.String() == "shift+tab" || key.String() == "up" {
+				step = addFieldCount - 1
+			}
+			m.addFocus = (m.addFocus + step) % addFieldCount
+			return m, m.focusAddField()
 		default:
-			return m, nil
+			m.addErr = ""
+			var cmd tea.Cmd
+			m.addInputs[m.addFocus], cmd = m.addInputs[m.addFocus].Update(key)
+			m.syncAddFields()
+			return m, cmd
 		}
 	case ModalLoopControl:
 		switch key.String() {
@@ -519,6 +611,48 @@ func (m *Model) addTaskNow() error {
 		State:       "open",
 		CreatedAt:   time.Now(),
 	})
+}
+
+// openAddTask opens the Add Task modal with a clean form.
+func (m *Model) openAddTask() tea.Cmd {
+	m.modal = ModalAddTask
+	m.addErr, m.addDesc, m.addSpec = "", "", ""
+	m.addFocus = 0
+	for i := range m.addInputs {
+		m.addInputs[i].SetValue("")
+		m.addInputs[i].Blur()
+	}
+	return m.focusAddField()
+}
+
+// closeAddTask dismisses the modal and releases input focus.
+func (m *Model) closeAddTask() {
+	m.modal = ModalNone
+	for i := range m.addInputs {
+		m.addInputs[i].Blur()
+	}
+}
+
+// focusAddField moves the cursor to the currently selected form field.
+func (m *Model) focusAddField() tea.Cmd {
+	var cmd tea.Cmd
+	for i := range m.addInputs {
+		if i == m.addFocus {
+			cmd = m.addInputs[i].Focus()
+			continue
+		}
+		m.addInputs[i].Blur()
+	}
+	return cmd
+}
+
+// syncAddFields mirrors the text inputs into the plain string fields that
+// validation and tests read.
+func (m *Model) syncAddFields() {
+	if len(m.addInputs) == addFieldCount {
+		m.addDesc = m.addInputs[0].Value()
+		m.addSpec = m.addInputs[1].Value()
+	}
 }
 
 // BeginConfirm opens a confirmation modal for a destructive action.

@@ -16,9 +16,9 @@ import (
 const command = "tui"
 
 var (
-	tuiRefresh  string
-	tuiNoColor  bool
-	tuiForce    bool
+	tuiRefresh   string
+	tuiNoColor   bool
+	tuiForce     bool
 	tuiStartView string
 )
 

@@ -51,8 +51,8 @@ func TestNotifierAutoDismissTimings(t *testing.T) {
 	elapsed := time.Duration(0)
 	n := NewNotifier(func() time.Time { return start.Add(elapsed) })
 
-	n.Push("ok", ToastOK)     // 2s
-	n.Push("err", ToastErr)   // 5s
+	n.Push("ok", ToastOK)       // 2s
+	n.Push("err", ToastErr)     // 5s
 	n.Push("async", ToastAsync) // never auto-dismiss
 
 	// After 2s the OK toast should expire.
