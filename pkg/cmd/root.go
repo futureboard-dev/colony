@@ -73,4 +73,5 @@ func init() {
 	rootCmd.AddCommand(missionCmd)
 	rootCmd.AddCommand(loopCmd)
 	rootCmd.AddCommand(gateCmd)
+	rootCmd.AddCommand(tuiCmd)
 }

@@ -96,6 +96,66 @@ func TestAuditQueryByMissionName(t *testing.T) {
 	}
 }
 
+func TestStepOutputColumnRoundTrip(t *testing.T) {
+	db := openTestDB(t)
+
+	sessID := "mission-output"
+	_ = db.InsertSession(Session{ID: sessID, MissionName: "m", StartedAt: time.Now(), Status: "running"})
+
+	now := time.Now()
+	steps := []Step{
+		// Gate REJECTED stores full captured output.
+		{SessionID: sessID, StepNum: 1, AgentID: "g1", Role: "gate", Decision: "REJECTED",
+			Output: "FAIL: TestRateLimit_Burst\n--- go test ./... ---\n", StartedAt: now, FinishedAt: now},
+		// Gate APPROVED stores an empty output string.
+		{SessionID: sessID, StepNum: 2, AgentID: "g2", Role: "gate", Decision: "APPROVED", StartedAt: now, FinishedAt: now},
+		// LLM step stores nothing by default.
+		{SessionID: sessID, StepNum: 3, AgentID: "b1", Role: "builder", Decision: "APPROVED", StartedAt: now, FinishedAt: now},
+	}
+	for _, s := range steps {
+		if err := db.InsertStep(s); err != nil {
+			t.Fatalf("InsertStep: %v", err)
+		}
+	}
+
+	got, err := db.QuerySteps(StepFilter{SessionID: sessID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("expected 3 steps, got %d", len(got))
+	}
+	// First gate step has verbatim output.
+	if got[0].Output != steps[0].Output {
+		t.Errorf("gate REJECTED output mismatch: got %q want %q", got[0].Output, steps[0].Output)
+	}
+	// APPROVED gate and builder store empty output.
+	if got[1].Output != "" {
+		t.Errorf("gate APPROVED should store empty output, got %q", got[1].Output)
+	}
+	if got[2].Output != "" {
+		t.Errorf("builder step should store empty output, got %q", got[2].Output)
+	}
+}
+
+func TestStepOutputColumnDefaultsToEmpty(t *testing.T) {
+	// Verify a step inserted without the Output field defaults to ''.
+	db := openTestDB(t)
+	sessID := "mission-default"
+	_ = db.InsertSession(Session{ID: sessID, MissionName: "m", StartedAt: time.Now(), Status: "running"})
+	now := time.Now()
+	if err := db.InsertStep(Step{SessionID: sessID, StepNum: 1, AgentID: "a", Role: "gate", Decision: "APPROVED", StartedAt: now, FinishedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	steps, err := db.QuerySteps(StepFilter{SessionID: sessID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(steps) != 1 || steps[0].Output != "" {
+		t.Errorf("expected output to default to '', got %q", steps[0].Output)
+	}
+}
+
 func TestAuditQueryByDecision(t *testing.T) {
 	db := openTestDB(t)
 

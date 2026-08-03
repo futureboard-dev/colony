@@ -26,6 +26,7 @@ type Step struct {
 	InputText  string
 	OutputJSON string
 	Decision   string
+	Output     string // verbatim captured stdout/stderr for gate steps
 	DurationMS int64
 	StartedAt  time.Time
 	FinishedAt time.Time
@@ -156,6 +157,7 @@ func Open(dbPath string) (*SQLiteStore, error) {
 	for _, alter := range []string{
 		`ALTER TABLE tasks ADD COLUMN branch TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE tasks ADD COLUMN pr_url TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE steps ADD COLUMN output TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := db.Exec(alter); err != nil &&
 			!strings.Contains(err.Error(), "duplicate column") {
@@ -193,10 +195,10 @@ func (s *SQLiteStore) InsertStep(step Step) error {
 	}
 	_, err := s.db.Exec(
 		`INSERT INTO steps
-		 (session_id, step_num, sub_step, agent_id, role, input_text, output_json, decision, duration_ms, started_at, finished_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		 (session_id, step_num, sub_step, agent_id, role, input_text, output_json, decision, output, duration_ms, started_at, finished_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
 		step.SessionID, step.StepNum, step.SubStep, step.AgentID, step.Role,
-		step.InputText, step.OutputJSON, step.Decision, step.DurationMS,
+		step.InputText, step.OutputJSON, step.Decision, step.Output, step.DurationMS,
 		step.StartedAt.UTC().Format(time.RFC3339), finishedAt,
 	)
 	return err
@@ -273,7 +275,7 @@ func (s *SQLiteStore) DeleteSessions(f SessionFilter) (int64, error) {
 }
 
 func (s *SQLiteStore) QuerySteps(f StepFilter) ([]Step, error) {
-	query := `SELECT id, session_id, step_num, sub_step, agent_id, role, input_text, output_json, decision, duration_ms, started_at, finished_at
+	query := `SELECT id, session_id, step_num, sub_step, agent_id, role, input_text, output_json, decision, output, duration_ms, started_at, finished_at
 	          FROM steps WHERE 1=1`
 	args := []any{}
 	if f.SessionID != "" {
@@ -301,7 +303,7 @@ func (s *SQLiteStore) QuerySteps(f StepFilter) ([]Step, error) {
 		if err := rows.Scan(
 			&step.ID, &step.SessionID, &step.StepNum, &step.SubStep,
 			&step.AgentID, &step.Role,
-			&inputText, &outputJSON, &decision, &durationMS,
+			&inputText, &outputJSON, &decision, &step.Output, &durationMS,
 			&startedStr, &finishedStr,
 		); err != nil {
 			return nil, err
