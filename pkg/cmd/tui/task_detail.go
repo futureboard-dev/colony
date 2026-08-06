@@ -60,7 +60,7 @@ func (m *Model) detailMetadata(t storageTaskRef, w int) string {
 	col := maxInt(20, w/2)
 	rows := [][2]string{
 		{"State: " + t.State, "Base branch: " + or(t.BaseBranch, "(default)")},
-		{fmt.Sprintf("Cycles: %d", t.CycleCount), "Lang: " + or(t.Lang, "—")},
+		{fmt.Sprintf("Cycles: %d", t.CycleCount), "Lang: " + langCell(t.Lang)},
 		{"Spec: " + or(t.SpecPath, "(none)"), ""},
 	}
 	var b strings.Builder

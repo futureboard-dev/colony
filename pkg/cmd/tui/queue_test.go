@@ -2,6 +2,7 @@ package tui
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -101,6 +102,36 @@ func TestQueueFuzzySearch(t *testing.T) {
 		got := Apply(tasks, QueueFilter{Search: "FIX LOGIN"})
 		if len(got) != 1 || got[0].ID != "t-1" {
 			t.Errorf("expected case-insensitive match, got %v", ids(got))
+		}
+	})
+}
+
+func TestQueueLangUnsetBadge(t *testing.T) {
+	base := time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC)
+	st := &stubStore{tasks: []storage.Task{
+		{ID: "t-legacy", Description: "created before --lang", State: "open", CreatedAt: base},
+		{ID: "t-new", Description: "created after --lang", State: "open", Lang: "go", CreatedAt: base},
+	}}
+	m := newTestModel(t, ViewQueue, st)
+
+	t.Run("table marks the legacy task", func(t *testing.T) {
+		out := m.queueTable(m.tasks, 118, 10)
+		if !strings.Contains(out, "unset") {
+			t.Errorf("expected an unset lang badge in the table, got:\n%s", out)
+		}
+		if !strings.Contains(out, "go") {
+			t.Errorf("expected the set language to still render, got:\n%s", out)
+		}
+	})
+
+	t.Run("detail explains the fallback", func(t *testing.T) {
+		m.cursor = 0
+		if out := m.queueDetail(m.tasks, 118, 12); !strings.Contains(out, langUnsetNote) {
+			t.Errorf("expected the unset-lang note for a legacy task, got:\n%s", out)
+		}
+		m.cursor = 1
+		if out := m.queueDetail(m.tasks, 118, 12); strings.Contains(out, langUnsetNote) {
+			t.Errorf("did not expect the unset-lang note for a task with a language, got:\n%s", out)
 		}
 	})
 }

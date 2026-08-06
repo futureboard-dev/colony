@@ -77,7 +77,7 @@ func (m *Model) queueTable(tasks []storage.Task, w, rows int) string {
 		}
 		row := fmt.Sprintf(" %s %-8s %s %-12s %4d %-6s %s",
 			marker, t.ID, m.theme.icon(StateIcon(t.State)), t.State,
-			t.CycleCount, or(t.Lang, "—"), truncate(t.Description, descW))
+			t.CycleCount, langCell(t.Lang), truncate(t.Description, descW))
 
 		if i == m.cursor {
 			b.WriteString(m.theme.Selected.Render(fitLine(row, w)))
@@ -90,6 +90,20 @@ func (m *Model) queueTable(tasks []storage.Task, w, rows int) string {
 		b.WriteString(scrollHint(m.theme, hidden))
 	}
 	return b.String()
+}
+
+// langUnsetNote explains what an empty Lang costs. Tasks created before --lang
+// was required carry no language, and the loop silently falls back to its own
+// --lang default when it runs them.
+const langUnsetNote = "no language recorded — the loop will use its --lang default (run `colony loop run <id> --lang <lang>` to set it)"
+
+// langCell renders a task's language for a table cell, spelling out an unset
+// language rather than dashing it so legacy tasks stand out from set ones.
+func langCell(lang string) string {
+	if lang == "" {
+		return "unset"
+	}
+	return lang
 }
 
 // queueDetail renders metadata, last feedback, and recent sessions for the
@@ -112,8 +126,13 @@ func (m *Model) queueDetail(tasks []storage.Task, w, rows int) string {
 
 	fmt.Fprintf(&b, " %s\n", m.theme.Dim.Render(fmt.Sprintf(
 		"Cycles: %d   Lang: %s   Created: %s   Updated: %s",
-		t.CycleCount, or(t.Lang, "—"),
+		t.CycleCount, langCell(t.Lang),
 		t.CreatedAt.Format("2006-01-02 15:04"), timeAgo(taskTimestamp(t)))))
+
+	if t.Lang == "" {
+		fmt.Fprintf(&b, " %s\n", m.theme.StateNeedsFix.Render(
+			m.theme.icon(iconReviewWarn)+" "+langUnsetNote))
+	}
 
 	if t.SpecPath != "" {
 		fmt.Fprintf(&b, " %s %s\n", m.theme.Dim.Render("Spec:"), t.SpecPath)
