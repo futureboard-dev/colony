@@ -235,8 +235,8 @@ func (m *Model) toastBox(style lipgloss.Style, text string, w int) string {
 
 // storageTaskRef is a lightweight view-bound copy of a task.
 type storageTaskRef struct {
-	ID, Description, State, SpecPath, BaseBranch, Lang, LastFeedback string
-	CycleCount                                                       int
+	ID, Description, State, SpecPath, BaseBranch, Branch, Lang, LastFeedback string
+	CycleCount                                                               int
 }
 
 // selectedTask returns the task at the queue cursor, if any.
@@ -247,8 +247,8 @@ func (m *Model) selectedTask() (storageTaskRef, bool) {
 	}
 	t := tasks[m.cursor]
 	return storageTaskRef{ID: t.ID, Description: t.Description, State: t.State,
-		SpecPath: t.SpecPath, BaseBranch: t.BaseBranch, CycleCount: t.CycleCount,
-		Lang: t.Lang, LastFeedback: t.LastFeedback}, true
+		SpecPath: t.SpecPath, BaseBranch: t.BaseBranch, Branch: t.Branch,
+		CycleCount: t.CycleCount, Lang: t.Lang, LastFeedback: t.LastFeedback}, true
 }
 
 // loopState resolves the loop label and PID, tolerating an unset colony dir.

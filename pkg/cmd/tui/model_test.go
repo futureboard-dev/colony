@@ -48,7 +48,7 @@ func sampleStore() *stubStore {
 	now := time.Now()
 	return &stubStore{
 		tasks: []storage.Task{
-			{ID: "t-1", Description: "fix login", State: "needs-fix", CycleCount: 2, Lang: "go", CreatedAt: now.Add(-8 * time.Minute)},
+			{ID: "t-1", Description: "fix login", State: "needs-fix", CycleCount: 2, Lang: "go", Branch: "colony/t-1", CreatedAt: now.Add(-8 * time.Minute)},
 			{ID: "t-2", Description: "add rate limiter", State: "blocked", CycleCount: 3, Lang: "go", CreatedAt: now.Add(-4 * time.Minute)},
 			{ID: "t-3", Description: "update docs", State: "done", CycleCount: 0, Lang: "go", CreatedAt: now.Add(-16 * time.Minute)},
 		},

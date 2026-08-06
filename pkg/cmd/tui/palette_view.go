@@ -8,6 +8,10 @@ import (
 // when a command has more flags than this, keeping the modal inside 80x24.
 const paletteFormRows = 8
 
+// palettePickerRows is the number of commands visible at once in the chooser,
+// which scrolls with the cursor once the list outgrows it.
+const palettePickerRows = 14
+
 // renderPaletteModal renders either the command chooser or the flag form for
 // the selected command.
 func (m *Model) renderPaletteModal(frameW, frameH int) string {
@@ -20,8 +24,14 @@ func (m *Model) renderPaletteModal(frameW, frameH int) string {
 // renderPalettePicker lists the runnable commands.
 func (m *Model) renderPalettePicker(frameW int) string {
 	w := modalWidth(frameW, 66)
+	start, end := window(len(paletteCommands), m.palette.cursor, palettePickerRows)
+
 	var b strings.Builder
-	for i, spec := range paletteCommands {
+	if start > 0 {
+		b.WriteString(" " + m.theme.Dim.Render(m.theme.icon("▲")+" more above") + "\n")
+	}
+	for i := start; i < end; i++ {
+		spec := paletteCommands[i]
 		marker, style := "  ", m.theme.StatusText
 		if i == m.palette.cursor {
 			marker, style = m.theme.icon("▶")+" ", m.theme.Selected
@@ -30,6 +40,9 @@ func (m *Model) renderPalettePicker(frameW int) string {
 		b.WriteString(style.Render(fitLine(marker+spec.Name, 24)))
 		b.WriteString(m.theme.Dim.Render(truncate(spec.Summary, w-30)))
 		b.WriteString("\n")
+	}
+	if end < len(paletteCommands) {
+		b.WriteString(" " + m.theme.Dim.Render(m.theme.icon("↓")+" more below") + "\n")
 	}
 	b.WriteString("\n")
 	b.WriteString(m.styleHints("[Enter] configure  [j/k] move  [Esc] cancel"))
@@ -80,7 +93,7 @@ func (m *Model) paletteRows(spec cmdSpec) []string {
 
 	if spec.Positional != "" {
 		rows = append(rows, m.paletteTextRow(spec.Positional, p.posValue,
-			"<"+spec.Positional+">", true, p.focus == row))
+			"<"+spec.Positional+">", spec.PosRequired, p.focus == row))
 		row++
 	}
 	for i, f := range spec.Flags {

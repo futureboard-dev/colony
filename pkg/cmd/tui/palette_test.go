@@ -124,6 +124,59 @@ func TestPalettePositionalArgument(t *testing.T) {
 	}
 }
 
+func TestPalettePrefillsPositionalFromQueueSelection(t *testing.T) {
+	cases := []struct {
+		command string
+		want    string
+	}{
+		{"loop run", "t-1"},
+		{"loop retry-review", "t-1"},
+		{"loop retry-gate", "t-1"},
+		{"task done", "colony/t-1"}, // the worktree branch, not the task ID
+	}
+	for _, tc := range cases {
+		t.Run(tc.command, func(t *testing.T) {
+			idx, _ := specByName(t, tc.command)
+			m := newTestModel(t, ViewQueue, sampleStore())
+			// The queue is sorted, so point the cursor at t-1 by ID.
+			for i, task := range Apply(m.tasks, m.queue) {
+				if task.ID == "t-1" {
+					m.cursor = i
+				}
+			}
+			m.openPalette()
+			m.selectPaletteCommand(idx)
+
+			if m.palette.posValue != tc.want {
+				t.Errorf("prefilled positional = %q, want %q", m.palette.posValue, tc.want)
+			}
+		})
+	}
+}
+
+func TestPaletteRequiredPositionalBlocksSubmit(t *testing.T) {
+	idx, spec := specByName(t, "loop run")
+	m := newTestModel(t, ViewQueue, &stubStore{}) // no tasks, so nothing to prefill
+	m.openPalette()
+	m.selectPaletteCommand(idx)
+	if m.palette.posValue != "" {
+		t.Fatalf("expected an empty positional with no queue selection, got %q", m.palette.posValue)
+	}
+
+	if _, err := m.palette.buildArgv(spec); err == nil {
+		t.Fatal("expected loop run to require <task-id>")
+	}
+
+	m.modal = ModalPalette
+	m.Update(key("enter"))
+	if m.palette.err == "" {
+		t.Error("expected an inline error after submitting without <task-id>")
+	}
+	if m.runner.Running() {
+		t.Error("no process should start when validation fails")
+	}
+}
+
 func TestPaletteFormNavigationAndToggle(t *testing.T) {
 	idx, spec := specByName(t, "loop")
 	m := newTestModel(t, ViewDashboard, sampleStore())
@@ -198,9 +251,21 @@ func TestPaletteFlagsMatchCobraDefinitions(t *testing.T) {
 	// Guards against the palette drifting from pkg/cmd. Each entry is the flag
 	// set declared by the corresponding cobra command's init().
 	want := map[string][]string{
-		"loop":         {"once", "watch", "lang", "max-passes", "max-cycles", "idle", "escalate-to", "retry-blocked", "review"},
-		"swarm":        {"spec", "lang", "mode", "review-depth", "no-format", "no-pr"},
-		"spec-feature": {"file", "provider", "interactive", "continue"},
+		"loop":              {"once", "watch", "lang", "max-passes", "max-cycles", "idle", "escalate-to", "retry-blocked", "review"},
+		"swarm":             {"spec", "lang", "mode", "review-depth", "no-format", "no-pr"},
+		"spec-feature":      {"file", "provider", "interactive", "continue"},
+		"loop status":       {"state", "json"},
+		"loop run":          {"lang"},
+		"loop retry-review": {},
+		"loop retry-gate":   {},
+		"gate":              {"lang", "no-format"},
+		"task list":         {},
+		"task done":         {"worktree-only"},
+		"mission run":       {"mission", "input", "output"},
+		"mission audit":     {"session", "decision", "status", "purge", "show-output"},
+		"log":               {"all", "live", "session"},
+		"init":              {},
+		"install":           {},
 	}
 	for name, flags := range want {
 		_, spec := specByName(t, name)
@@ -222,6 +287,17 @@ func TestPaletteModalFitsMinimumTerminal(t *testing.T) {
 
 	if got := strings.Count(m.renderPaletteModal(minWidth, minHeight), "\n") + 1; got > minHeight {
 		t.Errorf("palette picker is %d rows, exceeds %d", got, minHeight)
+	}
+
+	// The picker scrolls, so the last command must stay reachable and on screen.
+	last := len(paletteCommands) - 1
+	m.palette.cursor = last
+	out := m.renderPaletteModal(minWidth, minHeight)
+	if got := strings.Count(out, "\n") + 1; got > minHeight {
+		t.Errorf("palette picker scrolled to the end is %d rows, exceeds %d", got, minHeight)
+	}
+	if !strings.Contains(out, paletteCommands[last].Name) {
+		t.Errorf("last command %q not rendered when selected", paletteCommands[last].Name)
 	}
 
 	// craft has the most flags, so it is the worst case for the form.

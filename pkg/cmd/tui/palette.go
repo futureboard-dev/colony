@@ -10,6 +10,11 @@ func errRequiredFlag(name string) error {
 	return fmt.Errorf("--%s is required", name)
 }
 
+// errRequiredArg reports a required positional argument left empty.
+func errRequiredArg(name string) error {
+	return fmt.Errorf("<%s> is required", name)
+}
+
 // flagKind distinguishes the two input shapes a flag can take.
 type flagKind int
 
@@ -36,7 +41,13 @@ type cmdSpec struct {
 	Argv       []string // subcommand path, e.g. {"loop", "schedule", "start"}
 	Summary    string
 	Positional string // label for a leading positional arg, empty if none
-	Flags      []cmdFlag
+	// PosRequired mirrors cobra.ExactArgs(1): submitting without the positional
+	// is rejected in the form rather than by the child process.
+	PosRequired bool
+	// PosFrom seeds the positional from the queue selection when the palette is
+	// opened with a task under the cursor. Nil means no prefill.
+	PosFrom func(storageTaskRef) string
+	Flags   []cmdFlag
 }
 
 // paletteCommands mirrors the cobra definitions in pkg/cmd. Flag names and
@@ -90,16 +101,53 @@ var paletteCommands = []cmdSpec{
 		},
 	},
 	{
-		Name:       "spec-feature",
-		Argv:       []string{"spec-feature"},
-		Summary:    "Generate a TASK.md spec",
-		Positional: "feature-name",
+		Name:        "spec-feature",
+		Argv:        []string{"spec-feature"},
+		Summary:     "Generate a TASK.md spec",
+		Positional:  "feature-name",
+		PosRequired: true,
 		Flags: []cmdFlag{
 			{Name: "file", Kind: flagString, Placeholder: "requirements.md", Help: "read requirements from file"},
 			{Name: "provider", Kind: flagString, Default: "deepseek", Placeholder: "deepseek", Help: "deepseek or anthropic"},
 			{Name: "interactive", Kind: flagBool, Help: "collaborate in a live session"},
 			{Name: "continue", Kind: flagBool, Help: "revise existing TASK.md"},
 		},
+	},
+	{
+		Name:    "loop status",
+		Argv:    []string{"loop", "status"},
+		Summary: "Queue, feedback, daemon liveness, sessions",
+		Flags: []cmdFlag{
+			{Name: "state", Kind: flagString, Placeholder: "open", Help: "open, needs-fix, blocked, done"},
+			{Name: "json", Kind: flagBool, Help: "structured JSON output"},
+		},
+	},
+	{
+		Name:        "loop run",
+		Argv:        []string{"loop", "run"},
+		Summary:     "Run one task by ID through build→gate→fix",
+		Positional:  "task-id",
+		PosRequired: true,
+		PosFrom:     func(t storageTaskRef) string { return t.ID },
+		Flags: []cmdFlag{
+			{Name: "lang", Kind: flagString, Required: true, Placeholder: "typescript", Help: "typescript, python, go"},
+		},
+	},
+	{
+		Name:        "loop retry-review",
+		Argv:        []string{"loop", "retry-review"},
+		Summary:     "Re-run only the review gate on a blocked task",
+		Positional:  "task-id",
+		PosRequired: true,
+		PosFrom:     func(t storageTaskRef) string { return t.ID },
+	},
+	{
+		Name:        "loop retry-gate",
+		Argv:        []string{"loop", "retry-gate"},
+		Summary:     "Re-run from the gate step on a blocked task",
+		Positional:  "task-id",
+		PosRequired: true,
+		PosFrom:     func(t storageTaskRef) string { return t.ID },
 	},
 	{
 		Name:    "loop schedule start",
@@ -123,6 +171,73 @@ var paletteCommands = []cmdSpec{
 			{Name: "all", Kind: flagBool, Help: "remove every task"},
 			{Name: "yes", Kind: flagBool, Default: "true", Help: "skip the confirmation prompt"},
 		},
+	},
+	{
+		Name:    "gate",
+		Argv:    []string{"gate"},
+		Summary: "Run quality gates on the current directory",
+		Flags: []cmdFlag{
+			{Name: "lang", Kind: flagString, Required: true, Placeholder: "go", Help: "go, typescript, python"},
+			{Name: "no-format", Kind: flagBool, Help: "skip the format gate"},
+		},
+	},
+	{
+		Name:    "task list",
+		Argv:    []string{"task", "list"},
+		Summary: "List all active agent worktrees",
+	},
+	{
+		Name:        "task done",
+		Argv:        []string{"task", "done"},
+		Summary:     "Clean up worktree and branch after merge",
+		Positional:  "branch",
+		PosRequired: true,
+		PosFrom:     func(t storageTaskRef) string { return t.Branch },
+		Flags: []cmdFlag{
+			{Name: "worktree-only", Kind: flagBool, Help: "remove worktree, keep local branch"},
+		},
+	},
+	{
+		Name:    "mission run",
+		Argv:    []string{"mission", "run"},
+		Summary: "Execute a *.mission.yaml file",
+		Flags: []cmdFlag{
+			{Name: "mission", Kind: flagString, Required: true, Placeholder: "path/to/x.mission.yaml", Help: "mission file"},
+			{Name: "input", Kind: flagString, Placeholder: "text", Help: "override the mission's input"},
+			{Name: "output", Kind: flagString, Placeholder: "path", Help: "write final output to a file"},
+		},
+	},
+	{
+		Name:    "mission audit",
+		Argv:    []string{"mission", "audit"},
+		Summary: "Query mission run history",
+		Flags: []cmdFlag{
+			{Name: "session", Kind: flagString, Placeholder: "session-id", Help: "filter by session"},
+			{Name: "decision", Kind: flagString, Placeholder: "REJECTED", Help: "filter steps by decision"},
+			{Name: "status", Kind: flagString, Placeholder: "running", Help: "running, failed, completed"},
+			{Name: "purge", Kind: flagBool, Help: "delete matching sessions and steps"},
+			{Name: "show-output", Kind: flagBool, Help: "print each agent's output"},
+		},
+	},
+	{
+		Name:    "log",
+		Argv:    []string{"log"},
+		Summary: "Show agent run history",
+		Flags: []cmdFlag{
+			{Name: "all", Kind: flagBool, Help: "runs across all projects"},
+			{Name: "live", Kind: flagBool, Help: "tail live agent activity"},
+			{Name: "session", Kind: flagBool, Help: "last session summary"},
+		},
+	},
+	{
+		Name:    "init",
+		Argv:    []string{"init"},
+		Summary: "Create .colony/config.json in this project",
+	},
+	{
+		Name:    "install",
+		Argv:    []string{"install"},
+		Summary: "Symlink the colony binary into ~/.local/bin",
 	},
 }
 
@@ -153,6 +268,11 @@ func (m *Model) selectPaletteCommand(idx int) {
 	}
 	spec := paletteCommands[idx]
 	p := paletteState{picking: false, spec: idx}
+	if spec.PosFrom != nil {
+		if sel, ok := m.selectedTask(); ok {
+			p.posValue = spec.PosFrom(sel)
+		}
+	}
 	p.values = make([]string, len(spec.Flags))
 	p.bools = make([]bool, len(spec.Flags))
 	for i, f := range spec.Flags {
@@ -192,7 +312,11 @@ func (p *paletteState) flagIndex(spec cmdSpec, focus int) (int, bool) {
 func (p *paletteState) buildArgv(spec cmdSpec) ([]string, error) {
 	argv := append([]string{}, spec.Argv...)
 	if spec.Positional != "" {
-		if v := strings.TrimSpace(p.posValue); v != "" {
+		v := strings.TrimSpace(p.posValue)
+		if v == "" && spec.PosRequired {
+			return nil, errRequiredArg(spec.Positional)
+		}
+		if v != "" {
 			argv = append(argv, v)
 		}
 	}
