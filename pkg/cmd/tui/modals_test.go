@@ -3,6 +3,7 @@ package tui
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -57,13 +58,39 @@ func TestAddTaskValidation(t *testing.T) {
 	m := New(Options{Refresh: time.Second, StartView: ViewDashboard}, st)
 	m.width, m.height = 120, 40
 
-	t.Run("empty description rejected inline", func(t *testing.T) {
+	t.Run("empty description and spec rejected inline", func(t *testing.T) {
 		m.modal = ModalAddTask
 		m.addDesc = ""
 		m.addSpec = ""
+		m.addLang = "go"
 		err := m.addTaskNow()
 		if err == nil {
 			t.Error("expected empty description to be rejected")
+		}
+	})
+
+	t.Run("missing lang rejected", func(t *testing.T) {
+		m.modal = ModalAddTask
+		m.addDesc = "valid task"
+		m.addSpec = ""
+		m.addLang = ""
+		if err := m.addTaskNow(); err == nil {
+			t.Error("expected missing lang to be rejected")
+		}
+		if len(st.inserted) != 0 {
+			t.Error("no task should be inserted on invalid input")
+		}
+	})
+
+	t.Run("unknown lang rejected", func(t *testing.T) {
+		m.modal = ModalAddTask
+		m.addDesc = "valid task"
+		m.addLang = "cobol"
+		if err := m.addTaskNow(); err == nil {
+			t.Error("expected unknown lang to be rejected")
+		}
+		if len(st.inserted) != 0 {
+			t.Error("no task should be inserted on invalid input")
 		}
 	})
 
@@ -73,6 +100,7 @@ func TestAddTaskValidation(t *testing.T) {
 		m.modal = ModalAddTask
 		m.addDesc = "valid task"
 		m.addSpec = missing
+		m.addLang = "go"
 		err := m.addTaskNow()
 		if err == nil {
 			t.Error("expected missing spec path to be rejected")
@@ -82,23 +110,90 @@ func TestAddTaskValidation(t *testing.T) {
 		}
 	})
 
-	t.Run("valid add inserts task", func(t *testing.T) {
+	t.Run("valid add persists every field", func(t *testing.T) {
 		path := filepath.Join(dir, "exists.md")
 		if err := os.WriteFile(path, []byte("# spec"), 0644); err != nil {
 			t.Fatal(err)
 		}
 		m.addDesc = "a valid task"
 		m.addSpec = path
+		m.addBase = "hotfix/worker-initial-notes-sanitize"
+		m.addLang = "typescript"
+		m.addNoFormat = true
 		if err := m.addTaskNow(); err != nil {
 			t.Fatalf("expected valid add to succeed: %v", err)
 		}
 		if len(st.inserted) != 1 {
-			t.Errorf("expected 1 inserted task, got %d", len(st.inserted))
+			t.Fatalf("expected 1 inserted task, got %d", len(st.inserted))
 		}
-		if st.inserted[0].SpecPath != path {
-			t.Errorf("spec path not persisted: %q", st.inserted[0].SpecPath)
+		got := st.inserted[0]
+		if got.SpecPath != path {
+			t.Errorf("spec path not persisted: %q", got.SpecPath)
+		}
+		if got.BaseBranch != "hotfix/worker-initial-notes-sanitize" {
+			t.Errorf("base branch not persisted: %q", got.BaseBranch)
+		}
+		if got.Lang != "typescript" {
+			t.Errorf("lang not persisted: %q", got.Lang)
+		}
+		if got.GateOverrides != "format" {
+			t.Errorf("no-format not persisted as gate override: %q", got.GateOverrides)
 		}
 	})
+
+	t.Run("spec-only task is accepted", func(t *testing.T) {
+		st2 := sampleStore()
+		m2 := New(Options{Refresh: time.Second, StartView: ViewDashboard}, st2)
+		path := filepath.Join(dir, "exists.md")
+		m2.addDesc = ""
+		m2.addSpec = path
+		m2.addLang = "go"
+		if err := m2.addTaskNow(); err != nil {
+			t.Fatalf("expected spec-only add to succeed: %v", err)
+		}
+		if len(st2.inserted) != 1 {
+			t.Errorf("expected 1 inserted task, got %d", len(st2.inserted))
+		}
+	})
+}
+
+func TestAddTaskNoFormatToggle(t *testing.T) {
+	m := newTestModel(t, ViewDashboard, sampleStore())
+	m.Update(key("a"))
+
+	for range addNoFormatField {
+		m.Update(key("tab"))
+	}
+	if m.addFocus != addNoFormatField {
+		t.Fatalf("expected focus on no-format field, got %d", m.addFocus)
+	}
+
+	m.Update(key(" "))
+	if !m.addNoFormat {
+		t.Error("expected space to enable no-format")
+	}
+	m.Update(key(" "))
+	if m.addNoFormat {
+		t.Error("expected space to toggle no-format back off")
+	}
+
+	// Text keys on the toggle field must not panic or leak into an input.
+	m.Update(key("x"))
+	if m.addDesc != "" {
+		t.Errorf("toggle field consumed text into description: %q", m.addDesc)
+	}
+}
+
+func TestAddTaskModalFitsMinimumTerminal(t *testing.T) {
+	m := newTestModel(t, ViewDashboard, sampleStore())
+	m.width, m.height = minWidth, minHeight
+	m.Update(key("a"))
+	m.addErr = "language is required (typescript, python, go)"
+
+	got := strings.Count(m.renderAddTaskModal(minWidth, minHeight), "\n") + 1
+	if got > minHeight {
+		t.Errorf("Add Task modal is %d rows, exceeds the %d-row minimum terminal", got, minHeight)
+	}
 }
 
 func TestGateFeedbackRendering(t *testing.T) {

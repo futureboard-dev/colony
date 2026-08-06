@@ -2,10 +2,12 @@ package tui
 
 import (
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbletea"
+	"github.com/futureboard-dev/colony/pkg/module"
 	"github.com/futureboard-dev/colony/pkg/storage"
 )
 
@@ -150,17 +152,28 @@ type Model struct {
 
 	lastActive map[string]time.Time
 
-	// AddTask modal fields. addDesc/addSpec mirror the inputs so tests and
-	// callers can set them without driving the text inputs.
-	addDesc   string
-	addSpec   string
-	addErr    string
-	addInputs []textinput.Model
-	addFocus  int
+	// AddTask modal fields. addDesc/addSpec/addBase/addLang mirror the inputs so
+	// tests and callers can set them without driving the text inputs.
+	addDesc     string
+	addSpec     string
+	addBase     string
+	addLang     string
+	addNoFormat bool
+	addErr      string
+	addInputs   []textinput.Model
+	addFocus    int
 }
 
-// addFieldCount is the number of focusable fields in the Add Task modal.
-const addFieldCount = 2
+// Add Task modal field indices. The text inputs occupy 0..addNoFormatField-1;
+// addNoFormatField is the trailing boolean toggle and has no text input.
+const (
+	addDescField = iota
+	addSpecField
+	addBaseField
+	addLangField
+	addNoFormatField
+	addFieldCount
+)
 
 // ConfirmState describes a pending destructive-action confirmation.
 type ConfirmState struct {
@@ -189,6 +202,12 @@ func New(opts Options, store Store) *Model {
 	spec := textinput.New()
 	spec.Placeholder = ".colony/specs/<feature>/TASK.md (optional)"
 	spec.CharLimit = 300
+	base := textinput.New()
+	base.Placeholder = "hotfix/my-branch (optional, defaults to current)"
+	base.CharLimit = 200
+	lang := textinput.New()
+	lang.Placeholder = "typescript | python | go"
+	lang.CharLimit = 20
 
 	search := textinput.New()
 	search.Placeholder = "filter descriptions"
@@ -207,7 +226,7 @@ func New(opts Options, store Store) *Model {
 		lastActive:  make(map[string]time.Time),
 		searchInput: search,
 		output:      newRingBuffer(LiveOutputCapacity),
-		addInputs:   []textinput.Model{desc, spec},
+		addInputs:   []textinput.Model{desc, spec, base, lang},
 	}
 	if m.view == ViewTaskDetail {
 		m.view = ViewQueue // task detail requires a selected task
@@ -537,7 +556,17 @@ func (m *Model) dispatchModalMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.addFocus = (m.addFocus + step) % addFieldCount
 			return m, m.focusAddField()
+		case " ":
+			if m.addFocus == addNoFormatField {
+				m.addNoFormat = !m.addNoFormat
+				m.addErr = ""
+				return m, nil
+			}
+			fallthrough
 		default:
+			if m.addFocus == addNoFormatField {
+				return m, nil // toggle field takes no text input
+			}
 			m.addErr = ""
 			var cmd tea.Cmd
 			m.addInputs[m.addFocus], cmd = m.addInputs[m.addFocus].Update(key)
@@ -594,29 +623,57 @@ func (m *Model) listLen() int {
 	}
 }
 
-// addTaskNow validates and inserts a new task via the store.
+// addTaskNow validates and inserts a new task via the store. It mirrors the
+// validation in `colony task add` so tasks enqueued from the TUI carry the
+// same lang and gate configuration the loop expects.
 func (m *Model) addTaskNow() error {
 	if m.store == nil {
 		return fmt.Errorf("storage unavailable")
 	}
-	if desc := trimSpace(m.addDesc); desc == "" {
-		return fmt.Errorf("task description is required")
+	desc := trimSpace(m.addDesc)
+	spec := trimSpace(m.addSpec)
+	if desc == "" && spec == "" {
+		return fmt.Errorf("task description or spec file is required")
 	}
-	if m.addSpec != "" && !fileExists(m.addSpec) {
-		return fmt.Errorf("spec file not found: %s", m.addSpec)
+	lang := trimSpace(m.addLang)
+	if lang == "" {
+		return fmt.Errorf("language is required (typescript, python, go)")
 	}
+	if _, err := module.CommandsFor(lang); err != nil {
+		return err
+	}
+	if spec != "" {
+		abs, err := filepath.Abs(spec)
+		if err != nil {
+			return fmt.Errorf("resolve spec path: %w", err)
+		}
+		if !fileExists(abs) {
+			return fmt.Errorf("spec file not found: %s", spec)
+		}
+		spec = abs
+	}
+
+	gateOverrides := ""
+	if m.addNoFormat {
+		gateOverrides = "format"
+	}
+
 	return m.store.InsertTask(storage.Task{
-		Description: m.addDesc,
-		SpecPath:    m.addSpec,
-		State:       "open",
-		CreatedAt:   time.Now(),
+		Description:   desc,
+		SpecPath:      spec,
+		BaseBranch:    trimSpace(m.addBase),
+		Lang:          lang,
+		GateOverrides: gateOverrides,
+		State:         "open",
+		CreatedAt:     time.Now(),
 	})
 }
 
 // openAddTask opens the Add Task modal with a clean form.
 func (m *Model) openAddTask() tea.Cmd {
 	m.modal = ModalAddTask
-	m.addErr, m.addDesc, m.addSpec = "", "", ""
+	m.addErr, m.addDesc, m.addSpec, m.addBase, m.addLang = "", "", "", "", ""
+	m.addNoFormat = false
 	m.addFocus = 0
 	for i := range m.addInputs {
 		m.addInputs[i].SetValue("")
@@ -647,11 +704,14 @@ func (m *Model) focusAddField() tea.Cmd {
 }
 
 // syncAddFields mirrors the text inputs into the plain string fields that
-// validation and tests read.
+// validation and tests read. The no-format toggle has no text input and is
+// driven directly by the key handler.
 func (m *Model) syncAddFields() {
-	if len(m.addInputs) == addFieldCount {
-		m.addDesc = m.addInputs[0].Value()
-		m.addSpec = m.addInputs[1].Value()
+	if len(m.addInputs) == addNoFormatField {
+		m.addDesc = m.addInputs[addDescField].Value()
+		m.addSpec = m.addInputs[addSpecField].Value()
+		m.addBase = m.addInputs[addBaseField].Value()
+		m.addLang = m.addInputs[addLangField].Value()
 	}
 }
 

@@ -18,23 +18,66 @@ func (m *Model) renderAddTaskModal(frameW, frameH int) string {
 
 	var b strings.Builder
 	b.WriteString(" " + m.theme.Bold.Render("Description:") + "\n")
-	b.WriteString(" " + m.fieldBox(0, inner) + "\n")
+	b.WriteString(" " + m.fieldBox(addDescField, inner) + "\n")
 	b.WriteString(" " + m.theme.Bold.Render("Spec file (optional):") + "\n")
-	b.WriteString(" " + m.fieldBox(1, inner) + "\n")
-	b.WriteString(" " + m.theme.Dim.Render("Base branch: (default)") + "\n")
+	b.WriteString(" " + m.fieldBox(addSpecField, inner) + "\n")
+	// Base and lang share a row so the modal still fits an 80x24 terminal.
+	leftW := inner - langFieldWidth - 1
+	b.WriteString(" " + fitLine(m.theme.Bold.Render("Base branch (optional):"), leftW+1) +
+		m.theme.Bold.Render("Language:") + "\n")
+	b.WriteString(m.fieldPair(addBaseField, leftW, addLangField, langFieldWidth))
+	b.WriteString(" " + m.checkboxLine("Skip format gate (--no-format)", m.addNoFormat,
+		m.addFocus == addNoFormatField) + "\n")
 
 	if m.addErr != "" {
 		b.WriteString(" " + m.theme.Error.Render(m.theme.icon(iconCrashed)+" "+m.addErr) + "\n")
 	}
-	b.WriteString(m.styleHints("[Enter] add   [Tab] next field   [Esc] cancel"))
+	b.WriteString(m.styleHints("[Enter] add  [Tab] next  [Space] toggle  [Esc] cancel"))
 
 	return m.theme.modalBox("Add Task", b.String(), w)
 }
 
-// fieldBox renders one bordered text input, brightened when focused.
+// checkboxLine renders a boolean toggle row, brightened when focused.
+func (m *Model) checkboxLine(label string, checked, focused bool) string {
+	box := "[ ]"
+	if checked {
+		box = "[x]"
+	}
+	style := m.theme.Dim
+	if focused {
+		style = m.theme.FieldFocus
+	}
+	return style.Render(box + " " + label)
+}
+
+// langFieldWidth is the fixed width of the Language input, which shares a row
+// with the wider Base branch input.
+const langFieldWidth = 18
+
+// fieldBox renders one bordered text input, brightened when focused. Its
+// continuation lines carry the modal's one-column left padding.
 func (m *Model) fieldBox(idx, w int) string {
-	if idx >= len(m.addInputs) {
-		return ""
+	return strings.Join(m.fieldBoxLines(idx, w), "\n ")
+}
+
+// fieldPair renders two field boxes side by side as a single padded block.
+func (m *Model) fieldPair(leftIdx, leftW, rightIdx, rightW int) string {
+	left, right := m.fieldBoxLines(leftIdx, leftW), m.fieldBoxLines(rightIdx, rightW)
+	var b strings.Builder
+	for i := range left {
+		b.WriteString(" ")
+		b.WriteString(left[i])
+		b.WriteString(" ")
+		b.WriteString(right[i])
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// fieldBoxLines renders one bordered text input as its three unpadded lines.
+func (m *Model) fieldBoxLines(idx, w int) []string {
+	if idx >= len(m.addInputs) || w < 4 {
+		return []string{"", "", ""}
 	}
 	in := m.addInputs[idx]
 	in.Width = w - 4
@@ -43,10 +86,12 @@ func (m *Model) fieldBox(idx, w int) string {
 		style = m.theme.FieldFocus
 	}
 	bd := m.theme.borders
-	line := style.Render(fitLine(" "+in.View(), w-2))
-	return m.theme.PaneBorder.Render(bd.TL+strings.Repeat(bd.H, w-2)+bd.TR) + "\n " +
-		m.theme.PaneBorder.Render(bd.V) + line + m.theme.PaneBorder.Render(bd.V) + "\n " +
-		m.theme.PaneBorder.Render(bd.BL+strings.Repeat(bd.H, w-2)+bd.BR)
+	return []string{
+		m.theme.PaneBorder.Render(bd.TL + strings.Repeat(bd.H, w-2) + bd.TR),
+		m.theme.PaneBorder.Render(bd.V) + style.Render(fitLine(" "+in.View(), w-2)) +
+			m.theme.PaneBorder.Render(bd.V),
+		m.theme.PaneBorder.Render(bd.BL + strings.Repeat(bd.H, w-2) + bd.BR),
+	}
 }
 
 // renderLoopControlModal renders loop status plus the stop/kill/restart menu.
