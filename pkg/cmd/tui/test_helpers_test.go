@@ -10,6 +10,7 @@ type stubStore struct {
 	tasks    []storage.Task
 	sessions []storage.Session
 	steps    []storage.Step
+	runs     []storage.Run
 	inserted []storage.Task
 	closed   bool
 	err      error
@@ -65,6 +66,23 @@ func (s *stubStore) QuerySteps(f storage.StepFilter) ([]storage.Step, error) {
 			continue
 		}
 		out = append(out, step)
+	}
+	return out, nil
+}
+
+func (s *stubStore) QueryRuns(f storage.RunFilter) ([]storage.Run, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	out := make([]storage.Run, 0, len(s.runs))
+	for _, r := range s.runs {
+		if f.Project != "" && r.Project != f.Project {
+			continue
+		}
+		if f.Kind != "" && r.Kind != f.Kind {
+			continue
+		}
+		out = append(out, r)
 	}
 	return out, nil
 }

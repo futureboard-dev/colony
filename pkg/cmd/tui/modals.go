@@ -3,6 +3,8 @@ package tui
 import (
 	"fmt"
 	"strings"
+
+	"github.com/futureboard-dev/colony/pkg/storage"
 )
 
 // modalWidth sizes a modal as a fraction of the frame, within sane bounds.
@@ -131,19 +133,6 @@ func (m *Model) renderLoopControlModal(frameW, frameH int) string {
 }
 
 // renderScheduleModal renders the Schedule Setup form.
-func (m *Model) renderScheduleModal(frameW, frameH int) string {
-	w := modalWidth(frameW, 62)
-	var b strings.Builder
-	b.WriteString(" " + m.theme.Bold.Render("Run colony loop --once every:") + "\n")
-	b.WriteString(" " + m.theme.FieldFocus.Render(" 15m ") + "  " +
-		m.theme.Dim.Render("(15m / 30m / 1h / 2h / 4h / custom…)") + "\n\n")
-	b.WriteString(" " + m.theme.Dim.Render("Backend: crontab (Linux) / launchd (macOS) — auto-detected") + "\n\n")
-	b.WriteString(" " + m.theme.Subtitle.Render("Preview:") + "\n")
-	b.WriteString(" " + m.theme.Dim.Render("*/15 * * * * cd <project> && colony loop --once") + "\n\n")
-	b.WriteString(m.styleHints("[Enter] install   [Esc] cancel"))
-	return m.theme.modalBox("Schedule Setup", b.String(), w)
-}
-
 // renderConfirmModal renders the destructive-action confirmation.
 func (m *Model) renderConfirmModal(frameW, frameH int) string {
 	w := modalWidth(frameW, 60)
@@ -161,16 +150,49 @@ func (m *Model) renderConfirmModal(frameW, frameH int) string {
 	return m.theme.modalBox("Confirm", b.String(), w)
 }
 
-// renderReviewModal renders review results. Review records have no storage
-// surface yet, so this reports the missing source instead of inventing a
-// verdict.
+// renderReviewModal renders the approved/rejected tallies recorded per run,
+// newest first, with the cursor row expanded to show its log path.
 func (m *Model) renderReviewModal(frameW, frameH int) string {
-	w := modalWidth(frameW, 66)
+	w := modalWidth(frameW, 72)
 	var b strings.Builder
-	b.WriteString(" " + m.theme.Dim.Render("No review records available.") + "\n")
-	b.WriteString(" " + m.theme.Dim.Render("Reviews are not yet persisted to the Colony database.") + "\n\n")
-	b.WriteString(m.styleHints("[Enter] back   [y] copy as markdown   [n]ext review"))
+
+	switch {
+	case m.runsErr != nil:
+		b.WriteString(" " + m.theme.Error.Render("Could not read runs: "+m.runsErr.Error()) + "\n\n")
+	case len(m.runs) == 0:
+		b.WriteString(" " + m.theme.Dim.Render("No runs recorded yet.") + "\n\n")
+	default:
+		for i, r := range m.runs {
+			b.WriteString(m.reviewRow(i, r))
+		}
+		b.WriteString("\n")
+		if sel, ok := m.selectedRun(); ok {
+			path := sel.LogPath
+			if path == "" {
+				path = "(no log path recorded)"
+			}
+			b.WriteString(" " + m.theme.Dim.Render(truncate("log: "+path, w-4)) + "\n\n")
+		}
+	}
+
+	b.WriteString(m.styleHints("[j/k] select   [y] copy log path   [Esc] back"))
 	return m.theme.modalBox("Review Results", b.String(), w)
+}
+
+// reviewRow formats one run: cursor marker, id, kind, status, and the review
+// tallies that make this modal worth opening.
+func (m *Model) reviewRow(i int, r storage.Run) string {
+	marker := "  "
+	if i == m.runCursor {
+		marker = m.theme.Accent.Render("> ")
+	}
+	// Components are sized before styling; truncating a styled string would cut
+	// through its escape sequences.
+	head := fmt.Sprintf("%-14s %-6s ", truncate(r.ID, 14), truncate(r.Kind, 6))
+	tally := fmt.Sprintf(" %d approved / %d rejected  ", r.Approved, r.Rejected)
+	return " " + marker + head +
+		m.theme.StateStyle(r.Status).Render(fitLine(r.Status, 10)) +
+		tally + m.theme.Dim.Render(timeAgo(r.StartedAt)) + "\n"
 }
 
 // renderObserveModal renders PR/CI observation state. Like reviews, the
@@ -194,6 +216,6 @@ func (m *Model) renderObserveModal(frameW, frameH int) string {
 		}
 		b.WriteString("\n")
 	}
-	b.WriteString(m.styleHints("[Enter] view linked tasks   [r]efresh now   [q] close"))
+	b.WriteString(m.styleHints("[Esc] back"))
 	return m.theme.modalBox("Observe", b.String(), w)
 }

@@ -4,17 +4,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// scheduleSpecIndex locates the "loop schedule start" command so the Schedule
-// modal can hand off to the palette form.
-func scheduleSpecIndex() int {
-	for i, spec := range paletteCommands {
-		if spec.Name == "loop schedule start" {
-			return i
-		}
-	}
-	return 0
-}
-
 // handlePaletteKey routes keys for both palette phases: the command chooser and
 // the flag form.
 func (m *Model) handlePaletteKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {

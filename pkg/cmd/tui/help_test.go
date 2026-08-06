@@ -9,12 +9,33 @@ import (
 // ahead of the implementation: every action key the help sheet lists must be
 // consumed by its view rather than falling through to a global binding.
 func TestAdvertisedActionKeysAreHandled(t *testing.T) {
-	// Keys whose effect is a modal or navigation handled by the global switch.
-	globallyHandled := map[string]bool{"a": true, "l": true, "c": true, "o": true, "Enter": true}
+	// Keys the global switch consumes by opening a modal. Asserting the modal
+	// rather than skipping keeps the exemption honest: an entry listed here
+	// with no handler fails instead of being waved through.
+	globalModals := map[string]Modal{
+		"a": ModalAddTask,
+		"l": ModalLoopControl,
+		"c": ModalPalette,
+		"o": ModalObserve,
+		"R": ModalReview,
+	}
 
 	for view, entries := range actionHelp {
 		for _, e := range entries {
-			if globallyHandled[e.key] {
+			// Enter is drill-in navigation, not an action; it has no modal.
+			if e.key == "Enter" {
+				continue
+			}
+			if want, ok := globalModals[e.key]; ok {
+				t.Run(view.String()+"/"+e.key, func(t *testing.T) {
+					m := newTestModel(t, view, sampleStore())
+					m.opts.ColonyDir = t.TempDir()
+					m.handleKey(key(e.key))
+					if m.modal != want {
+						t.Errorf("help advertises %q (%s) in the %s view, but pressing it left modal %v, want %v",
+							e.key, e.desc, view, m.modal, want)
+					}
+				})
 				continue
 			}
 			t.Run(view.String()+"/"+e.key, func(t *testing.T) {

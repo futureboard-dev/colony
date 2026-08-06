@@ -65,7 +65,6 @@ const (
 	ModalNone Modal = iota
 	ModalAddTask
 	ModalLoopControl
-	ModalSchedule
 	ModalReview
 	ModalObserve
 	ModalConfirm
@@ -91,6 +90,7 @@ type Store interface {
 	QueryTasks(f storage.TaskFilter) ([]storage.Task, error)
 	QuerySessions(f storage.SessionFilter) ([]storage.Session, error)
 	QuerySteps(f storage.StepFilter) ([]storage.Step, error)
+	QueryRuns(f storage.RunFilter) ([]storage.Run, error)
 	InsertTask(t storage.Task) error
 	UpdateTaskState(id, state, feedback string) error
 	DeleteTask(id string) error
@@ -112,6 +112,12 @@ type (
 	asyncEventMsg  struct{}
 	clearLockedMsg struct{}
 )
+
+// runsMsg carries the run history fetched when the Review modal opens.
+type runsMsg struct {
+	runs []storage.Run
+	err  error
+}
 
 // Model is the Bubble Tea application state. It owns the view router and the
 // read-only by default interaction model.
@@ -167,6 +173,12 @@ type Model struct {
 	// Command palette state and the child process it drives.
 	palette paletteState
 	runner  *Runner
+
+	// Review modal state. Runs are fetched when the modal opens rather than on
+	// every poll tick, since they are only visible there.
+	runs      []storage.Run
+	runsErr   error
+	runCursor int
 }
 
 // Add Task modal field indices. The text inputs occupy 0..addNoFormatField-1;
@@ -262,6 +274,29 @@ func (m *Model) loadOnce() tea.Cmd {
 	}
 }
 
+// openReview shows the Review modal and fetches run history for it. Runs are
+// loaded on open rather than on every poll tick because nothing outside this
+// modal reads them.
+func (m *Model) openReview() tea.Cmd {
+	m.modal = ModalReview
+	m.runs, m.runsErr, m.runCursor = nil, nil, 0
+	if m.store == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		runs, err := m.store.QueryRuns(storage.RunFilter{})
+		return runsMsg{runs: runs, err: err}
+	}
+}
+
+// selectedRun returns the run under the Review modal's cursor.
+func (m *Model) selectedRun() (storage.Run, bool) {
+	if m.runCursor < 0 || m.runCursor >= len(m.runs) {
+		return storage.Run{}, false
+	}
+	return m.runs[m.runCursor], true
+}
+
 // queryDB runs all queries and returns a DBResultMsg.
 func (m *Model) queryDB() tea.Msg {
 	tasks, err := m.store.QueryTasks(storage.TaskFilter{})
@@ -314,6 +349,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.poller.SetChanged(false)
 		m.dbLocked = false
 		m.lockBanner = false
+		return m, nil
+
+	case runsMsg:
+		m.runs, m.runsErr = msg.runs, msg.err
+		m.runCursor = 0
 		return m, nil
 
 	case dbLockedMsg:
@@ -449,6 +489,11 @@ func (m *Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "c":
 		m.openPalette()
 		return m, nil
+	case "o":
+		m.modal = ModalObserve
+		return m, nil
+	case "R":
+		return m, m.openReview()
 	case "enter":
 		if m.modal == ModalNone {
 			return m.handleDrillIn()
@@ -661,16 +706,23 @@ func (m *Model) dispatchModalMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case ModalPalette:
 		return m.handlePaletteKey(key)
-	case ModalSchedule:
+	case ModalReview:
 		switch key.String() {
-		case "esc", "q":
+		case "esc", "enter", "q":
 			m.modal = ModalNone
-		case "enter":
-			m.openPalette()
-			m.selectPaletteCommand(scheduleSpecIndex())
+		case "j", "down":
+			if m.runCursor < len(m.runs)-1 {
+				m.runCursor++
+			}
+		case "k", "up":
+			if m.runCursor > 0 {
+				m.runCursor--
+			}
+		case "y":
+			m.copySelectedRunLog()
 		}
 		return m, nil
-	case ModalReview, ModalObserve:
+	case ModalObserve:
 		switch key.String() {
 		case "esc", "enter", "q":
 			m.modal = ModalNone

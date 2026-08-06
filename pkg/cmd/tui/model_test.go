@@ -60,6 +60,12 @@ func sampleStore() *stubStore {
 			{ID: 1, SessionID: "loop-t-1-0000", StepNum: 1, Role: "gate", Decision: "REJECTED", Output: "FAIL: TestLogin\n"},
 			{ID: 2, SessionID: "loop-t-1-0000", StepNum: 2, Role: "builder", Decision: "APPROVED"},
 		},
+		runs: []storage.Run{
+			{ID: "run-1", Kind: "craft", Project: "colony", Status: "complete", Approved: 3, Rejected: 1,
+				LogPath: "/tmp/run-1.log", StartedAt: now.Add(-30 * time.Minute)},
+			{ID: "run-2", Kind: "swarm", Project: "colony", Status: "running", Approved: 0, Rejected: 2,
+				StartedAt: now.Add(-5 * time.Minute)},
+		},
 	}
 }
 

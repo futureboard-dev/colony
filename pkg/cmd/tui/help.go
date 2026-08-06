@@ -27,6 +27,7 @@ var actionHelp = map[View][]helpEntry{
 		{"l", "loop control"},
 		{"c", "run command…"},
 		{"o", "observe"},
+		{"R", "review results"},
 	},
 	ViewQueue: {
 		{"a", "add task"},

@@ -103,6 +103,20 @@ func (m *Model) copySelectedSessionID() {
 	m.copyValue(m.sessions[m.cursor].ID, "Session ID")
 }
 
+// copySelectedRunLog puts the selected run's log path on the clipboard.
+func (m *Model) copySelectedRunLog() {
+	sel, ok := m.selectedRun()
+	if !ok {
+		m.notifier.Push("No run selected", ToastErr)
+		return
+	}
+	if sel.LogPath == "" {
+		m.notifier.Push("Run has no log path", ToastErr)
+		return
+	}
+	m.copyValue(sel.LogPath, "Log path")
+}
+
 // copyValue routes a copy through the clipboard fallback chain and reports
 // which mechanism carried it.
 func (m *Model) copyValue(value, label string) {

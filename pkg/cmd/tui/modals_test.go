@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -209,4 +210,62 @@ func TestGateFeedbackRendering(t *testing.T) {
 			t.Errorf("expected verbatim output, got %q", got)
 		}
 	})
+}
+
+// TestReviewModalShowsRunTallies covers the path from the R key to rendered
+// run data: the modal must fetch runs and show their approved/rejected counts
+// rather than the old "not yet persisted" placeholder.
+func TestReviewModalShowsRunTallies(t *testing.T) {
+	m := newTestModel(t, ViewDashboard, sampleStore())
+
+	out, cmd := m.Update(key("R"))
+	m = out.(*Model)
+	if m.modal != ModalReview {
+		t.Fatalf("R should open the Review modal, got modal %d", m.modal)
+	}
+	if cmd == nil {
+		t.Fatal("opening Review should issue a run query")
+	}
+
+	out, _ = m.Update(cmd())
+	m = out.(*Model)
+	if len(m.runs) != 2 {
+		t.Fatalf("expected 2 runs loaded, got %d (err %v)", len(m.runs), m.runsErr)
+	}
+
+	view := m.renderReviewModal(120, 40)
+	for _, want := range []string{"run-1", "3 approved / 1 rejected", "/tmp/run-1.log"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("review modal should show %q, got:\n%s", want, view)
+		}
+	}
+
+	// j moves the cursor, which swaps the expanded log line.
+	out, _ = m.Update(key("j"))
+	m = out.(*Model)
+	if sel, ok := m.selectedRun(); !ok || sel.ID != "run-2" {
+		t.Fatalf("j should select run-2, got %+v", sel)
+	}
+	if got := m.renderReviewModal(120, 40); !strings.Contains(got, "no log path recorded") {
+		t.Errorf("run-2 has no log path; modal should say so, got:\n%s", got)
+	}
+}
+
+// TestReviewModalReportsQueryFailure keeps the modal honest when storage is
+// unreadable instead of rendering an empty list that looks like "no runs".
+func TestReviewModalReportsQueryFailure(t *testing.T) {
+	st := sampleStore()
+	st.err = errors.New("database is locked")
+	m := newTestModel(t, ViewDashboard, st)
+
+	_, cmd := m.Update(key("R"))
+	out, _ := m.Update(cmd())
+	m = out.(*Model)
+
+	if m.runsErr == nil {
+		t.Fatal("expected the query error to be recorded")
+	}
+	if got := m.renderReviewModal(120, 40); !strings.Contains(got, "database is locked") {
+		t.Errorf("modal should surface the failure, got:\n%s", got)
+	}
 }

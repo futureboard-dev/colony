@@ -127,7 +127,7 @@ func (m *Model) renderTabBar(w int) string {
 var statusHints = map[View][2]string{
 	ViewDashboard: {
 		"[q]uit  [Enter] queue  [a]dd task  [l]oop ctrl  [c]ommand  [o]bserve",
-		"[1-5] views  [s]essions  [v] live output  [?]help",
+		"[R]eview  [1-5] views  [s]essions  [v] live output  [?]help",
 	},
 	ViewQueue: {
 		"[q]uit  [Enter] detail  [r]etry  [x]delete  [b]lock  [m]ark done",
@@ -183,8 +183,6 @@ func (m *Model) renderModal(w, h int) string {
 		return m.renderAddTaskModal(w, h)
 	case ModalLoopControl:
 		return m.renderLoopControlModal(w, h)
-	case ModalSchedule:
-		return m.renderScheduleModal(w, h)
 	case ModalConfirm:
 		return m.renderConfirmModal(w, h)
 	case ModalReview:
