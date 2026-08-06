@@ -1,6 +1,7 @@
 CREATE TABLE IF NOT EXISTS sessions (
     id           TEXT    PRIMARY KEY,
     mission_name TEXT    NOT NULL,
+    task_id      TEXT    NOT NULL DEFAULT '',
     started_at   DATETIME NOT NULL,
     finished_at  DATETIME,
     status       TEXT    NOT NULL DEFAULT 'running'

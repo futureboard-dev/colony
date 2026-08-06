@@ -129,11 +129,12 @@ type Model struct {
 
 	store Store
 
-	view    View
-	modal   Modal
-	confirm *ConfirmState
-	cursor  int
-	queue   QueueFilter
+	view     View
+	modal    Modal
+	confirm  *ConfirmState
+	cursor   int
+	queue    QueueFilter
+	sessFilt SessionsFilter
 
 	tasks      []storage.Task
 	sessions   []storage.Session
@@ -243,6 +244,7 @@ func New(opts Options, store Store) *Model {
 		view:        opts.StartView,
 		modal:       ModalNone,
 		queue:       QueueFilter{State: "", Sort: "created", Search: ""},
+		sessFilt:    SessionsFilter{Sort: "started"},
 		refresh:     refresh,
 		lastActive:  make(map[string]time.Time),
 		searchInput: search,
@@ -584,8 +586,28 @@ func (m *Model) handleViewKey(key tea.KeyMsg) (bool, tea.Cmd) {
 			return true, cmd
 		}
 	case ViewSessions:
-		if key.String() == "y" {
+		switch key.String() {
+		case "y":
 			m.copySelectedSessionID()
+			return true, nil
+		// Filter cycling. Each change can shrink the list, so the cursor is
+		// clamped back into range.
+		case "t":
+			m.sessFilt.Type = cycle(sessionTypes, m.sessFilt.Type)
+			m.clampCursor()
+			return true, nil
+		case "S":
+			m.sessFilt.Status = cycle(sessionStatuses, m.sessFilt.Status)
+			m.clampCursor()
+			return true, nil
+		case "f":
+			m.sessFilt.Sort = cycle(sessionSorts, m.sessFilt.Sort)
+			m.clampCursor()
+			return true, nil
+		// "T" scopes to the selected session's task, or clears the scope if one
+		// is already set.
+		case "T":
+			m.toggleSessionTaskScope()
 			return true, nil
 		}
 	case ViewLiveOutput:
@@ -817,6 +839,8 @@ func (m *Model) listLen() int {
 	switch m.view {
 	case ViewQueue:
 		return len(Apply(m.tasks, m.queue))
+	case ViewSessions:
+		return len(m.filteredSessions())
 	default:
 		return 0
 	}

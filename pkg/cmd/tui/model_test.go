@@ -53,8 +53,8 @@ func sampleStore() *stubStore {
 			{ID: "t-3", Description: "update docs", State: "done", CycleCount: 0, Lang: "go", CreatedAt: now.Add(-16 * time.Minute)},
 		},
 		sessions: []storage.Session{
-			{ID: "loop-t-1-0000", Status: "failed", StartedAt: now.Add(-2 * time.Minute)},
-			{ID: "loop-t-2-0000", Status: "completed", StartedAt: now.Add(-1 * time.Minute)},
+			{ID: "loop-t-1-0000", TaskID: "t-1", Status: "failed", StartedAt: now.Add(-2 * time.Minute)},
+			{ID: "loop-t-2-0000", TaskID: "t-2", Status: "completed", StartedAt: now.Add(-1 * time.Minute)},
 		},
 		steps: []storage.Step{
 			{ID: 1, SessionID: "loop-t-1-0000", StepNum: 1, Role: "gate", Decision: "REJECTED", Output: "FAIL: TestLogin\n"},

@@ -48,6 +48,10 @@ var actionHelp = map[View][]helpEntry{
 		{"y", "copy task id"},
 	},
 	ViewSessions: {
+		{"t", "cycle type filter"},
+		{"S", "cycle status filter"},
+		{"f", "cycle sort"},
+		{"T", "scope to task / clear"},
 		{"y", "copy session id"},
 		{"c", "run command…"},
 	},

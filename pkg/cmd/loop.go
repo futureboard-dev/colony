@@ -262,6 +262,7 @@ func runLoopRetryGate(cmd *cobra.Command, args []string) error {
 	if err := store.InsertSession(storage.Session{
 		ID:          sessID,
 		MissionName: m.Name,
+		TaskID:      task.ID,
 		StartedAt:   time.Now(),
 		Status:      "running",
 	}); err != nil {
@@ -570,6 +571,7 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 	if err := store.InsertSession(storage.Session{
 		ID:          sessID,
 		MissionName: m.Name,
+		TaskID:      task.ID,
 		StartedAt:   time.Now(),
 		Status:      "running",
 	}); err != nil {
@@ -838,6 +840,7 @@ func escalateTask(ctx context.Context, cfg *config.Config, root string, store *s
 	if err := store.InsertSession(storage.Session{
 		ID:          sessID,
 		MissionName: m.Name,
+		TaskID:      task.ID,
 		StartedAt:   time.Now(),
 		Status:      "running",
 	}); err != nil {

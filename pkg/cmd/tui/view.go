@@ -138,8 +138,8 @@ var statusHints = map[View][2]string{
 		"[y] copy id  [c]ommand  [1-5] views  [?]help",
 	},
 	ViewSessions: {
-		"[q]uit  [1-5] views  [y] copy session id  [c]ommand",
-		"[j/k] move  [?]help",
+		"[q]uit  [1-5] views  [t]ype  [S]tatus  [f]ilter sort  [T] task scope",
+		"[y] copy session id  [c]ommand  [j/k] move  [?]help",
 	},
 	ViewLiveOutput: {
 		"[s]top after current  [K]ill (SIGTERM)  [r]estart  [f]reeze  [j/k] scroll",

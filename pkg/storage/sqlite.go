@@ -36,9 +36,13 @@ type Step struct {
 type Session struct {
 	ID          string
 	MissionName string
-	StartedAt   time.Time
-	FinishedAt  *time.Time
-	Status      string
+	// TaskID links the session to the loop task that spawned it. Empty for
+	// standalone mission runs and for sessions recorded before the column
+	// existed — the link is not recoverable for those.
+	TaskID     string
+	StartedAt  time.Time
+	FinishedAt *time.Time
+	Status     string
 }
 
 // Run represents a craft or swarm pipeline run — the structured facts a
@@ -75,6 +79,7 @@ type RunFilter struct {
 type SessionFilter struct {
 	MissionName string
 	SessionID   string
+	TaskID      string
 	Status      string
 }
 
@@ -158,6 +163,7 @@ func Open(dbPath string) (*SQLiteStore, error) {
 		`ALTER TABLE tasks ADD COLUMN branch TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE tasks ADD COLUMN pr_url TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE steps ADD COLUMN output TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sessions ADD COLUMN task_id TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := db.Exec(alter); err != nil &&
 			!strings.Contains(err.Error(), "duplicate column") {
@@ -174,8 +180,8 @@ func (s *SQLiteStore) Close() error {
 
 func (s *SQLiteStore) InsertSession(sess Session) error {
 	_, err := s.db.Exec(
-		`INSERT OR REPLACE INTO sessions (id, mission_name, started_at, status) VALUES (?,?,?,?)`,
-		sess.ID, sess.MissionName, sess.StartedAt.UTC().Format(time.RFC3339), sess.Status,
+		`INSERT OR REPLACE INTO sessions (id, mission_name, task_id, started_at, status) VALUES (?,?,?,?,?)`,
+		sess.ID, sess.MissionName, sess.TaskID, sess.StartedAt.UTC().Format(time.RFC3339), sess.Status,
 	)
 	return err
 }
@@ -205,7 +211,7 @@ func (s *SQLiteStore) InsertStep(step Step) error {
 }
 
 func (s *SQLiteStore) QuerySessions(f SessionFilter) ([]Session, error) {
-	query := `SELECT id, mission_name, started_at, finished_at, status FROM sessions WHERE 1=1`
+	query := `SELECT id, mission_name, task_id, started_at, finished_at, status FROM sessions WHERE 1=1`
 	args := []any{}
 	if f.MissionName != "" {
 		query += " AND mission_name=?"
@@ -214,6 +220,10 @@ func (s *SQLiteStore) QuerySessions(f SessionFilter) ([]Session, error) {
 	if f.SessionID != "" {
 		query += " AND id=?"
 		args = append(args, f.SessionID)
+	}
+	if f.TaskID != "" {
+		query += " AND task_id=?"
+		args = append(args, f.TaskID)
 	}
 	if f.Status != "" {
 		query += " AND status=?"
@@ -231,7 +241,7 @@ func (s *SQLiteStore) QuerySessions(f SessionFilter) ([]Session, error) {
 		var sess Session
 		var startedStr string
 		var finishedStr *string
-		if err := rows.Scan(&sess.ID, &sess.MissionName, &startedStr, &finishedStr, &sess.Status); err != nil {
+		if err := rows.Scan(&sess.ID, &sess.MissionName, &sess.TaskID, &startedStr, &finishedStr, &sess.Status); err != nil {
 			return nil, err
 		}
 		sess.StartedAt, _ = time.Parse(time.RFC3339, startedStr)
@@ -254,6 +264,10 @@ func (s *SQLiteStore) DeleteSessions(f SessionFilter) (int64, error) {
 	if f.SessionID != "" {
 		where += " AND id=?"
 		args = append(args, f.SessionID)
+	}
+	if f.TaskID != "" {
+		where += " AND task_id=?"
+		args = append(args, f.TaskID)
 	}
 	if f.Status != "" {
 		where += " AND status=?"

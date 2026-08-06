@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
@@ -295,5 +296,116 @@ func TestDefaultDBPathDefault(t *testing.T) {
 	want := filepath.Join(".colony", "missions.db")
 	if got := DefaultDBPath(); got != want {
 		t.Errorf("expected %s, got %s", want, got)
+	}
+}
+
+func TestSessionTaskIDRoundTripAndFilter(t *testing.T) {
+	db := openTestDB(t)
+
+	now := time.Now()
+	for _, s := range []Session{
+		{ID: "loop-fix-auth-20260101-000000", MissionName: "loop-fix-auth", TaskID: "t-1", StartedAt: now, Status: "completed"},
+		{ID: "escalation-t-1-20260101-010000", MissionName: "escalation-fix-auth", TaskID: "t-1", StartedAt: now, Status: "failed"},
+		{ID: "loop-other-20260101-020000", MissionName: "loop-other", TaskID: "t-2", StartedAt: now, Status: "completed"},
+		{ID: "standalone-20260101-030000", MissionName: "some-mission", StartedAt: now, Status: "completed"},
+	} {
+		if err := db.InsertSession(s); err != nil {
+			t.Fatalf("InsertSession(%s): %v", s.ID, err)
+		}
+	}
+
+	t.Run("filters by task id", func(t *testing.T) {
+		sessions, err := db.QuerySessions(SessionFilter{TaskID: "t-1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(sessions) != 2 {
+			t.Fatalf("expected 2 sessions for t-1, got %d", len(sessions))
+		}
+		for _, s := range sessions {
+			if s.TaskID != "t-1" {
+				t.Errorf("session %s has TaskID %q, want t-1", s.ID, s.TaskID)
+			}
+		}
+	})
+
+	t.Run("standalone mission has empty task id", func(t *testing.T) {
+		sessions, err := db.QuerySessions(SessionFilter{SessionID: "standalone-20260101-030000"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(sessions) != 1 {
+			t.Fatalf("expected 1 session, got %d", len(sessions))
+		}
+		if sessions[0].TaskID != "" {
+			t.Errorf("expected empty TaskID, got %q", sessions[0].TaskID)
+		}
+	})
+
+	t.Run("empty filter returns all", func(t *testing.T) {
+		sessions, err := db.QuerySessions(SessionFilter{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(sessions) != 4 {
+			t.Errorf("expected 4 sessions, got %d", len(sessions))
+		}
+	})
+
+	t.Run("deletes by task id", func(t *testing.T) {
+		n, err := db.DeleteSessions(SessionFilter{TaskID: "t-2"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n != 1 {
+			t.Errorf("expected 1 deleted, got %d", n)
+		}
+	})
+}
+
+func TestSessionTaskIDMigratesLegacyDB(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "legacy.db")
+
+	// Build a database with the pre-task_id sessions table and a row in it.
+	legacy, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.Exec(`CREATE TABLE sessions (
+		id           TEXT    PRIMARY KEY,
+		mission_name TEXT    NOT NULL,
+		started_at   DATETIME NOT NULL,
+		finished_at  DATETIME,
+		status       TEXT    NOT NULL DEFAULT 'running'
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.Exec(
+		`INSERT INTO sessions (id, mission_name, started_at, status) VALUES (?,?,?,?)`,
+		"loop-old-20250101-000000", "loop-old", time.Now().UTC().Format(time.RFC3339), "completed",
+	); err != nil {
+		t.Fatal(err)
+	}
+	legacy.Close()
+
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open on legacy db: %v", err)
+	}
+	defer db.Close()
+
+	sessions, err := db.QuerySessions(SessionFilter{SessionID: "loop-old-20250101-000000"})
+	if err != nil {
+		t.Fatalf("QuerySessions after migration: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 legacy session, got %d", len(sessions))
+	}
+	if sessions[0].TaskID != "" {
+		t.Errorf("legacy session should have empty TaskID, got %q", sessions[0].TaskID)
+	}
+	if sessions[0].MissionName != "loop-old" {
+		t.Errorf("legacy mission_name lost: %q", sessions[0].MissionName)
 	}
 }

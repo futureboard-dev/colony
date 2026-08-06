@@ -172,6 +172,7 @@ type jsonTask struct {
 type jsonSession struct {
 	ID          string  `json:"id"`
 	MissionName string  `json:"mission_name"`
+	TaskID      string  `json:"task_id,omitempty"`
 	Status      string  `json:"status"`
 	StartedAt   string  `json:"started_at"`
 	FinishedAt  *string `json:"finished_at,omitempty"`
@@ -219,6 +220,7 @@ func emitJSONStatus(cmd *cobra.Command, root string, tasks []storage.Task, sessi
 		js := jsonSession{
 			ID:          s.ID,
 			MissionName: s.MissionName,
+			TaskID:      s.TaskID,
 			Status:      s.Status,
 			StartedAt:   s.StartedAt.Format(time.RFC3339),
 			Duration:    durationStr(s.StartedAt, s.FinishedAt),

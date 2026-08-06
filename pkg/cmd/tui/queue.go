@@ -149,14 +149,16 @@ func (m *Model) queueDetail(tasks []storage.Task, w, rows int) string {
 	return b.String()
 }
 
-// sessionsForTask returns sessions whose ID references the given task.
+// sessionsForTask returns sessions recorded against the given task. Sessions
+// written before the task_id column existed have an empty TaskID and never
+// match — their link is not recoverable.
 func (m *Model) sessionsForTask(taskID string) []storage.Session {
 	if taskID == "" {
 		return nil
 	}
 	var out []storage.Session
 	for _, s := range m.sessions {
-		if strings.Contains(s.ID, taskID) || s.MissionName == taskID {
+		if s.TaskID == taskID {
 			out = append(out, s)
 		}
 	}

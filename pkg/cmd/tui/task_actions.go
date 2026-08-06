@@ -96,11 +96,12 @@ func (m *Model) copySelectedTaskID() {
 
 // copySelectedSessionID puts the selected session's ID on the clipboard.
 func (m *Model) copySelectedSessionID() {
-	if m.cursor >= len(m.sessions) {
+	sessions := m.filteredSessions()
+	if m.cursor >= len(sessions) {
 		m.notifier.Push("No session selected", ToastErr)
 		return
 	}
-	m.copyValue(m.sessions[m.cursor].ID, "Session ID")
+	m.copyValue(sessions[m.cursor].ID, "Session ID")
 }
 
 // copySelectedRunLog puts the selected run's log path on the clipboard.

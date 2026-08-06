@@ -20,32 +20,64 @@ func (m *Model) renderSessions(w, h int) string {
 	tableH := clamp((h-filterH)/2, 5, h-filterH-6)
 	detailH := h - filterH - tableH
 
+	sessions := m.filteredSessions()
+	title := fmt.Sprintf("Sessions (%d)", len(sessions))
+	if len(sessions) != len(m.sessions) {
+		title = fmt.Sprintf("Sessions (%d of %d)", len(sessions), len(m.sessions))
+	}
+
 	return joinV(
 		m.theme.pane("Filter", m.sessionFilterBar(), w, filterH, false),
-		m.theme.pane(fmt.Sprintf("Sessions (%d)", len(m.sessions)),
-			m.sessionTable(w-2, tableH-2), w, tableH, true),
-		m.theme.pane("Session Detail", m.sessionDetail(w-2, detailH-2), w, detailH, false),
+		m.theme.pane(title, m.sessionTable(sessions, w-2, tableH-2), w, tableH, true),
+		m.theme.pane("Session Detail", m.sessionDetail(sessions, w-2, detailH-2), w, detailH, false),
 	)
 }
 
-// sessionFilterBar renders the session filters. Filter state is not yet
-// user-editable; the bar reports the active (default) selection.
+// filteredSessions applies the Sessions view filter. Every consumer of the
+// session list — table, detail pane, and cursor bounds — reads through this so
+// the cursor always indexes the same slice the user sees.
+func (m *Model) filteredSessions() []storage.Session {
+	return ApplySessions(m.sessions, m.sessFilt)
+}
+
+// sessionFilterBar renders the session filters and the key that cycles each.
 func (m *Model) sessionFilterBar() string {
-	return fmt.Sprintf(" %s %s   %s %s   %s %s",
-		m.theme.Dim.Render("Type:"), m.theme.Accent.Render("all"),
-		m.theme.Dim.Render("Status:"), m.theme.Accent.Render("all"),
-		m.theme.Dim.Render("Sort:"), m.theme.Accent.Render("started"))
+	field := func(key, label, val string) string {
+		if val == "" {
+			val = "all"
+		}
+		return fmt.Sprintf("%s%s %s",
+			m.theme.Dim.Render(label+":"), m.theme.Dim.Render("("+key+")"),
+			m.theme.Accent.Render(val))
+	}
+	parts := []string{
+		field("t", "Type", m.sessFilt.Type),
+		field("S", "Status", m.sessFilt.Status),
+		field("f", "Sort", m.sessFilt.Sort),
+	}
+	if m.sessFilt.TaskID != "" {
+		parts = append(parts, fmt.Sprintf("%s%s %s",
+			m.theme.Dim.Render("Task:"), m.theme.Dim.Render("(T)"),
+			m.theme.Accent.Render(m.sessFilt.TaskID)))
+	} else {
+		parts = append(parts, m.theme.Dim.Render("Task:(T) all"))
+	}
+	return " " + strings.Join(parts, "   ")
 }
 
 // sessionTable renders the session list, windowed around the cursor.
-func (m *Model) sessionTable(w, rows int) string {
-	header := m.theme.Dim.Render(fmt.Sprintf("   %-36s %-12s %-9s %s",
-		"SESSION ID", "STATUS", "DURATION", "STARTED"))
-	if len(m.sessions) == 0 {
-		return header + "\n\n" + m.theme.Dim.Render("   (no sessions yet)")
+func (m *Model) sessionTable(sessions []storage.Session, w, rows int) string {
+	header := m.theme.Dim.Render(fmt.Sprintf("   %-32s %-12s %-9s %-12s %s",
+		"SESSION ID", "STATUS", "DURATION", "TASK", "STARTED"))
+	if len(sessions) == 0 {
+		empty := "   (no sessions yet)"
+		if len(m.sessions) > 0 {
+			empty = "   (no sessions match the filter)"
+		}
+		return header + "\n\n" + m.theme.Dim.Render(empty)
 	}
 
-	visible := m.sessions
+	visible := sessions
 	truncated := false
 	if len(visible) > maxVisibleSessions {
 		visible, truncated = visible[:maxVisibleSessions], true
@@ -61,9 +93,10 @@ func (m *Model) sessionTable(w, rows int) string {
 			marker = m.theme.icon("▶")
 		}
 		icon, style := m.sessionBadge(s.Status)
-		row := fmt.Sprintf(" %s %-36s %s %-10s %-9s %s",
-			marker, truncate(s.ID, 36), icon, s.Status,
+		row := fmt.Sprintf(" %s %-32s %s %-10s %-9s %-12s %s",
+			marker, truncate(s.ID, 32), icon, s.Status,
 			humanDuration(sessionDuration(s.StartedAt, s.FinishedAt)),
+			truncate(or(s.TaskID, "—"), 12),
 			timeAgo(s.StartedAt))
 
 		if i == m.cursor {
@@ -83,16 +116,19 @@ func (m *Model) sessionTable(w, rows int) string {
 }
 
 // sessionDetail renders the selected session's metadata and step timeline.
-func (m *Model) sessionDetail(w, rows int) string {
-	if len(m.sessions) == 0 || m.cursor >= len(m.sessions) {
+func (m *Model) sessionDetail(sessions []storage.Session, w, rows int) string {
+	if len(sessions) == 0 || m.cursor >= len(sessions) {
 		return m.theme.Dim.Render("  (no session selected)")
 	}
-	s := m.sessions[m.cursor]
+	s := sessions[m.cursor]
 	icon, style := m.sessionBadge(s.Status)
 
 	var b strings.Builder
 	fmt.Fprintf(&b, " %s %s  %s\n", m.theme.Dim.Render("Session:"),
 		m.theme.Accent.Render(s.ID), style.Render(icon+" "+s.Status))
+	fmt.Fprintf(&b, " %s %s   %s %s\n", m.theme.Dim.Render("Task:"),
+		m.theme.Accent.Render(or(s.TaskID, "— (not linked)")),
+		m.theme.Dim.Render("Mission:"), m.theme.Accent.Render(s.MissionName))
 
 	finished := "—"
 	if s.FinishedAt != nil {
@@ -104,7 +140,7 @@ func (m *Model) sessionDetail(w, rows int) string {
 		s.StartedAt.Format("2006-01-02 15:04:05"), finished)))
 
 	b.WriteString(m.theme.Subtitle.Render(" Step timeline:") + "\n")
-	b.WriteString(m.stepTimeline(s.ID, w, rows-4))
+	b.WriteString(m.stepTimeline(s.ID, w, rows-5))
 	return b.String()
 }
 
@@ -149,6 +185,29 @@ func (m *Model) stepTimeline(sessionID string, w, rows int) string {
 		}
 	}
 	return b.String()
+}
+
+// toggleSessionTaskScope scopes the Sessions view to the selected session's
+// task, or clears an existing scope. Sessions with no recorded task cannot be
+// scoped to.
+func (m *Model) toggleSessionTaskScope() {
+	if m.sessFilt.TaskID != "" {
+		m.sessFilt.TaskID = ""
+		m.clampCursor()
+		return
+	}
+	sessions := m.filteredSessions()
+	if m.cursor >= len(sessions) {
+		m.notifier.Push("No session selected", ToastErr)
+		return
+	}
+	taskID := sessions[m.cursor].TaskID
+	if taskID == "" {
+		m.notifier.Push("Session is not linked to a task", ToastErr)
+		return
+	}
+	m.sessFilt.TaskID = taskID
+	m.clampCursor()
 }
 
 // sessionBadge maps a session status to its icon and style.
