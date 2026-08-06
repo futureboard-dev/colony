@@ -126,24 +126,24 @@ func (m *Model) renderTabBar(w int) string {
 // statusHints are the context-sensitive keybinds per view, as two lines.
 var statusHints = map[View][2]string{
 	ViewDashboard: {
-		"[q]uit  [Enter] queue  [s]essions  [a]dd task  [l]oop ctrl  [o]bserve",
-		"[r]eview  [v] live output  [?]help",
+		"[q]uit  [Enter] queue  [a]dd task  [l]oop ctrl  [c]ommand  [o]bserve",
+		"[1-5] views  [s]essions  [v] live output  [?]help",
 	},
 	ViewQueue: {
-		"[q]uit  [d]ashboard  [Enter] detail  [r]etry  [x]delete  [c]lose  [b]lock",
-		"[m]ark done  [e]dit spec  [s]essions  [f]ilter  [R]eview  [?]help",
+		"[q]uit  [Enter] detail  [r]etry  [x]delete  [b]lock  [m]ark done",
+		"[e]dit spec  [y] copy id  [a]dd  [c]ommand  [/]search  [f]ilter  [?]help",
 	},
 	ViewTaskDetail: {
-		"[q]uit  [Esc] back  [r]etry  [b]lock  [m]ark done  [x]delete  [e]dit spec",
-		"[R]eview  [s]essions  [y] copy id  [v] live output  [?]help",
+		"[q]uit  [Esc] back  [r]etry  [b]lock  [m]ark done  [x]delete",
+		"[y] copy id  [c]ommand  [1-5] views  [?]help",
 	},
 	ViewSessions: {
-		"[q]uit  [d]ashboard  [Enter] task  [v] log tail  [t]ask filter  [R]eview",
-		"[c]opy session id  [?]help",
+		"[q]uit  [1-5] views  [y] copy session id  [c]ommand",
+		"[j/k] move  [?]help",
 	},
 	ViewLiveOutput: {
 		"[s]top after current  [k]ill (SIGTERM)  [r]estart  [f]reeze scroll",
-		"[d]ashboard  [q]uit  [C]lear output  [w]rap lines  [?]help",
+		"[C]lear output  [w]rap lines  [c]ommand  [1-5] views  [q]uit  [?]help",
 	},
 }
 
@@ -193,6 +193,8 @@ func (m *Model) renderModal(w, h int) string {
 		return m.renderObserveModal(w, h)
 	case ModalHelp:
 		return m.renderHelp(w, h)
+	case ModalPalette:
+		return m.renderPaletteModal(w, h)
 	}
 	return ""
 }

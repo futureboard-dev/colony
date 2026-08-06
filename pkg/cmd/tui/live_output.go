@@ -66,7 +66,10 @@ func (m *Model) liveHeader(w int) string {
 	st := m.theme.LoopStatusStyle(label)
 
 	source := m.theme.Dim.Render("colony loop (not running)")
-	if pid > 0 {
+	switch {
+	case m.runner != nil && m.runner.Running():
+		source = "colony " + m.runner.Label() + " (attached)"
+	case pid > 0:
 		source = fmt.Sprintf("colony loop (PID %d)", pid)
 	}
 
@@ -81,13 +84,13 @@ func (m *Model) liveHeader(w int) string {
 	return b.String()
 }
 
-// liveBody renders the buffered output tail. The streaming source (subprocess
-// pipe / .colony/loop.log tail) is not wired yet, so an unfed buffer reports
-// that rather than inventing output.
+// liveBody renders the buffered output tail. The buffer is fed by processes
+// this TUI starts; a loop started elsewhere writes to its own log instead.
 func (m *Model) liveBody(w, rows int) string {
 	if m.output == nil || m.output.Len() == 0 {
-		return "\n " + m.theme.Dim.Render("(no output captured — the loop log stream is not attached)") +
-			"\n " + m.theme.Dim.Render("Start a loop with [r] or view logs with: tail -f .colony/loop.log")
+		return "\n " + m.theme.Dim.Render("(no output captured — nothing has been started from this TUI)") +
+			"\n " + m.theme.Dim.Render("Start one with [l] loop control or [c] run command…") +
+			"\n " + m.theme.Dim.Render("For a loop started elsewhere: tail -f .colony/loop.log")
 	}
 
 	var b strings.Builder

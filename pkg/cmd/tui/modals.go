@@ -118,12 +118,13 @@ func (m *Model) renderLoopControlModal(frameW, frameH int) string {
 	b.WriteString("\n" + m.theme.Subtitle.Render(" ── Controls ──") + "\n")
 	b.WriteString(m.styleHints("[s] Stop after current task   (sentinel file)") + "\n")
 	b.WriteString(m.styleHints("[K] Kill now (SIGTERM)        (needs PID file)") + "\n")
-	b.WriteString(m.styleHints("[r] Restart loop              (stop + start)") + "\n")
+	b.WriteString(m.styleHints("[r] Restart loop              (kill + start)") + "\n")
 
 	b.WriteString("\n" + m.theme.Subtitle.Render(" ── When idle ──") + "\n")
 	b.WriteString(m.styleHints("[Enter] Run once (--once)") + "\n")
 	b.WriteString(m.styleHints("[b] Run continuously") + "\n")
-	b.WriteString(m.styleHints("[i] Run once interactive") + "\n")
+	b.WriteString(m.styleHints("[i] Run once interactive      (hands over the terminal)") + "\n")
+	b.WriteString(m.styleHints("[c] Run with flags…           (command palette)") + "\n")
 	b.WriteString("\n" + m.styleHints("[Esc] close"))
 
 	return m.theme.modalBox("Loop Control", b.String(), w)

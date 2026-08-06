@@ -25,17 +25,18 @@ var actionHelp = map[View][]helpEntry{
 	ViewDashboard: {
 		{"a", "add task"},
 		{"l", "loop control"},
+		{"c", "run command…"},
 		{"o", "observe"},
-		{"v", "live output"},
 	},
 	ViewQueue: {
 		{"a", "add task"},
+		{"c", "run command…"},
 		{"r", "retry task"},
 		{"x", "delete task"},
 		{"m", "mark done"},
 		{"b", "block task"},
 		{"e", "edit spec ($EDITOR)"},
-		{"y", "copy to clipboard"},
+		{"y", "copy task id"},
 		{"f", "cycle sort order"},
 	},
 	ViewTaskDetail: {
@@ -46,9 +47,8 @@ var actionHelp = map[View][]helpEntry{
 		{"y", "copy task id"},
 	},
 	ViewSessions: {
-		{"Enter", "open task"},
-		{"v", "tail log"},
-		{"c", "copy session id"},
+		{"y", "copy session id"},
+		{"c", "run command…"},
 	},
 	ViewLiveOutput: {
 		{"s", "stop after current"},

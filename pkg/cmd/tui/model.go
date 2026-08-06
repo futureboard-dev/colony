@@ -70,6 +70,7 @@ const (
 	ModalObserve
 	ModalConfirm
 	ModalHelp
+	ModalPalette
 )
 
 // Options carries the flag-derived configuration into the model.
@@ -162,6 +163,10 @@ type Model struct {
 	addErr      string
 	addInputs   []textinput.Model
 	addFocus    int
+
+	// Command palette state and the child process it drives.
+	palette paletteState
+	runner  *Runner
 }
 
 // Add Task modal field indices. The text inputs occupy 0..addNoFormatField-1;
@@ -227,6 +232,7 @@ func New(opts Options, store Store) *Model {
 		searchInput: search,
 		output:      newRingBuffer(LiveOutputCapacity),
 		addInputs:   []textinput.Model{desc, spec, base, lang},
+		runner:      NewRunner(),
 	}
 	if m.view == ViewTaskDetail {
 		m.view = ViewQueue // task detail requires a selected task
@@ -324,6 +330,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case asyncEventMsg:
 		// Async toasts dismiss/refresh on keypress; heartbeat keeps visuals live.
 		return m, tea.Tick(m.refresh, func(time.Time) tea.Msg { return pollTickMsg{} })
+
+	case outputLineMsg:
+		return m, m.handleOutputLine(msg.line)
+
+	case processExitedMsg:
+		return m, m.handleProcessExit(msg)
+
+	case editorFinishedMsg:
+		if msg.err != nil {
+			m.notifier.Push("Editor failed: "+msg.err.Error(), ToastErr)
+		}
+		return m, m.loadOnce()
 	}
 
 	if m.tooSmall {
@@ -428,6 +446,9 @@ func (m *Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "l":
 		m.modal = ModalLoopControl
 		return m, nil
+	case "c":
+		m.openPalette()
+		return m, nil
 	case "enter":
 		if m.modal == ModalNone {
 			return m.handleDrillIn()
@@ -454,10 +475,6 @@ func (m *Model) handleKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cursor--
 		}
 		return m, nil
-	case "f":
-		// Cycle sort order for the queue / focus filter bar.
-		m.queue.Sort = nextSort(m.queue.Sort)
-		return m, nil
 	}
 	return m, nil
 }
@@ -472,6 +489,26 @@ func (m *Model) handleViewKey(key tea.KeyMsg) (bool, tea.Cmd) {
 			m.searchInput.SetValue(m.queue.Search)
 			return true, m.searchInput.Focus()
 		}
+		if handled, cmd := m.handleTaskActionKey(key); handled {
+			return true, cmd
+		}
+		switch key.String() {
+		case "e":
+			return true, m.editSelectedSpec()
+		case "f":
+			// Sort order is a queue concept; it means nothing in other views.
+			m.queue.Sort = nextSort(m.queue.Sort)
+			return true, nil
+		}
+	case ViewTaskDetail:
+		if handled, cmd := m.handleTaskActionKey(key); handled {
+			return true, cmd
+		}
+	case ViewSessions:
+		if key.String() == "y" {
+			m.copySelectedSessionID()
+			return true, nil
+		}
 	case ViewLiveOutput:
 		switch key.String() {
 		case "f":
@@ -484,7 +521,36 @@ func (m *Model) handleViewKey(key tea.KeyMsg) (bool, tea.Cmd) {
 			m.output.Clear()
 			m.notifier.Push("Output cleared", ToastOK)
 			return true, nil
+		case "s":
+			m.stopLoop()
+			return true, nil
+		case "k":
+			m.killLoop()
+			return true, nil
+		case "r":
+			return true, m.restartLoop()
 		}
+	}
+	return false, nil
+}
+
+// handleTaskActionKey handles the task mutations shared by the Queue and Task
+// Detail views. Both select through the queue cursor, so the actions are
+// identical in each.
+func (m *Model) handleTaskActionKey(key tea.KeyMsg) (bool, tea.Cmd) {
+	switch key.String() {
+	case "r":
+		return true, m.retryTask()
+	case "b":
+		return true, m.blockTask()
+	case "m":
+		return true, m.markTaskDone()
+	case "x":
+		m.confirmDeleteTask()
+		return true, nil
+	case "y":
+		m.copySelectedTaskID()
+		return true, nil
 	}
 	return false, nil
 }
@@ -577,12 +643,31 @@ func (m *Model) dispatchModalMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch key.String() {
 		case "esc", "q":
 			m.modal = ModalNone
+		case "s":
+			m.stopLoop()
+		case "K":
+			m.killLoop()
+		case "r":
+			return m, m.restartLoop()
+		case "enter":
+			return m, m.startLoop("loop --once", []string{"loop", "--once"})
+		case "b":
+			return m, m.startLoop("loop", []string{"loop"})
+		case "i":
+			return m, m.runInteractiveLoop()
+		case "c":
+			m.openPalette()
 		}
 		return m, nil
+	case ModalPalette:
+		return m.handlePaletteKey(key)
 	case ModalSchedule:
 		switch key.String() {
 		case "esc", "q":
 			m.modal = ModalNone
+		case "enter":
+			m.openPalette()
+			m.selectPaletteCommand(scheduleSpecIndex())
 		}
 		return m, nil
 	case ModalReview, ModalObserve:
@@ -599,12 +684,16 @@ func (m *Model) dispatchModalMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *Model) handleConfirmKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch key.String() {
 	case "enter":
+		var cmd tea.Cmd
 		if m.confirm != nil && m.confirm.Action != nil {
+			// Actions report their own outcome; refresh so the result is visible
+			// before the next poll tick.
 			m.confirm.Action(m)
-			m.notifier.Push("Action completed", ToastOK)
+			cmd = m.loadOnce()
 		}
 		m.modal = ModalNone
 		m.confirm = nil
+		return m, cmd
 	case "esc":
 		// Cancel leaves the model unchanged.
 		m.modal = ModalNone
