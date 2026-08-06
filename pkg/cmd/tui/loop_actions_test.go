@@ -112,24 +112,36 @@ func TestProcessExitReportsOutcome(t *testing.T) {
 	})
 }
 
-func TestFrozenOutputDropsStreamedLines(t *testing.T) {
+func TestFrozenOutputKeepsBufferingButStaysPinned(t *testing.T) {
 	m := newTestModel(t, ViewLiveOutput, sampleStore())
+	m.appendOutput("first")
 	m.frozen = true
-	m.handleOutputLine("should not appear")
-	if m.output.Len() != 0 {
-		t.Error("frozen output must not accept new lines")
+
+	m.handleOutputLine("second")
+	m.handleOutputLine("third")
+	if m.output.Len() != 3 {
+		t.Errorf("frozen output must keep buffering, got %d lines", m.output.Len())
+	}
+	if m.scrollOff != 2 {
+		t.Errorf("frozen view should stay pinned, scrollOff = %d, want 2", m.scrollOff)
+	}
+	if got := m.output.Window(m.scrollOff, 1); len(got) != 1 || got[0] != "first" {
+		t.Errorf("frozen view shows %v, want the pinned line", got)
 	}
 
-	m.frozen = false
-	m.handleOutputLine("should appear")
-	if m.output.Len() != 1 {
-		t.Error("unfrozen output should accept lines")
+	m.scrollOutputBottom()
+	m.handleOutputLine("fourth")
+	if m.scrollOff != 0 {
+		t.Errorf("following the tail should keep scrollOff at 0, got %d", m.scrollOff)
+	}
+	if got := m.output.Window(0, 1); got[0] != "fourth" {
+		t.Errorf("unfrozen view shows %q, want the newest line", got[0])
 	}
 }
 
 func TestLiveOutputKeysAreConsumedNotRoutedToViews(t *testing.T) {
 	// "s" and "k" are global view/navigation keys elsewhere; in Live Output
-	// they must mean stop and kill instead.
+	// they must mean stop and scroll back instead.
 	m := newTestModel(t, ViewLiveOutput, sampleStore())
 	m.opts.ColonyDir = t.TempDir()
 

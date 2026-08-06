@@ -19,6 +19,9 @@ const loopStopFile = "loop.stop"
 // outputLineMsg carries one line of child-process output into the update loop.
 type outputLineMsg struct{ line string }
 
+// logLineMsg carries one line tailed from .colony/loop.log.
+type logLineMsg struct{ line string }
+
 // processExitedMsg reports that the running child finished.
 type processExitedMsg struct {
 	label string

@@ -147,6 +147,10 @@ func key(s string) tea.KeyMsg {
 		"up":     tea.KeyUp,
 		"ctrl+c": tea.KeyCtrlC,
 		"tab":    tea.KeyTab,
+		"pgup":   tea.KeyPgUp,
+		"pgdown": tea.KeyPgDown,
+		"home":   tea.KeyHome,
+		"end":    tea.KeyEnd,
 	}
 	if t, ok := special[s]; ok {
 		return tea.KeyMsg{Type: t}

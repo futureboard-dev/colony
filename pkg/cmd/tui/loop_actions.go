@@ -33,7 +33,7 @@ func (m *Model) startLoop(label string, args []string) tea.Cmd {
 		return nil
 	}
 
-	m.output.Push(m.theme.icon("▶") + " colony " + strings.Join(args, " "))
+	m.appendOutput(m.theme.icon("▶") + " colony " + strings.Join(args, " "))
 	m.view = ViewLiveOutput
 	m.modal = ModalNone
 	m.notifier.Push("Started "+label, ToastOK)
@@ -67,7 +67,7 @@ func (m *Model) stopLoop() {
 		m.notifier.Push("Stop failed: "+err.Error(), ToastErr)
 		return
 	}
-	m.output.Push(m.theme.icon("◷") + " stop requested — will exit after the current task")
+	m.appendOutput(m.theme.icon("◷") + " stop requested — will exit after the current task")
 	m.notifier.Push("Stop signal sent", ToastOK)
 }
 
@@ -79,7 +79,7 @@ func (m *Model) killLoop() {
 			m.notifier.Push("Kill failed: "+err.Error(), ToastErr)
 			return
 		}
-		m.output.Push(m.theme.icon("✗") + " SIGTERM sent")
+		m.appendOutput(m.theme.icon("✗") + " SIGTERM sent")
 		m.notifier.Push("SIGTERM sent", ToastOK)
 		return
 	}
@@ -133,22 +133,29 @@ func (m *Model) runPaletteCommand() tea.Cmd {
 	return m.startLoop(spec.Name, argv)
 }
 
-// handleOutputLine appends a streamed line unless the view is frozen.
+// handleOutputLine buffers a streamed line and re-arms the reader.
 func (m *Model) handleOutputLine(line string) tea.Cmd {
-	if !m.frozen {
-		m.output.Push(line)
-	}
+	m.appendOutput(line)
 	return m.readOutput()
+}
+
+// appendOutput buffers a line. A frozen view keeps collecting output but stays
+// pinned to the lines it is showing, so the offset grows with the buffer.
+func (m *Model) appendOutput(line string) {
+	m.output.Push(line)
+	if m.frozen {
+		m.scrollOff = clampScroll(m.scrollOff+1, m.output.Len())
+	}
 }
 
 // handleProcessExit reports the child's outcome and refreshes the queue, since
 // a finished run almost always changed task state.
 func (m *Model) handleProcessExit(msg processExitedMsg) tea.Cmd {
 	if msg.err != nil {
-		m.output.Push(m.theme.icon("✗") + " " + msg.label + " exited: " + msg.err.Error())
+		m.appendOutput(m.theme.icon("✗") + " " + msg.label + " exited: " + msg.err.Error())
 		m.notifier.Push(msg.label+" failed: "+msg.err.Error(), ToastErr)
 	} else {
-		m.output.Push(m.theme.icon("✓") + " " + msg.label + " finished")
+		m.appendOutput(m.theme.icon("✓") + " " + msg.label + " finished")
 		m.notifier.Push(msg.label+" finished", ToastOK)
 	}
 	return m.loadOnce()

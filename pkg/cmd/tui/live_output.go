@@ -34,6 +34,28 @@ func (r *ringBuffer) Tail(n int) []string {
 	return r.lines[len(r.lines)-n:]
 }
 
+// Window returns up to n lines ending offset lines above the newest one, which
+// is how the Live Output view scrolls back without copying the buffer.
+func (r *ringBuffer) Window(offset, n int) []string {
+	if n <= 0 || len(r.lines) == 0 {
+		return nil
+	}
+	end := len(r.lines) - clampScroll(offset, len(r.lines))
+	start := maxInt(0, end-n)
+	return r.lines[start:end]
+}
+
+// clampScroll bounds a scrollback offset so at least one line stays visible.
+func clampScroll(offset, total int) int {
+	if offset < 0 || total == 0 {
+		return 0
+	}
+	if offset > total-1 {
+		return total - 1
+	}
+	return offset
+}
+
 // Len reports the number of buffered lines.
 func (r *ringBuffer) Len() int { return len(r.lines) }
 
@@ -54,6 +76,10 @@ func (m *Model) renderLiveOutput(w, h int) string {
 
 // liveTitle labels the output pane with its scroll state.
 func (m *Model) liveTitle() string {
+	if m.scrollOff > 0 {
+		return fmt.Sprintf("Live Output (%d lines) — FROZEN, %d below",
+			m.output.Len(), clampScroll(m.scrollOff, m.output.Len()))
+	}
 	if m.frozen {
 		return fmt.Sprintf("Live Output (%d lines) — FROZEN", m.output.Len())
 	}
@@ -84,17 +110,17 @@ func (m *Model) liveHeader(w int) string {
 	return b.String()
 }
 
-// liveBody renders the buffered output tail. The buffer is fed by processes
-// this TUI starts; a loop started elsewhere writes to its own log instead.
+// liveBody renders the visible slice of the output buffer, which is fed both by
+// processes this TUI starts and by the tailer following .colony/loop.log.
 func (m *Model) liveBody(w, rows int) string {
 	if m.output == nil || m.output.Len() == 0 {
-		return "\n " + m.theme.Dim.Render("(no output captured — nothing has been started from this TUI)") +
-			"\n " + m.theme.Dim.Render("Start one with [l] loop control or [c] run command…") +
-			"\n " + m.theme.Dim.Render("For a loop started elsewhere: tail -f .colony/loop.log")
+		return "\n " + m.theme.Dim.Render("(no output yet — nothing started here and .colony/loop.log is quiet)") +
+			"\n " + m.theme.Dim.Render("Start one with [l] loop control or [c] run command…")
 	}
 
+	hidden := clampScroll(m.scrollOff, m.output.Len())
 	var b strings.Builder
-	for _, line := range m.output.Tail(rows) {
+	for _, line := range m.output.Window(hidden, rows) {
 		if m.wrapLines {
 			for _, seg := range wrapText(line, w-2) {
 				b.WriteString(" " + seg + "\n")
@@ -103,8 +129,48 @@ func (m *Model) liveBody(w, rows int) string {
 		}
 		b.WriteString(" " + truncate(line, w-2) + "\n")
 	}
-	if !m.frozen {
+	switch {
+	case hidden > 0:
+		b.WriteString(scrollHint(m.theme, hidden))
+	case !m.frozen:
 		b.WriteString(m.theme.Dim.Render(" ── end of live output ──"))
 	}
 	return b.String()
+}
+
+// liveRows is how many output lines fit in the pane at the current frame size.
+// It mirrors renderLiveOutput's arithmetic so paging moves exactly one screen.
+func (m *Model) liveRows() int {
+	_, h := m.frameSize()
+	bodyH := h - tabBarHeight - statusHeight
+	if m.lockBanner {
+		bodyH--
+	}
+	return maxInt(1, maxInt(3, bodyH-4)-2)
+}
+
+// scrollOutput moves the view n lines back through the buffer (negative scrolls
+// toward the newest line). Scrolling back freezes auto-scroll; returning to the
+// bottom resumes it, the way a log pager behaves.
+func (m *Model) scrollOutput(n int) {
+	if m.output == nil {
+		return
+	}
+	m.scrollOff = clampScroll(m.scrollOff+n, m.output.Len())
+	m.frozen = m.scrollOff > 0
+}
+
+// scrollOutputBottom jumps back to the newest line and resumes auto-scroll.
+func (m *Model) scrollOutputBottom() {
+	m.scrollOff = 0
+	m.frozen = false
+}
+
+// scrollOutputTop jumps to the oldest buffered line.
+func (m *Model) scrollOutputTop() {
+	if m.output == nil {
+		return
+	}
+	m.scrollOutputBottom()
+	m.scrollOutput(m.output.Len())
 }

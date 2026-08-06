@@ -53,7 +53,7 @@ var actionHelp = map[View][]helpEntry{
 	},
 	ViewLiveOutput: {
 		{"s", "stop after current"},
-		{"k", "kill (SIGTERM)"},
+		{"K", "kill (SIGTERM)"},
 		{"r", "restart loop"},
 		{"f", "freeze scroll"},
 		{"w", "wrap lines"},

@@ -149,10 +149,14 @@ type Model struct {
 	searching   bool
 	searchInput textinput.Model
 
-	// Live Output state.
+	// Live Output state. scrollOff counts lines between the newest line and the
+	// bottom of the visible window; tailer follows .colony/loop.log so a loop
+	// started outside this TUI still shows output.
 	output    *ringBuffer
 	frozen    bool
 	wrapLines bool
+	scrollOff int
+	tailer    *LogTailer
 
 	refresh      time.Duration
 	refreshCount int
@@ -246,6 +250,9 @@ func New(opts Options, store Store) *Model {
 		addInputs:   []textinput.Model{desc, spec, base, lang},
 		runner:      NewRunner(),
 	}
+	if opts.ColonyDir != "" {
+		m.tailer = NewLogTailer(filepath.Join(opts.ColonyDir, loopLogFile))
+	}
 	if m.view == ViewTaskDetail {
 		m.view = ViewQueue // task detail requires a selected task
 	}
@@ -255,13 +262,32 @@ func New(opts Options, store Store) *Model {
 	return m
 }
 
-// Init returns the initial commands: a refresh tick and toast clock.
+// Init returns the initial commands: a refresh tick, the toast clock, and the
+// reader for the loop log tailer.
 func (m *Model) Init() tea.Cmd {
-	return tea.Batch(
+	cmds := []tea.Cmd{
 		tickCmd(m.refresh),
 		tea.Tick(250*time.Millisecond, func(time.Time) tea.Msg { return toastTickMsg{} }),
 		m.loadOnce(),
-	)
+	}
+	if m.tailer != nil {
+		go m.tailer.Run()
+		cmds = append(cmds, m.readLogLine())
+	}
+	return tea.Batch(cmds...)
+}
+
+// readLogLine pulls one tailed log line and re-arms itself, the same way
+// readOutput drains the child-process channel.
+func (m *Model) readLogLine() tea.Cmd {
+	lines := m.tailer.Lines()
+	return func() tea.Msg {
+		line, ok := <-lines
+		if !ok {
+			return nil
+		}
+		return logLineMsg{line: line}
+	}
 }
 
 // loadOnce performs the first DB read and seeds the poller high-water mark.
@@ -373,6 +399,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case outputLineMsg:
 		return m, m.handleOutputLine(msg.line)
+
+	case logLineMsg:
+		// A process this TUI started already streams into the buffer; the log
+		// would interleave a second copy of the same run.
+		if m.runner == nil || !m.runner.Running() {
+			m.appendOutput(msg.line)
+		}
+		return m, m.readLogLine()
 
 	case processExitedMsg:
 		return m, m.handleProcessExit(msg)
@@ -558,22 +592,46 @@ func (m *Model) handleViewKey(key tea.KeyMsg) (bool, tea.Cmd) {
 		switch key.String() {
 		case "f":
 			m.frozen = !m.frozen
+			if !m.frozen {
+				m.scrollOff = 0
+			}
 			return true, nil
 		case "w":
 			m.wrapLines = !m.wrapLines
 			return true, nil
 		case "C":
 			m.output.Clear()
+			m.scrollOutputBottom()
 			m.notifier.Push("Output cleared", ToastOK)
 			return true, nil
 		case "s":
 			m.stopLoop()
 			return true, nil
-		case "k":
+		// Kill is "K" here, matching the loop-control modal, so a mistyped "k"
+		// scrolls instead of terminating the run.
+		case "K":
 			m.killLoop()
 			return true, nil
 		case "r":
 			return true, m.restartLoop()
+		case "k", "up":
+			m.scrollOutput(1)
+			return true, nil
+		case "j", "down":
+			m.scrollOutput(-1)
+			return true, nil
+		case "pgup":
+			m.scrollOutput(m.liveRows())
+			return true, nil
+		case "pgdown":
+			m.scrollOutput(-m.liveRows())
+			return true, nil
+		case "g", "home":
+			m.scrollOutputTop()
+			return true, nil
+		case "G", "end":
+			m.scrollOutputBottom()
+			return true, nil
 		}
 	}
 	return false, nil

@@ -142,8 +142,8 @@ var statusHints = map[View][2]string{
 		"[j/k] move  [?]help",
 	},
 	ViewLiveOutput: {
-		"[s]top after current  [k]ill (SIGTERM)  [r]estart  [f]reeze scroll",
-		"[C]lear output  [w]rap lines  [c]ommand  [1-5] views  [q]uit  [?]help",
+		"[s]top after current  [K]ill (SIGTERM)  [r]estart  [f]reeze  [j/k] scroll",
+		"[PgUp/PgDn] page  [G] follow  [C]lear  [w]rap  [c]ommand  [q]uit  [?]help",
 	},
 }
 
