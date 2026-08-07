@@ -14,12 +14,17 @@ var taskListCmd = &cobra.Command{
 }
 
 func runTaskList(cmd *cobra.Command, args []string) error {
+	// Best-effort: picks up worktree_base when there is a project config, but
+	// listing must keep working in a repo that has not run `colony init`.
+	_, _, _ = loadConfig()
+
 	worktrees, err := module.ListWorktrees()
 	if err != nil {
 		return err
 	}
 
 	fmt.Printf("\n🤖 Active agent worktrees:\n")
+	fmt.Printf("   Base: %s\n", module.WorktreeBase())
 	fmt.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 
 	if len(worktrees) == 0 {

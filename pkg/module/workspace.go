@@ -32,9 +32,48 @@ func EnsureLogDir(root string) error {
 	return os.MkdirAll(LogDir(root), 0755)
 }
 
+// configuredWorktreeBase is set once per process from .colony/config.json by
+// SetWorktreeBase, so the worktree helpers below can stay config-free.
+var configuredWorktreeBase string
+
+// SetWorktreeBase records the base directory from project config. Call it once
+// after loading config; an empty value leaves the default in place.
+func SetWorktreeBase(base string) {
+	configuredWorktreeBase = expandHome(strings.TrimSpace(base))
+}
+
+// WorktreeBase returns the directory agent worktrees are created under.
+// Precedence: COLONY_WORKTREE_BASE env → worktree_base in config → the
+// default ~/Projects/.worktrees.
 func WorktreeBase() string {
+	if env := expandHome(strings.TrimSpace(os.Getenv("COLONY_WORKTREE_BASE"))); env != "" {
+		return env
+	}
+	if configuredWorktreeBase != "" {
+		return configuredWorktreeBase
+	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, "Projects", ".worktrees")
+}
+
+// expandHome resolves a leading "~" and makes the path absolute, so a config
+// value like "~/code/.worktrees" or a relative path behaves as written.
+func expandHome(path string) string {
+	if path == "" {
+		return ""
+	}
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return path
+		}
+		path = filepath.Join(home, strings.TrimPrefix(path, "~"))
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	return abs
 }
 
 func DefaultBranch() string {
