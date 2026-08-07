@@ -60,7 +60,7 @@ var paletteCommands = []cmdSpec{
 		Flags: []cmdFlag{
 			{Name: "once", Kind: flagBool, Help: "single pass then exit"},
 			{Name: "watch", Kind: flagBool, Help: "long-lived daemon"},
-			{Name: "lang", Kind: flagString, Default: "go", Placeholder: "go", Help: "language for gates"},
+			{Name: "lang", Kind: flagString, Placeholder: "unset", Help: "only for tasks with no recorded language"},
 			{Name: "max-passes", Kind: flagString, Default: "0", Placeholder: "0", Help: "0 = unlimited"},
 			{Name: "max-cycles", Kind: flagString, Default: "3", Placeholder: "3", Help: "inner fix loop cap"},
 			{Name: "idle", Kind: flagString, Default: "10", Placeholder: "10", Help: "idle passes before stop"},
@@ -130,7 +130,7 @@ var paletteCommands = []cmdSpec{
 		PosRequired: true,
 		PosFrom:     func(t storageTaskRef) string { return t.ID },
 		Flags: []cmdFlag{
-			{Name: "lang", Kind: flagString, Required: true, Placeholder: "typescript", Help: "typescript, python, go"},
+			{Name: "lang", Kind: flagString, Placeholder: "unset", Help: "only for tasks with no recorded language"},
 		},
 	},
 	{

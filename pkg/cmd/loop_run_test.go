@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -24,7 +25,9 @@ func TestLoopRun_LangValidation(t *testing.T) {
 		lang    string
 		wantErr string
 	}{
-		{"missing lang", "", "--lang is required"},
+		// An omitted --lang is only rejected once the task is known to have no
+		// recorded language, so this case fails on lookup, not on the flag.
+		{"missing lang", "", "not found"},
 		{"invalid lang", "rust", "unknown language"},
 	}
 	for _, tc := range cases {
@@ -38,6 +41,34 @@ func TestLoopRun_LangValidation(t *testing.T) {
 				t.Errorf("expected error containing %q, got %v", tc.wantErr, err)
 			}
 		})
+	}
+}
+
+// A task carrying no language cannot be gated without --lang. (The inverse —
+// a task with a recorded language running flagless — is not asserted here
+// because it proceeds into a real build.)
+func TestLoopRun_MissingLangOnlyFailsForUnsetTask(t *testing.T) {
+	dir := initTestRepo(t)
+	setupMinimalProject(t, dir)
+
+	origWd, _ := os.Getwd()
+	_ = os.Chdir(dir)
+	defer func() { _ = os.Chdir(origWd) }()
+
+	store, err := storage.Open(filepath.Join(dir, ".colony", "missions.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := store.InsertTask(storage.Task{ID: "no-lang", Description: "d", State: "open", CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	_ = store.Close()
+
+	loopRunLang = ""
+	err = runLoopRun(&cobra.Command{}, []string{"no-lang"})
+	if err == nil || !strings.Contains(err.Error(), "no recorded language") {
+		t.Fatalf("expected a missing-language error, got %v", err)
 	}
 }
 

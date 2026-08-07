@@ -40,7 +40,8 @@ Flags:
   --max-passes    Stop after N total passes (0 = unlimited)
   --max-cycles    Cap the inner fix loop per task (default 3)
   --escalate-to   Model to use for escalation role (default: off)
-  --lang          Language for gates on tasks that have none recorded (default: go)
+  --lang          Language for gates on tasks that have none recorded (each task's
+                  own language, set at 'task add', is used when it has one)
   --idle          Consecutive idle passes before stopping (default 10)`,
 	RunE: runLoop,
 }
@@ -67,7 +68,7 @@ func init() {
 	loopCmd.Flags().IntVar(&loopMaxPasses, "max-passes", 0, "stop after N total passes (0 = unlimited)")
 	loopCmd.Flags().IntVar(&loopMaxCycles, "max-cycles", 3, "cap the inner fix loop per task")
 	loopCmd.Flags().StringVar(&loopEscalateTo, "escalate-to", "", "model for escalation role (default: off)")
-	loopCmd.Flags().StringVar(&loopLang, "lang", "go", "language for gates on tasks with none recorded (legacy tasks are skipped unless this is passed)")
+	loopCmd.Flags().StringVar(&loopLang, "lang", "", "language for gates on tasks with none recorded (legacy tasks are skipped unless this is passed)")
 	loopCmd.Flags().IntVar(&loopIdleLimit, "idle", 10, "consecutive idle passes before stopping")
 	loopCmd.Flags().BoolVar(&loopRetryBlock, "retry-blocked", false, "re-queue blocked tasks (needs-fix) to continue them in their existing worktree")
 	loopCmd.Flags().BoolVar(&loopReview, "review", false, "run an LLM review gate before marking a task done (also auto-enabled when a 'review' role is configured)")
@@ -81,7 +82,7 @@ func init() {
 	loopRetryGateCmd.Flags().StringVar(&loopRetryLang, "lang", "", "language for gates, required only when the task has none recorded")
 	loopRetryReviewCmd.Flags().StringVar(&loopRetryLang, "lang", "", "language for gates, required only when the task has none recorded")
 
-	loopRunCmd.Flags().StringVar(&loopRunLang, "lang", "", "language for gates: typescript, python, go (required)")
+	loopRunCmd.Flags().StringVar(&loopRunLang, "lang", "", "language for gates, required only when the task has none recorded")
 	loopCmd.AddCommand(loopRunCmd)
 }
 
@@ -310,14 +311,15 @@ func runLoopRetryGate(cmd *cobra.Command, args []string) error {
 var loopRunLang string
 
 // loopRunCmd processes a single task by ID through the full build-gate-fix
-// flow, bypassing queue selection. The --lang flag is required and is persisted
-// to the task so later resumes use the same toolchain.
+// flow, bypassing queue selection. --lang defaults to the language recorded on
+// the task at `task add` time; passing it overrides and persists a new one.
 var loopRunCmd = &cobra.Command{
 	Use:   "run <task-id>",
-	Short: "Run a single task by ID with an explicit gate language",
+	Short: "Run a single task by ID",
 	Long: `Processes one task by its ID through the full build-gate-fix flow,
-regardless of its current queue position. --lang is required and overrides any
-language stored on the task (and is persisted for later resumes).`,
+regardless of its current queue position. Gates run under the language recorded
+on the task; --lang is only needed for tasks that have none, and overrides (and
+persists) the recorded language when passed.`,
 	Args: cobra.ExactArgs(1),
 	RunE: runLoopRun,
 }
@@ -325,11 +327,10 @@ language stored on the task (and is persisted for later resumes).`,
 func runLoopRun(cmd *cobra.Command, args []string) error {
 	taskID := args[0]
 
-	if loopRunLang == "" {
-		return fmt.Errorf("--lang is required (typescript, python, go)")
-	}
-	if _, err := module.CommandsFor(loopRunLang); err != nil {
-		return err
+	if loopRunLang != "" {
+		if _, err := module.CommandsFor(loopRunLang); err != nil {
+			return err
+		}
 	}
 
 	cfg, root, err := loadConfig()
@@ -352,7 +353,11 @@ func runLoopRun(cmd *cobra.Command, args []string) error {
 	}
 	task := &tasks[0]
 
-	if task.Lang != loopRunLang {
+	if loopRunLang == "" {
+		if task.Lang == "" {
+			return fmt.Errorf("task %q has no recorded language — re-run with --lang <typescript|python|go>", task.ID)
+		}
+	} else if task.Lang != loopRunLang {
 		if err := store.UpdateTaskLang(task.ID, loopRunLang); err != nil {
 			return fmt.Errorf("persist lang: %w", err)
 		}
