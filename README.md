@@ -310,6 +310,21 @@ Edit `.colony/config.json` — no code changes needed. Anthropic uses the
 }
 ```
 
+OpenRouter routes through `crush` too — the `model` field is `<vendor>/<model-id>` per
+OpenRouter's naming:
+
+```json
+{
+  "llm": { "provider": "openrouter", "model": "moonshotai/kimi-k3", "api_key_env": "OPENROUTER_API_KEY" }
+}
+```
+
+```json
+{
+  "llm": { "provider": "openrouter", "model": "z-ai/glm-5.2", "api_key_env": "OPENROUTER_API_KEY" }
+}
+```
+
 ### Uninstall
 
 ```bash
