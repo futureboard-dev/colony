@@ -173,8 +173,8 @@ func runLoopRetryReview(cmd *cobra.Command, args []string) error {
 
 	prURL, finishErr := finishTask(workdir, task.Branch, baseBranch, missionLabel(task))
 	if finishErr != nil {
-		fmt.Fprintf(os.Stderr, "%sloop: task %q done (review passed) but delivery failed: %v%s\n", ansiYellow, task.ID, finishErr, ansiReset)
-		_ = store.UpdateTaskState(task.ID, "done", "delivery failed: "+finishErr.Error())
+		fmt.Fprintf(os.Stderr, "%sloop: task %q done (review passed) — warning: %v%s\n", ansiYellow, task.ID, finishErr, ansiReset)
+		_ = store.UpdateTaskState(task.ID, "done", "warning: "+finishErr.Error())
 		return nil
 	}
 
@@ -298,8 +298,8 @@ func runLoopRetryGate(cmd *cobra.Command, args []string) error {
 
 	prURL, finishErr := finishTask(workdir, task.Branch, baseBranch, missionLabel(task))
 	if finishErr != nil {
-		fmt.Fprintf(os.Stderr, "%sloop: task %q done (gate passed) but delivery failed: %v%s\n", ansiYellow, task.ID, finishErr, ansiReset)
-		_ = store.UpdateTaskState(task.ID, "done", "delivery failed: "+finishErr.Error())
+		fmt.Fprintf(os.Stderr, "%sloop: task %q done (gate passed) — warning: %v%s\n", ansiYellow, task.ID, finishErr, ansiReset)
+		_ = store.UpdateTaskState(task.ID, "done", "warning: "+finishErr.Error())
 		return nil
 	}
 
@@ -662,8 +662,8 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 
 	prURL, finishErr := finishTask(workdir, branch, baseBranch, missionLabel(task))
 	if finishErr != nil {
-		fmt.Fprintf(os.Stderr, "%sloop: task %q done (gate passed) but delivery failed: %v%s\n", ansiYellow, task.ID, finishErr, ansiReset)
-		_ = store.UpdateTaskState(task.ID, "done", "delivery failed: "+finishErr.Error())
+		fmt.Fprintf(os.Stderr, "%sloop: task %q done (gate passed) — warning: %v%s\n", ansiYellow, task.ID, finishErr, ansiReset)
+		_ = store.UpdateTaskState(task.ID, "done", "warning: "+finishErr.Error())
 		return nil
 	}
 
