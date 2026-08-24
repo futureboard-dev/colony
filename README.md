@@ -66,7 +66,9 @@ colony/
 │   │   ├── mission.go         # `colony mission`
 │   │   ├── task.go            # `colony task`
 │   │   ├── task_done.go       # `colony task done`
-│   │   └── task_list.go       # `colony task list`
+│   │   ├── task_list.go       # `colony task list`
+│   │   ├── tui.go             # `colony tui`
+│   │   └── tui/                # TUI views, models, keybinds
 │   │
 │   ├── llm/                   # CLI delegation layer
 │   │   ├── exec.go            # Executor: shells out to claude / crush
@@ -238,7 +240,31 @@ colony review --branch feat/auth                   # multi-lens AI code review
 colony task add "write unit tests for auth"        # create a task
 colony task list                                   # list tasks
 colony task done <id>                              # mark task complete
+colony tui                                         # launch the terminal UI
 ```
+
+### TUI mode (`colony tui`)
+
+A full-screen, keyboard-driven terminal interface for Colony. Read-only by
+default; mutations happen behind explicit keybinds.
+
+```bash
+colony tui                    # launch with defaults
+colony tui --view queue       # start on a specific view
+colony tui --refresh 500ms    # faster polling (min 100ms)
+colony tui --no-color         # monochrome rendering
+colony tui --force            # start even if another TUI instance is detected
+```
+
+| Flag        | Default | Description                                              |
+| ----------- | ------- | ---------------------------------------------------------|
+| `--refresh` | `1s`    | Poll interval (min `100ms`)                               |
+| `--no-color`| false   | Force monochrome rendering                                |
+| `--force`   | false   | Start even when another TUI instance is detected          |
+| `--view`    | ""      | Initial view: `dashboard`, `queue`, `detail`, `sessions`, `live` |
+
+Requires an initialized project (`colony init`). Only one TUI instance may run
+against a project at a time, guarded by a lock file (override with `--force`).
 
 ### Code review (`colony review`)
 
