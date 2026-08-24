@@ -55,11 +55,14 @@ func (c LLMConfig) ValidateKey() error {
 // If a role is not specified, the top-level LLM config is used.
 // Commands lets a single command (e.g. "loop") override the default LLM and
 // roles for its own run, leaving every other command on the global defaults.
+// WorktreeBase overrides where agent worktrees are created; empty means the
+// built-in default (~/Projects/.worktrees). "~" is expanded.
 type Config struct {
-	Root     string                 `json:"root"`
-	LLM      LLMConfig              `json:"llm"`
-	Roles    map[string]LLMConfig   `json:"roles,omitempty"`
-	Commands map[string]ScopeConfig `json:"commands,omitempty"`
+	Root         string                 `json:"root"`
+	WorktreeBase string                 `json:"worktree_base,omitempty"`
+	LLM          LLMConfig              `json:"llm"`
+	Roles        map[string]LLMConfig   `json:"roles,omitempty"`
+	Commands     map[string]ScopeConfig `json:"commands,omitempty"`
 }
 
 // ScopeConfig overrides model selection for a single command. An empty LLM or

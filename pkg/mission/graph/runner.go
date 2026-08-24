@@ -354,6 +354,7 @@ func (r *defaultRunner) executeNode(
 		InputText:  currentInput,
 		OutputJSON: outputJSON,
 		Decision:   decision,
+		Output:     stepFeedback(agent.Role, out, execErr),
 		DurationMS: durationMS,
 		StartedAt:  startedAt,
 		FinishedAt: finishedAt,
@@ -371,6 +372,20 @@ func (r *defaultRunner) executeNode(
 	}
 
 	return out, nil
+}
+
+// stepFeedback returns the per-step feedback/verbatim output to persist. Gate
+// steps store full captured stdout/stderr when they REJECT; all other roles and
+// decisions (including passing gates) store nothing by default so LLM step
+// text is not duplicated into the steps.output column.
+func stepFeedback(role string, out Output, execErr error) string {
+	if role != RoleGate {
+		return ""
+	}
+	if execErr != nil || out.Envelope.Decision != REJECTED {
+		return ""
+	}
+	return out.Envelope.OutputText()
 }
 
 // combineInputs merges multiple upstream outputs into a single input text.

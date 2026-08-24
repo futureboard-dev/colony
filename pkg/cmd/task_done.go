@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -34,8 +35,16 @@ func runTaskDone(cmd *cobra.Command, args []string) error {
 	projectName := module.ProjectName(root)
 	branch := normalizeBranchArg(input, projectName)
 
+	worktreePath := module.WorktreePath(projectName, branch)
+	_, statErr := os.Stat(worktreePath)
+	if statErr != nil && !localBranchExists(root, branch) {
+		return fmt.Errorf("nothing to clean up for %q:\n  no worktree at %s\n  no local branch %s\nRun `colony task list` to see active sessions",
+			input, worktreePath, branch)
+	}
+
 	fmt.Printf("\n🧹 Cleaning up agent session...\n")
 	fmt.Printf("   Branch:   %s\n", branch)
+	fmt.Printf("   Worktree: %s\n", worktreePath)
 	fmt.Printf("\n")
 
 	reader := bufio.NewReader(os.Stdin)
@@ -57,6 +66,12 @@ func runTaskDone(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Printf("\n✅ Agent session cleaned up.\n")
 	return nil
+}
+
+// localBranchExists reports whether the repo has a local branch of that name.
+func localBranchExists(projectRoot, branch string) bool {
+	return exec.Command("git", "-C", projectRoot,
+		"show-ref", "--verify", "--quiet", "refs/heads/"+branch).Run() == nil
 }
 
 // normalizeBranchArg accepts either a branch name (e.g. "agent/foo-...")

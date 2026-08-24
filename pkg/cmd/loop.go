@@ -40,7 +40,8 @@ Flags:
   --max-passes    Stop after N total passes (0 = unlimited)
   --max-cycles    Cap the inner fix loop per task (default 3)
   --escalate-to   Model to use for escalation role (default: off)
-  --lang          Language for gates (default: go)
+  --lang          Language for gates on tasks that have none recorded (each task's
+                  own language, set at 'task add', is used when it has one)
   --idle          Consecutive idle passes before stopping (default 10)`,
 	RunE: runLoop,
 }
@@ -52,9 +53,13 @@ var (
 	loopMaxCycles  int
 	loopEscalateTo string
 	loopLang       string
-	loopIdleLimit  int
-	loopRetryBlock bool
-	loopReview     bool
+	// loopLangExplicit records whether --lang was actually typed, so a task
+	// with no recorded language is never gated with the flag's default.
+	loopLangExplicit bool
+	loopRetryLang    string
+	loopIdleLimit    int
+	loopRetryBlock   bool
+	loopReview       bool
 )
 
 func init() {
@@ -63,7 +68,7 @@ func init() {
 	loopCmd.Flags().IntVar(&loopMaxPasses, "max-passes", 0, "stop after N total passes (0 = unlimited)")
 	loopCmd.Flags().IntVar(&loopMaxCycles, "max-cycles", 3, "cap the inner fix loop per task")
 	loopCmd.Flags().StringVar(&loopEscalateTo, "escalate-to", "", "model for escalation role (default: off)")
-	loopCmd.Flags().StringVar(&loopLang, "lang", "go", "language for gates")
+	loopCmd.Flags().StringVar(&loopLang, "lang", "", "language for gates on tasks with none recorded (legacy tasks are skipped unless this is passed)")
 	loopCmd.Flags().IntVar(&loopIdleLimit, "idle", 10, "consecutive idle passes before stopping")
 	loopCmd.Flags().BoolVar(&loopRetryBlock, "retry-blocked", false, "re-queue blocked tasks (needs-fix) to continue them in their existing worktree")
 	loopCmd.Flags().BoolVar(&loopReview, "review", false, "run an LLM review gate before marking a task done (also auto-enabled when a 'review' role is configured)")
@@ -74,7 +79,10 @@ func init() {
 	loopCmd.AddCommand(loopRetryReviewCmd)
 	loopCmd.AddCommand(loopRetryGateCmd)
 
-	loopRunCmd.Flags().StringVar(&loopRunLang, "lang", "", "language for gates: typescript, python, go (required)")
+	loopRetryGateCmd.Flags().StringVar(&loopRetryLang, "lang", "", "language for gates, required only when the task has none recorded")
+	loopRetryReviewCmd.Flags().StringVar(&loopRetryLang, "lang", "", "language for gates, required only when the task has none recorded")
+
+	loopRunCmd.Flags().StringVar(&loopRunLang, "lang", "", "language for gates, required only when the task has none recorded")
 	loopCmd.AddCommand(loopRunCmd)
 }
 
@@ -126,6 +134,13 @@ func runLoopRetryReview(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no review role configured in .colony/config.json under commands.loop.roles.review")
 	}
 
+	// Resolved before the review runs so a task with no language fails fast
+	// rather than after an approved review it would then be unable to gate.
+	lang, err := resolveGateLang(store, task, loopRetryLang, cmd.Flags().Changed("lang"))
+	if err != nil {
+		return err
+	}
+
 	fmt.Fprintf(os.Stderr, "%sloop: retrying review for task %q on worktree %s%s\n", ansiBlue, taskID, workdir, ansiReset)
 
 	node := nodes.NewReviewNode("review", reviewCfg)
@@ -147,10 +162,6 @@ func runLoopRetryReview(cmd *cobra.Command, args []string) error {
 
 	fmt.Fprintf(os.Stderr, "%sloop: review APPROVED — integrating%s\n", ansiGreen, ansiReset)
 
-	lang := task.Lang
-	if lang == "" {
-		lang = loopLang
-	}
 	baseBranch := task.BaseBranch
 	if baseBranch == "" {
 		baseBranch = module.DefaultBranch()
@@ -162,8 +173,8 @@ func runLoopRetryReview(cmd *cobra.Command, args []string) error {
 
 	prURL, finishErr := finishTask(workdir, task.Branch, baseBranch, missionLabel(task))
 	if finishErr != nil {
-		fmt.Fprintf(os.Stderr, "%sloop: task %q done (review passed) but delivery failed: %v%s\n", ansiYellow, task.ID, finishErr, ansiReset)
-		_ = store.UpdateTaskState(task.ID, "done", "delivery failed: "+finishErr.Error())
+		fmt.Fprintf(os.Stderr, "%sloop: task %q done (review passed) — warning: %v%s\n", ansiYellow, task.ID, finishErr, ansiReset)
+		_ = store.UpdateTaskState(task.ID, "done", "warning: "+finishErr.Error())
 		return nil
 	}
 
@@ -215,9 +226,9 @@ func runLoopRetryGate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("worktree %q not found — cannot retry gate without existing build", workdir)
 	}
 
-	lang := task.Lang
-	if lang == "" {
-		lang = loopLang
+	lang, err := resolveGateLang(store, task, loopRetryLang, cmd.Flags().Changed("lang"))
+	if err != nil {
+		return err
 	}
 
 	fmt.Fprintf(os.Stderr, "%sloop: retrying from gate for task %q on worktree %s%s\n", ansiBlue, taskID, workdir, ansiReset)
@@ -262,6 +273,7 @@ func runLoopRetryGate(cmd *cobra.Command, args []string) error {
 	if err := store.InsertSession(storage.Session{
 		ID:          sessID,
 		MissionName: m.Name,
+		TaskID:      task.ID,
 		StartedAt:   time.Now(),
 		Status:      "running",
 	}); err != nil {
@@ -286,8 +298,8 @@ func runLoopRetryGate(cmd *cobra.Command, args []string) error {
 
 	prURL, finishErr := finishTask(workdir, task.Branch, baseBranch, missionLabel(task))
 	if finishErr != nil {
-		fmt.Fprintf(os.Stderr, "%sloop: task %q done (gate passed) but delivery failed: %v%s\n", ansiYellow, task.ID, finishErr, ansiReset)
-		_ = store.UpdateTaskState(task.ID, "done", "delivery failed: "+finishErr.Error())
+		fmt.Fprintf(os.Stderr, "%sloop: task %q done (gate passed) — warning: %v%s\n", ansiYellow, task.ID, finishErr, ansiReset)
+		_ = store.UpdateTaskState(task.ID, "done", "warning: "+finishErr.Error())
 		return nil
 	}
 
@@ -299,14 +311,15 @@ func runLoopRetryGate(cmd *cobra.Command, args []string) error {
 var loopRunLang string
 
 // loopRunCmd processes a single task by ID through the full build-gate-fix
-// flow, bypassing queue selection. The --lang flag is required and is persisted
-// to the task so later resumes use the same toolchain.
+// flow, bypassing queue selection. --lang defaults to the language recorded on
+// the task at `task add` time; passing it overrides and persists a new one.
 var loopRunCmd = &cobra.Command{
 	Use:   "run <task-id>",
-	Short: "Run a single task by ID with an explicit gate language",
+	Short: "Run a single task by ID",
 	Long: `Processes one task by its ID through the full build-gate-fix flow,
-regardless of its current queue position. --lang is required and overrides any
-language stored on the task (and is persisted for later resumes).`,
+regardless of its current queue position. Gates run under the language recorded
+on the task; --lang is only needed for tasks that have none, and overrides (and
+persists) the recorded language when passed.`,
 	Args: cobra.ExactArgs(1),
 	RunE: runLoopRun,
 }
@@ -314,11 +327,10 @@ language stored on the task (and is persisted for later resumes).`,
 func runLoopRun(cmd *cobra.Command, args []string) error {
 	taskID := args[0]
 
-	if loopRunLang == "" {
-		return fmt.Errorf("--lang is required (typescript, python, go)")
-	}
-	if _, err := module.CommandsFor(loopRunLang); err != nil {
-		return err
+	if loopRunLang != "" {
+		if _, err := module.CommandsFor(loopRunLang); err != nil {
+			return err
+		}
 	}
 
 	cfg, root, err := loadConfig()
@@ -341,7 +353,11 @@ func runLoopRun(cmd *cobra.Command, args []string) error {
 	}
 	task := &tasks[0]
 
-	if task.Lang != loopRunLang {
+	if loopRunLang == "" {
+		if task.Lang == "" {
+			return fmt.Errorf("task %q has no recorded language — re-run with --lang <typescript|python|go>", task.ID)
+		}
+	} else if task.Lang != loopRunLang {
 		if err := store.UpdateTaskLang(task.ID, loopRunLang); err != nil {
 			return fmt.Errorf("persist lang: %w", err)
 		}
@@ -359,6 +375,8 @@ func runLoopRun(cmd *cobra.Command, args []string) error {
 }
 
 func runLoop(cmd *cobra.Command, args []string) error {
+	loopLangExplicit = cmd.Flags().Changed("lang")
+
 	cfg, root, err := loadConfig()
 	if err != nil {
 		return err
@@ -504,10 +522,33 @@ func parseGateOverrides(s string) map[string]bool {
 	return skip
 }
 
+// resolveGateLang returns the language a task's quality gates should run under.
+// Tasks created before `task add --lang` became required carry no language;
+// gating those with the flag default silently runs the wrong toolchain (Go
+// commands against a TypeScript repo), so the caller has to name the language
+// explicitly. A language supplied that way is persisted, so the task is only
+// missing it once.
+func resolveGateLang(store *storage.SQLiteStore, task *storage.Task, flagLang string, flagSet bool) (string, error) {
+	if task.Lang != "" {
+		return task.Lang, nil
+	}
+	if !flagSet || flagLang == "" {
+		return "", fmt.Errorf("task %q has no recorded language — re-run with --lang <typescript|python|go> to gate it", task.ID)
+	}
+	if _, err := module.CommandsFor(flagLang); err != nil {
+		return "", err
+	}
+	if err := store.UpdateTaskLang(task.ID, flagLang); err != nil {
+		return "", fmt.Errorf("persist lang: %w", err)
+	}
+	task.Lang = flagLang
+	return flagLang, nil
+}
+
 func processTask(ctx context.Context, cfg *config.Config, root string, store *storage.SQLiteStore, task *storage.Task) error {
-	lang := task.Lang
-	if lang == "" {
-		lang = loopLang
+	lang, err := resolveGateLang(store, task, loopLang, loopLangExplicit)
+	if err != nil {
+		return err
 	}
 
 	input, err := taskInput(task)
@@ -570,6 +611,7 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 	if err := store.InsertSession(storage.Session{
 		ID:          sessID,
 		MissionName: m.Name,
+		TaskID:      task.ID,
 		StartedAt:   time.Now(),
 		Status:      "running",
 	}); err != nil {
@@ -620,8 +662,8 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 
 	prURL, finishErr := finishTask(workdir, branch, baseBranch, missionLabel(task))
 	if finishErr != nil {
-		fmt.Fprintf(os.Stderr, "%sloop: task %q done (gate passed) but delivery failed: %v%s\n", ansiYellow, task.ID, finishErr, ansiReset)
-		_ = store.UpdateTaskState(task.ID, "done", "delivery failed: "+finishErr.Error())
+		fmt.Fprintf(os.Stderr, "%sloop: task %q done (gate passed) — warning: %v%s\n", ansiYellow, task.ID, finishErr, ansiReset)
+		_ = store.UpdateTaskState(task.ID, "done", "warning: "+finishErr.Error())
 		return nil
 	}
 
@@ -838,6 +880,7 @@ func escalateTask(ctx context.Context, cfg *config.Config, root string, store *s
 	if err := store.InsertSession(storage.Session{
 		ID:          sessID,
 		MissionName: m.Name,
+		TaskID:      task.ID,
 		StartedAt:   time.Now(),
 		Status:      "running",
 	}); err != nil {

@@ -79,7 +79,7 @@ func runLoopStatus(cmd *cobra.Command, args []string) error {
 	}
 
 	if statusJSON {
-		return emitJSONStatus(cmd, tasks, loopSessions)
+		return emitJSONStatus(cmd, root, tasks, loopSessions, store)
 	}
 
 	return emitTextStatus(cmd, tasks, loopSessions)
@@ -150,6 +150,14 @@ func emitTextStatus(cmd *cobra.Command, tasks []storage.Task, sessions []storage
 type jsonStatus struct {
 	Queue    []jsonTask    `json:"queue"`
 	Sessions []jsonSession `json:"sessions"`
+	Daemon   jsonDaemon    `json:"daemon"`
+}
+
+// jsonDaemon captures loop process liveness from the PID file.
+type jsonDaemon struct {
+	Running bool   `json:"running"`
+	Pid     int    `json:"pid,omitempty"`
+	Status  string `json:"status"`
 }
 
 type jsonTask struct {
@@ -158,34 +166,61 @@ type jsonTask struct {
 	State        string `json:"state"`
 	LastFeedback string `json:"last_feedback,omitempty"`
 	CycleCount   int    `json:"cycle_count"`
+	StepOutput   string `json:"step_output,omitempty"`
 }
 
 type jsonSession struct {
 	ID          string  `json:"id"`
 	MissionName string  `json:"mission_name"`
+	TaskID      string  `json:"task_id,omitempty"`
 	Status      string  `json:"status"`
 	StartedAt   string  `json:"started_at"`
 	FinishedAt  *string `json:"finished_at,omitempty"`
 	Duration    string  `json:"duration"`
 }
 
-func emitJSONStatus(cmd *cobra.Command, tasks []storage.Task, sessions []storage.Session) error {
+func emitJSONStatus(cmd *cobra.Command, root string, tasks []storage.Task, sessions []storage.Session, store *storage.SQLiteStore) error {
 	out := jsonStatus{}
 
+	// Daemon liveness from the PID file.
+	running, pid, _ := daemonUptime(filepath.Join(root, ".colony"))
+	out.Daemon.Running = running
+	out.Daemon.Pid = pid
+	switch {
+	case running:
+		out.Daemon.Status = "running"
+	case pid > 0:
+		out.Daemon.Status = "stale"
+	default:
+		out.Daemon.Status = "idle"
+	}
+
 	for _, t := range tasks {
-		out.Queue = append(out.Queue, jsonTask{
+		jt := jsonTask{
 			ID:           t.ID,
 			Description:  t.Description,
 			State:        t.State,
 			LastFeedback: t.LastFeedback,
 			CycleCount:   t.CycleCount,
-		})
+		}
+		// Include the latest captured gate step output, if any, so the JSON
+		// surface exposes per-step feedback.
+		if steps, err := store.QuerySteps(storage.StepFilter{Decision: "REJECTED"}); err == nil {
+			for i := len(steps) - 1; i >= 0; i-- {
+				if steps[i].Role == "gate" && steps[i].Output != "" {
+					jt.StepOutput = steps[i].Output
+					break
+				}
+			}
+		}
+		out.Queue = append(out.Queue, jt)
 	}
 
 	for _, s := range sessions {
 		js := jsonSession{
 			ID:          s.ID,
 			MissionName: s.MissionName,
+			TaskID:      s.TaskID,
 			Status:      s.Status,
 			StartedAt:   s.StartedAt.Format(time.RFC3339),
 			Duration:    durationStr(s.StartedAt, s.FinishedAt),

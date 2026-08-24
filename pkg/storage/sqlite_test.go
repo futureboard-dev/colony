@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
@@ -93,6 +94,66 @@ func TestAuditQueryByMissionName(t *testing.T) {
 	}
 	if len(sessions) != 1 || sessions[0].MissionName != "alpha" {
 		t.Errorf("expected 1 alpha session, got %+v", sessions)
+	}
+}
+
+func TestStepOutputColumnRoundTrip(t *testing.T) {
+	db := openTestDB(t)
+
+	sessID := "mission-output"
+	_ = db.InsertSession(Session{ID: sessID, MissionName: "m", StartedAt: time.Now(), Status: "running"})
+
+	now := time.Now()
+	steps := []Step{
+		// Gate REJECTED stores full captured output.
+		{SessionID: sessID, StepNum: 1, AgentID: "g1", Role: "gate", Decision: "REJECTED",
+			Output: "FAIL: TestRateLimit_Burst\n--- go test ./... ---\n", StartedAt: now, FinishedAt: now},
+		// Gate APPROVED stores an empty output string.
+		{SessionID: sessID, StepNum: 2, AgentID: "g2", Role: "gate", Decision: "APPROVED", StartedAt: now, FinishedAt: now},
+		// LLM step stores nothing by default.
+		{SessionID: sessID, StepNum: 3, AgentID: "b1", Role: "builder", Decision: "APPROVED", StartedAt: now, FinishedAt: now},
+	}
+	for _, s := range steps {
+		if err := db.InsertStep(s); err != nil {
+			t.Fatalf("InsertStep: %v", err)
+		}
+	}
+
+	got, err := db.QuerySteps(StepFilter{SessionID: sessID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("expected 3 steps, got %d", len(got))
+	}
+	// First gate step has verbatim output.
+	if got[0].Output != steps[0].Output {
+		t.Errorf("gate REJECTED output mismatch: got %q want %q", got[0].Output, steps[0].Output)
+	}
+	// APPROVED gate and builder store empty output.
+	if got[1].Output != "" {
+		t.Errorf("gate APPROVED should store empty output, got %q", got[1].Output)
+	}
+	if got[2].Output != "" {
+		t.Errorf("builder step should store empty output, got %q", got[2].Output)
+	}
+}
+
+func TestStepOutputColumnDefaultsToEmpty(t *testing.T) {
+	// Verify a step inserted without the Output field defaults to ''.
+	db := openTestDB(t)
+	sessID := "mission-default"
+	_ = db.InsertSession(Session{ID: sessID, MissionName: "m", StartedAt: time.Now(), Status: "running"})
+	now := time.Now()
+	if err := db.InsertStep(Step{SessionID: sessID, StepNum: 1, AgentID: "a", Role: "gate", Decision: "APPROVED", StartedAt: now, FinishedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	steps, err := db.QuerySteps(StepFilter{SessionID: sessID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(steps) != 1 || steps[0].Output != "" {
+		t.Errorf("expected output to default to '', got %q", steps[0].Output)
 	}
 }
 
@@ -235,5 +296,116 @@ func TestDefaultDBPathDefault(t *testing.T) {
 	want := filepath.Join(".colony", "missions.db")
 	if got := DefaultDBPath(); got != want {
 		t.Errorf("expected %s, got %s", want, got)
+	}
+}
+
+func TestSessionTaskIDRoundTripAndFilter(t *testing.T) {
+	db := openTestDB(t)
+
+	now := time.Now()
+	for _, s := range []Session{
+		{ID: "loop-fix-auth-20260101-000000", MissionName: "loop-fix-auth", TaskID: "t-1", StartedAt: now, Status: "completed"},
+		{ID: "escalation-t-1-20260101-010000", MissionName: "escalation-fix-auth", TaskID: "t-1", StartedAt: now, Status: "failed"},
+		{ID: "loop-other-20260101-020000", MissionName: "loop-other", TaskID: "t-2", StartedAt: now, Status: "completed"},
+		{ID: "standalone-20260101-030000", MissionName: "some-mission", StartedAt: now, Status: "completed"},
+	} {
+		if err := db.InsertSession(s); err != nil {
+			t.Fatalf("InsertSession(%s): %v", s.ID, err)
+		}
+	}
+
+	t.Run("filters by task id", func(t *testing.T) {
+		sessions, err := db.QuerySessions(SessionFilter{TaskID: "t-1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(sessions) != 2 {
+			t.Fatalf("expected 2 sessions for t-1, got %d", len(sessions))
+		}
+		for _, s := range sessions {
+			if s.TaskID != "t-1" {
+				t.Errorf("session %s has TaskID %q, want t-1", s.ID, s.TaskID)
+			}
+		}
+	})
+
+	t.Run("standalone mission has empty task id", func(t *testing.T) {
+		sessions, err := db.QuerySessions(SessionFilter{SessionID: "standalone-20260101-030000"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(sessions) != 1 {
+			t.Fatalf("expected 1 session, got %d", len(sessions))
+		}
+		if sessions[0].TaskID != "" {
+			t.Errorf("expected empty TaskID, got %q", sessions[0].TaskID)
+		}
+	})
+
+	t.Run("empty filter returns all", func(t *testing.T) {
+		sessions, err := db.QuerySessions(SessionFilter{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(sessions) != 4 {
+			t.Errorf("expected 4 sessions, got %d", len(sessions))
+		}
+	})
+
+	t.Run("deletes by task id", func(t *testing.T) {
+		n, err := db.DeleteSessions(SessionFilter{TaskID: "t-2"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n != 1 {
+			t.Errorf("expected 1 deleted, got %d", n)
+		}
+	})
+}
+
+func TestSessionTaskIDMigratesLegacyDB(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "legacy.db")
+
+	// Build a database with the pre-task_id sessions table and a row in it.
+	legacy, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.Exec(`CREATE TABLE sessions (
+		id           TEXT    PRIMARY KEY,
+		mission_name TEXT    NOT NULL,
+		started_at   DATETIME NOT NULL,
+		finished_at  DATETIME,
+		status       TEXT    NOT NULL DEFAULT 'running'
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.Exec(
+		`INSERT INTO sessions (id, mission_name, started_at, status) VALUES (?,?,?,?)`,
+		"loop-old-20250101-000000", "loop-old", time.Now().UTC().Format(time.RFC3339), "completed",
+	); err != nil {
+		t.Fatal(err)
+	}
+	legacy.Close()
+
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open on legacy db: %v", err)
+	}
+	defer db.Close()
+
+	sessions, err := db.QuerySessions(SessionFilter{SessionID: "loop-old-20250101-000000"})
+	if err != nil {
+		t.Fatalf("QuerySessions after migration: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 legacy session, got %d", len(sessions))
+	}
+	if sessions[0].TaskID != "" {
+		t.Errorf("legacy session should have empty TaskID, got %q", sessions[0].TaskID)
+	}
+	if sessions[0].MissionName != "loop-old" {
+		t.Errorf("legacy mission_name lost: %q", sessions[0].MissionName)
 	}
 }

@@ -24,6 +24,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Printf("✓ Created .colony/config.json\n")
 	fmt.Printf("  Edit provider/model/roles to configure multi-model orchestration.\n")
+	fmt.Printf("  Agent worktrees go under %s — set \"worktree_base\" to change it.\n", module.WorktreeBase())
 	return nil
 }
 
@@ -37,5 +38,6 @@ func loadConfig() (*config.Config, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
+	module.SetWorktreeBase(cfg.WorktreeBase)
 	return cfg, root, nil
 }
