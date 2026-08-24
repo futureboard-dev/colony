@@ -6,6 +6,7 @@ import (
 	"os/exec"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/futureboard-dev/colony/pkg/module"
 )
 
 // editorFinishedMsg reports the result of a suspended $EDITOR session.
@@ -74,6 +75,13 @@ func (m *Model) confirmDeleteTask() {
 			if m.store == nil {
 				m.notifier.Push("Storage unavailable", ToastErr)
 				return
+			}
+			if sel.Branch != "" {
+				root := or(m.opts.Root, ".")
+				projectName := module.ProjectName(root)
+				if err := module.RemoveWorktree(root, projectName, sel.Branch, true); err != nil {
+					m.notifier.Push("Worktree cleanup warning: "+err.Error(), ToastErr)
+				}
 			}
 			if err := m.store.DeleteTask(sel.ID); err != nil {
 				m.notifier.Push("Delete failed: "+err.Error(), ToastErr)
