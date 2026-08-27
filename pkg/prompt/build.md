@@ -6,6 +6,7 @@ Language: {{.Lang}}
 
 Rules:
 - Only modify files explicitly listed or described as in-scope in SPEC.md
+- Before writing any new code, search for what already exists, then extend it, generalize it, or build new — say which you chose and why in one line
 - Implement exactly what is described — do not add features, do not refactor out of scope
 - Follow any Done Criteria or verification steps described in SPEC.md exactly
 - Follow any Explicit Decisions or design choices stated in SPEC.md — do not deviate

@@ -12,6 +12,7 @@ IMPORTANT: A previous session was interrupted (token limit or crash). Some work 
 
 Rules:
 - Only modify files explicitly listed or described as in-scope in SPEC.md
+- Before writing any new code, search for what already exists, then extend it, generalize it, or build new — say which you chose and why in one line
 - Implement exactly what is described — do not add features, do not refactor out of scope
 - Do NOT run git add, git commit, or git push — the pipeline handles this
 - Do NOT run lint, format, or tests — the pipeline handles this
