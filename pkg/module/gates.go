@@ -112,11 +112,20 @@ func InstallDeps(lang, worktree string, out io.Writer) {
 		}
 		// Equivalent to `python3 -m venv .venv && source .venv/bin/activate &&
 		// pip install -r requirements.txt`, but RunShell has no shell so we
-		// create the venv and invoke its pip by absolute path.
+		// create the venv and invoke its pip by absolute path. A working venv is
+		// reused: re-running `venv` over it would repoint it at whatever python3
+		// is on PATH, which may be too new for the pinned packages.
 		fmt.Fprintf(out, "   Installing dependencies (pip into .venv)...\n")
-		_ = RunShell("python3 -m venv .venv", worktree, out)
+		if !venvUsable(worktree) {
+			_ = RunShell(pythonFor(worktree)+" -m venv .venv", worktree, out)
+		}
 		pip := filepath.Join(worktree, ".venv", "bin", "pip")
-		_ = RunShell(pip+" install -r requirements.txt", worktree, out)
+		// requirements-dev.txt carries the gate tools (ruff, mypy).
+		for _, req := range []string{"requirements.txt", "requirements-dev.txt"} {
+			if _, err := os.Stat(filepath.Join(worktree, req)); err == nil {
+				_ = RunShell(pip+" install -r "+req, worktree, out)
+			}
+		}
 	case "go":
 		if _, err := os.Stat(filepath.Join(worktree, "go.mod")); err != nil {
 			return
@@ -124,6 +133,49 @@ func InstallDeps(lang, worktree string, out io.Writer) {
 		fmt.Fprintf(out, "   Installing dependencies (go mod download)...\n")
 		RunShell("go mod download", worktree, out) //nolint:errcheck
 	}
+}
+
+// venvUsable reports whether the worktree's .venv python starts.
+func venvUsable(worktree string) bool {
+	return exec.Command(filepath.Join(worktree, ".venv", "bin", "python"), "-c", "").Run() == nil
+}
+
+// pythonFor picks the interpreter for creating the venv: python<major>.<minor>
+// from the worktree's .python-version when that binary is on PATH, else python3.
+func pythonFor(worktree string) string {
+	data, err := os.ReadFile(filepath.Join(worktree, ".python-version"))
+	if err != nil {
+		return "python3"
+	}
+	parts := strings.Split(strings.TrimSpace(string(data)), ".")
+	if len(parts) < 2 {
+		return "python3"
+	}
+	name := "python" + parts[0] + "." + parts[1]
+	if _, err := exec.LookPath(name); err != nil {
+		return "python3"
+	}
+	return name
+}
+
+// venvBin returns the worktree's .venv/bin/<name> when it exists, else name.
+// Prepending .venv/bin to the child's PATH isn't enough on its own: exec.Command
+// resolves argv[0] against colony's PATH, not the child env.
+func venvBin(workdir, name string) string {
+	if strings.ContainsRune(name, os.PathSeparator) {
+		return name
+	}
+	p := filepath.Join(workdir, ".venv", "bin", name)
+	if info, err := os.Stat(p); err == nil && !info.IsDir() {
+		return p
+	}
+	return name
+}
+
+// venvPathEnv returns a PATH entry with the worktree's .venv/bin first, so
+// tools spawned by gate commands also resolve to the venv.
+func venvPathEnv(workdir string) string {
+	return "PATH=" + filepath.Join(workdir, ".venv", "bin") + string(os.PathListSeparator) + os.Getenv("PATH")
 }
 
 // RunFormat runs the format command, treating failures as non-fatal warnings.
@@ -235,8 +287,9 @@ func AutoFix(lang, workdir string, files []string, skipFormat bool, out io.Write
 }
 
 func runFix(argv []string, workdir string, out io.Writer) {
-	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd := exec.Command(venvBin(workdir, argv[0]), argv[1:]...)
 	cmd.Dir = workdir
+	cmd.Env = append(os.Environ(), venvPathEnv(workdir))
 	cmd.Stdout = out
 	cmd.Stderr = out
 	_ = cmd.Run() // best-effort: the gate re-checks whatever couldn't be fixed
@@ -254,7 +307,7 @@ func runGateArgv(argv []string, workdir string) (string, error) {
 	if len(argv) == 0 {
 		return "", nil
 	}
-	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd := exec.Command(venvBin(workdir, argv[0]), argv[1:]...)
 	cmd.Dir = workdir
 	// GOLANGCI_LINT_CACHE is set to a temp dir outside the worktree, preventing
 	// stale cached results keyed by a pruned worktree's absolute paths and
@@ -263,7 +316,7 @@ func runGateArgv(argv []string, workdir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("lint cache dir: %w", err)
 	}
-	cmd.Env = append(os.Environ(), "GOLANGCI_LINT_CACHE="+lintDir)
+	cmd.Env = append(os.Environ(), venvPathEnv(workdir), "GOLANGCI_LINT_CACHE="+lintDir)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
@@ -314,7 +367,9 @@ func runGates(lang string, workdir string, files []string, skip map[string]bool)
 		}
 		out, err := runGateArgv(argv, workdir)
 		if err != nil {
-			fmt.Fprintf(&combined, "--- %s ---\n%s", s.name, out)
+			// Include err: a command that can't start (e.g. not installed)
+			// produces no output, which would leave the section empty.
+			fmt.Fprintf(&combined, "--- %s ---\n%s%v\n", s.name, out, err)
 			return combined.String(), fmt.Errorf("%s failed: %w", s.name, err)
 		}
 	}

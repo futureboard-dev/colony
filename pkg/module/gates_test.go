@@ -1,6 +1,7 @@
 package module
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -306,7 +307,121 @@ func TestResolveBase(t *testing.T) {
 	})
 }
 
+func TestInstallDepsPython(t *testing.T) {
+	t.Run("reuses working venv and installs dev requirements", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "requirements.txt", "")
+		writeFile(t, dir, "requirements-dev.txt", "")
+		log := filepath.Join(dir, "pip.log")
+		writeExec(t, filepath.Join(dir, ".venv", "bin"), "python", "#!/bin/sh\nexit 0\n")
+		writeExec(t, filepath.Join(dir, ".venv", "bin"), "pip", "#!/bin/sh\necho \"$@\" >> "+log+"\n")
+
+		InstallDeps("python", dir, io.Discard)
+
+		if _, err := os.Stat(filepath.Join(dir, ".venv", "pyvenv.cfg")); err == nil {
+			t.Error("venv was recreated; expected existing venv to be reused")
+		}
+		got := readFileOrEmpty(t, log)
+		if got != "install -r requirements.txt\ninstall -r requirements-dev.txt\n" {
+			t.Errorf("pip calls = %q", got)
+		}
+	})
+
+	t.Run("creates venv with interpreter from .python-version", func(t *testing.T) {
+		dir := t.TempDir()
+		binDir := t.TempDir()
+		log := filepath.Join(dir, "python.log")
+		writeExec(t, binDir, "python3.99", "#!/bin/sh\necho \"$@\" >> "+log+"\n")
+		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		writeFile(t, dir, "requirements.txt", "")
+		writeFile(t, dir, ".python-version", "3.99.1\n")
+
+		InstallDeps("python", dir, io.Discard)
+
+		if got := readFileOrEmpty(t, log); got != "-m venv .venv\n" {
+			t.Errorf("python3.99 calls = %q", got)
+		}
+	})
+}
+
+func TestPythonFor(t *testing.T) {
+	binDir := t.TempDir()
+	writeExec(t, binDir, "python3.99", "#!/bin/sh\n")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cases := []struct {
+		name, version, want string
+	}{
+		{"no file", "", "python3"},
+		{"available version", "3.99.1\n", "python3.99"},
+		{"unavailable version", "3.98\n", "python3"},
+		{"malformed", "system\n", "python3"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if tc.version != "" {
+				writeFile(t, dir, ".python-version", tc.version)
+			}
+			if got := pythonFor(dir); got != tc.want {
+				t.Errorf("pythonFor = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRunGateArgvUsesVenv(t *testing.T) {
+	t.Run("runs tool from .venv/bin", func(t *testing.T) {
+		dir := t.TempDir()
+		binDir := filepath.Join(dir, ".venv", "bin")
+		writeExec(t, binDir, "venvtool", "#!/bin/sh\necho from-venv\n")
+		// venvhelper is only reachable via the PATH given to the child.
+		writeExec(t, binDir, "venvhelper", "#!/bin/sh\necho helper\n")
+		writeExec(t, binDir, "calls-helper", "#!/bin/sh\nvenvhelper\n")
+
+		out, err := runGateArgv([]string{"venvtool"}, dir)
+		if err != nil || out != "from-venv\n" {
+			t.Errorf("venvtool: out=%q err=%v", out, err)
+		}
+		out, err = runGateArgv([]string{"calls-helper"}, dir)
+		if err != nil || out != "helper\n" {
+			t.Errorf("calls-helper: out=%q err=%v", out, err)
+		}
+	})
+
+	t.Run("falls back to PATH without venv", func(t *testing.T) {
+		out, err := runGateArgv([]string{"echo", "hi"}, t.TempDir())
+		if err != nil || out != "hi\n" {
+			t.Errorf("out=%q err=%v", out, err)
+		}
+	})
+}
+
+func TestRunGatesReportsMissingCommand(t *testing.T) {
+	dir := t.TempDir()
+	writeMinimalGoModule(t, dir, "package test\n")
+	t.Setenv("PATH", t.TempDir())
+
+	out, err := RunGateCaptureAll("go", dir, nil)
+	if err == nil {
+		t.Fatal("expected failure with empty PATH")
+	}
+	if !strings.Contains(out, "--- format ---") || !strings.Contains(out, "executable file not found") {
+		t.Errorf("expected missing-command error in output, got %q", out)
+	}
+}
+
 // Helpers
+func writeExec(t *testing.T, dir, name, content string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0755); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func writeMinimalGoModule(t *testing.T, dir, content string) {
 	t.Helper()
 	writeFile(t, dir, "go.mod", "module test\n\ngo 1.25\n")
