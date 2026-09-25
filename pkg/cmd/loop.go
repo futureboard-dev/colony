@@ -368,7 +368,7 @@ func runLoopRun(cmd *cobra.Command, args []string) error {
 	defer stop()
 
 	if err := processTask(ctx, cfg, root, store, task); err != nil {
-		_ = markTaskBlocked(store, task.ID)
+		_ = markTaskBlocked(store, task.ID, err.Error())
 		return fmt.Errorf("task %q failed: %w", task.ID, err)
 	}
 	return nil
@@ -450,7 +450,7 @@ func runLoop(cmd *cobra.Command, args []string) error {
 
 		if err := processTask(ctx, cfg, root, store, task); err != nil {
 			fmt.Fprintf(os.Stderr, "%sloop: task %q failed: %v%s\n", ansiRed, task.ID, err, ansiReset)
-			_ = markTaskBlocked(store, task.ID)
+			_ = markTaskBlocked(store, task.ID, err.Error())
 		}
 
 		if loopOnce {
@@ -555,6 +555,7 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 	if err != nil {
 		return err
 	}
+	input = withPriorFeedback(input, task)
 
 	projectName := module.ProjectName(root)
 	workdir, branch, err := resolveWorktree(root, projectName, task)
@@ -893,16 +894,17 @@ func escalateTask(ctx context.Context, cfg *config.Config, root string, store *s
 
 	if runErr != nil {
 		fmt.Fprintf(os.Stderr, "%sescalation failed for task %q, marking blocked%s\n", ansiRed, task.ID, ansiReset)
-		_ = store.UpdateTaskState(task.ID, "blocked", extractFeedback(nil, runErr))
-		return markTaskBlocked(store, task.ID)
+		return markTaskBlocked(store, task.ID, extractFeedback(nil, runErr))
 	}
 
 	_ = store.UpdateTaskState(task.ID, "done", "")
 	return nil
 }
 
-func markTaskBlocked(store *storage.SQLiteStore, taskID string) error {
-	return store.UpdateTaskState(taskID, "blocked", "")
+// markTaskBlocked blocks a task and records why, so a later --retry-blocked
+// run can hand the reason back to the agent.
+func markTaskBlocked(store *storage.SQLiteStore, taskID, reason string) error {
+	return store.UpdateTaskState(taskID, "blocked", reason)
 }
 
 func requeueBlocked(store *storage.SQLiteStore) (int, error) {
@@ -979,6 +981,15 @@ func taskInput(task *storage.Task) (string, error) {
 		return spec, nil
 	}
 	return task.Description + "\n\n" + spec, nil
+}
+
+// withPriorFeedback appends the reason a needs-fix task was last rejected, so
+// the retry knows what to address instead of repeating the same attempt.
+func withPriorFeedback(input string, task *storage.Task) string {
+	if task.State != "needs-fix" || task.LastFeedback == "" {
+		return input
+	}
+	return input + "\n\n## Previous attempt was rejected\n\nAddress this feedback from the last attempt:\n\n" + task.LastFeedback
 }
 
 func extractFeedback(out *graph.Output, runErr error) string {
@@ -1079,7 +1090,7 @@ func runWatchDaemon(ctx context.Context, cfg *config.Config, root string) error 
 		} else if task != nil {
 			if err := processTask(ctx, cfg, root, store, task); err != nil {
 				slog.Error("task failed", "id", task.ID, "error", err)
-				_ = markTaskBlocked(store, task.ID)
+				_ = markTaskBlocked(store, task.ID, err.Error())
 			}
 		}
 

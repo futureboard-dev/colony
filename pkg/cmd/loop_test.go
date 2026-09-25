@@ -134,7 +134,7 @@ func TestLoopOnce_EscalationCeiling(t *testing.T) {
 	}
 
 	// Mark it blocked.
-	if err := markTaskBlocked(store, "test-escalation"); err != nil {
+	if err := markTaskBlocked(store, "test-escalation", "gate failed: lint"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -153,6 +153,28 @@ func TestLoopOnce_EscalationCeiling(t *testing.T) {
 	if !found {
 		t.Error("expected task to be marked 'blocked'")
 	}
+	if tasks[0].LastFeedback != "gate failed: lint" {
+		t.Errorf("LastFeedback = %q, want block reason preserved", tasks[0].LastFeedback)
+	}
+}
+
+func TestWithPriorFeedback(t *testing.T) {
+	t.Run("needs-fix with feedback appends it", func(t *testing.T) {
+		got := withPriorFeedback("spec", &storage.Task{State: "needs-fix", LastFeedback: "review: missing tests"})
+		if !strings.HasPrefix(got, "spec\n\n") || !strings.Contains(got, "review: missing tests") {
+			t.Errorf("got %q", got)
+		}
+	})
+	t.Run("open task unchanged", func(t *testing.T) {
+		if got := withPriorFeedback("spec", &storage.Task{State: "open", LastFeedback: "stale"}); got != "spec" {
+			t.Errorf("got %q", got)
+		}
+	})
+	t.Run("needs-fix without feedback unchanged", func(t *testing.T) {
+		if got := withPriorFeedback("spec", &storage.Task{State: "needs-fix"}); got != "spec" {
+			t.Errorf("got %q", got)
+		}
+	})
 }
 
 // TestPickNextTask_ReturnsOldestOpen verifies ordering by created_at.
