@@ -195,6 +195,7 @@ var paletteCommands = []cmdSpec{
 		PosFrom:     func(t storageTaskRef) string { return t.Branch },
 		Flags: []cmdFlag{
 			{Name: "worktree-only", Kind: flagBool, Help: "remove worktree, keep local branch"},
+			{Name: "yes", Kind: flagBool, Default: "true", Help: "skip the confirmation prompt"},
 		},
 	},
 	{
@@ -323,12 +324,12 @@ func (p *paletteState) buildArgv(spec cmdSpec) ([]string, error) {
 	for i, f := range spec.Flags {
 		switch f.Kind {
 		case flagBool:
-			if p.bools[i] != (f.Default == "true") {
-				if p.bools[i] {
-					argv = append(argv, "--"+f.Name)
-				} else {
-					argv = append(argv, "--"+f.Name+"=false")
-				}
+			// A default-on bool still goes on argv: the palette default (e.g.
+			// --yes) can differ from cobra's, and the child has no stdin.
+			if p.bools[i] {
+				argv = append(argv, "--"+f.Name)
+			} else if f.Default == "true" {
+				argv = append(argv, "--"+f.Name+"=false")
 			}
 		default:
 			v := strings.TrimSpace(p.values[i])

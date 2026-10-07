@@ -260,7 +260,7 @@ func TestPaletteFlagsMatchCobraDefinitions(t *testing.T) {
 		"loop retry-gate":   {},
 		"gate":              {"lang", "no-format"},
 		"task list":         {},
-		"task done":         {"worktree-only"},
+		"task done":         {"worktree-only", "yes"},
 		"mission run":       {"mission", "input", "output"},
 		"mission audit":     {"session", "decision", "status", "purge", "show-output"},
 		"log":               {"all", "live", "session"},
@@ -305,5 +305,22 @@ func TestPaletteModalFitsMinimumTerminal(t *testing.T) {
 	m.selectPaletteCommand(idx)
 	if got := strings.Count(m.renderPaletteModal(minWidth, minHeight), "\n") + 1; got > minHeight {
 		t.Errorf("craft form is %d rows, exceeds %d", got, minHeight)
+	}
+}
+
+func TestPaletteTaskDoneSkipsConfirmPrompt(t *testing.T) {
+	// The palette child runs without stdin, so the [y/N] prompt can't be answered.
+	idx, spec := specByName(t, "task done")
+	m := newTestModel(t, ViewDashboard, sampleStore())
+	m.openPalette()
+	m.selectPaletteCommand(idx)
+	m.palette.posValue = "colony/t-1"
+
+	argv, err := m.palette.buildArgv(spec)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := strings.Join(argv, " "); got != "task done colony/t-1 --yes" {
+		t.Errorf("argv = %q, want --yes passed to the child", got)
 	}
 }

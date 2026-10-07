@@ -19,10 +19,14 @@ var taskDoneCmd = &cobra.Command{
 	RunE:  runTaskDone,
 }
 
-var taskDoneWorktreeOnly bool
+var (
+	taskDoneWorktreeOnly bool
+	taskDoneYes          bool
+)
 
 func init() {
 	taskDoneCmd.Flags().BoolVar(&taskDoneWorktreeOnly, "worktree-only", false, "remove worktree but keep local branch")
+	taskDoneCmd.Flags().BoolVarP(&taskDoneYes, "yes", "y", false, "skip the confirmation prompt")
 }
 
 func runTaskDone(cmd *cobra.Command, args []string) error {
@@ -47,12 +51,14 @@ func runTaskDone(cmd *cobra.Command, args []string) error {
 	fmt.Printf("   Worktree: %s\n", worktreePath)
 	fmt.Printf("\n")
 
-	reader := bufio.NewReader(os.Stdin)
-	fmt.Printf("Have you reviewed, merged, or pushed this branch to origin? [y/N] ")
-	answer, _ := reader.ReadString('\n')
-	if !strings.EqualFold(strings.TrimSpace(answer), "y") {
-		fmt.Println("Aborted. Push or merge first, then run this again.")
-		return nil
+	if !taskDoneYes {
+		reader := bufio.NewReader(os.Stdin)
+		fmt.Printf("Have you reviewed, merged, or pushed this branch to origin? [y/N] ")
+		answer, _ := reader.ReadString('\n')
+		if !strings.EqualFold(strings.TrimSpace(answer), "y") {
+			fmt.Println("Aborted. Push or merge first, then run this again.")
+			return nil
+		}
 	}
 
 	if err := module.RemoveWorktree(root, projectName, branch, !taskDoneWorktreeOnly); err != nil {
