@@ -393,6 +393,7 @@ func runLoop(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer func() { _ = store.Close() }()
+	reapStaleSessions(store)
 
 	if loopRetryBlock {
 		n, rqErr := requeueBlocked(store)
@@ -920,6 +921,20 @@ func requeueBlocked(store *storage.SQLiteStore) (int, error) {
 	return len(blocked), nil
 }
 
+// reapStaleSessions clears sessions left "running" by a loop that was killed
+// before it could record how it ended. Failure only leaves stale rows, so it
+// is reported and the loop carries on.
+func reapStaleSessions(store *storage.SQLiteStore) {
+	n, err := store.ReapStaleSessions()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%sloop: reap stale sessions: %v%s\n", ansiRed, err, ansiReset)
+		return
+	}
+	if n > 0 {
+		fmt.Fprintf(os.Stderr, "%sloop: marked %d stale session(s) interrupted%s\n", ansiBlue, n, ansiReset)
+	}
+}
+
 func openLoopStore(root string) (*storage.SQLiteStore, error) {
 	dbPath := storage.DefaultDBPath()
 	if root != "" {
@@ -1059,6 +1074,7 @@ func runWatchDaemon(ctx context.Context, cfg *config.Config, root string) error 
 		return err
 	}
 	defer func() { _ = store.Close() }()
+	reapStaleSessions(store)
 
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()

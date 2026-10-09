@@ -3,6 +3,7 @@ package storage
 import (
 	"database/sql"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -407,5 +408,60 @@ func TestSessionTaskIDMigratesLegacyDB(t *testing.T) {
 	}
 	if sessions[0].MissionName != "loop-old" {
 		t.Errorf("legacy mission_name lost: %q", sessions[0].MissionName)
+	}
+}
+
+func TestReapStaleSessions(t *testing.T) {
+	// A real process that has already exited gives a pid known to be dead.
+	cmd := exec.Command("true")
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("run true: %v", err)
+	}
+	deadPID := cmd.Process.Pid
+
+	db := openTestDB(t)
+	start := time.Now().UTC()
+	for _, id := range []string{"dead", "live", "legacy", "finished"} {
+		if err := db.InsertSession(Session{ID: id, MissionName: "m", StartedAt: start, Status: "running"}); err != nil {
+			t.Fatalf("InsertSession %s: %v", id, err)
+		}
+	}
+	if _, err := db.db.Exec(`UPDATE sessions SET pid=? WHERE id IN ('dead','finished')`, deadPID); err != nil {
+		t.Fatalf("set dead pid: %v", err)
+	}
+	if _, err := db.db.Exec(`UPDATE sessions SET pid=0 WHERE id='legacy'`); err != nil {
+		t.Fatalf("set legacy pid: %v", err)
+	}
+	if err := db.UpdateSession("finished", "completed", start); err != nil {
+		t.Fatalf("UpdateSession: %v", err)
+	}
+
+	n, err := db.ReapStaleSessions()
+	if err != nil {
+		t.Fatalf("ReapStaleSessions: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("expected 1 reaped session, got %d", n)
+	}
+
+	want := map[string]string{
+		"dead":     "interrupted",
+		"live":     "running",
+		"legacy":   "running",
+		"finished": "completed",
+	}
+	for id, status := range want {
+		t.Run(id, func(t *testing.T) {
+			got, err := db.QuerySessions(SessionFilter{SessionID: id})
+			if err != nil || len(got) != 1 {
+				t.Fatalf("QuerySessions %s: %v (%d rows)", id, err, len(got))
+			}
+			if got[0].Status != status {
+				t.Errorf("status = %s, want %s", got[0].Status, status)
+			}
+			if status == "interrupted" && got[0].FinishedAt == nil {
+				t.Error("expected FinishedAt to be set")
+			}
+		})
 	}
 }

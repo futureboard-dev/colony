@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -164,6 +165,7 @@ func Open(dbPath string) (*SQLiteStore, error) {
 		`ALTER TABLE tasks ADD COLUMN pr_url TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE steps ADD COLUMN output TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE sessions ADD COLUMN task_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sessions ADD COLUMN pid INTEGER NOT NULL DEFAULT 0`,
 	} {
 		if _, err := db.Exec(alter); err != nil &&
 			!strings.Contains(err.Error(), "duplicate column") {
@@ -178,12 +180,55 @@ func (s *SQLiteStore) Close() error {
 	return s.db.Close()
 }
 
+// InsertSession records the session along with the current process ID, so a
+// session whose process died without finishing it can be detected later.
 func (s *SQLiteStore) InsertSession(sess Session) error {
 	_, err := s.db.Exec(
-		`INSERT OR REPLACE INTO sessions (id, mission_name, task_id, started_at, status) VALUES (?,?,?,?,?)`,
-		sess.ID, sess.MissionName, sess.TaskID, sess.StartedAt.UTC().Format(time.RFC3339), sess.Status,
+		`INSERT OR REPLACE INTO sessions (id, mission_name, task_id, started_at, status, pid) VALUES (?,?,?,?,?,?)`,
+		sess.ID, sess.MissionName, sess.TaskID, sess.StartedAt.UTC().Format(time.RFC3339), sess.Status, os.Getpid(),
 	)
 	return err
+}
+
+// ReapStaleSessions marks running sessions as interrupted when the process
+// that started them is gone (killed, crashed, rebooted), and returns how many
+// it marked. Rows with pid 0 predate the pid column and are left untouched,
+// since there is no way to tell whether they are still live.
+func (s *SQLiteStore) ReapStaleSessions() (int, error) {
+	rows, err := s.db.Query(`SELECT id, pid FROM sessions WHERE status='running' AND pid != 0`)
+	if err != nil {
+		return 0, fmt.Errorf("query running sessions: %w", err)
+	}
+	var stale []string
+	for rows.Next() {
+		var id string
+		var pid int
+		if err := rows.Scan(&id, &pid); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scan session: %w", err)
+		}
+		if !processAlive(pid) {
+			stale = append(stale, id)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterate sessions: %w", err)
+	}
+	now := time.Now()
+	for _, id := range stale {
+		if err := s.UpdateSession(id, "interrupted", now); err != nil {
+			return 0, fmt.Errorf("mark session %s interrupted: %w", id, err)
+		}
+	}
+	return len(stale), nil
+}
+
+// processAlive probes pid with signal 0; EPERM means it exists but belongs to
+// another user.
+func processAlive(pid int) bool {
+	err := syscall.Kill(pid, 0)
+	return err == nil || err == syscall.EPERM
 }
 
 func (s *SQLiteStore) UpdateSession(id, status string, finishedAt time.Time) error {
