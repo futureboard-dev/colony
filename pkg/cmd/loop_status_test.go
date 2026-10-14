@@ -220,6 +220,129 @@ func TestLoopStatus_SessionsDisplay(t *testing.T) {
 	}
 }
 
+func TestLoopStatus_Groups(t *testing.T) {
+	t.Run("text renders name, epic, done/total, per-part state, pr url", func(t *testing.T) {
+		dir, store, cleanup := setupStatusTest(t)
+		defer cleanup()
+
+		now := time.Now().Truncate(time.Second).UTC()
+		if err := store.InsertGroup(storage.TaskGroup{
+			ID: "g1", Name: "payments", EpicBranch: "feature/payments", BaseBranch: "main",
+			Lang: "go", State: "open", PRURL: "https://github.com/o/r/pull/9", CreatedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.InsertTask(storage.Task{
+			ID: "t1", State: "done", GroupID: "g1", SpecPath: "/specs/payments/parts/01-models.md", CreatedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.InsertTask(storage.Task{
+			ID: "t2", State: "open", GroupID: "g1", DependsOn: "t1",
+			SpecPath: "/specs/payments/parts/02-api.md", CreatedAt: now.Add(time.Minute),
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		out := runStatusCmd(t, dir, []string{})
+
+		if !strings.Contains(out, "=== Groups ===") {
+			t.Fatalf("expected a Groups section, got:\n%s", out)
+		}
+		if !strings.Contains(out, "payments") || !strings.Contains(out, "feature/payments") {
+			t.Errorf("expected group name and epic branch, got:\n%s", out)
+		}
+		if !strings.Contains(out, "1/2 done") {
+			t.Errorf("expected done/total, got:\n%s", out)
+		}
+		if !strings.Contains(out, "01-models") || !strings.Contains(out, "done") {
+			t.Errorf("expected the done part listed, got:\n%s", out)
+		}
+		if !strings.Contains(out, "02-api") {
+			t.Errorf("expected the waiting part listed, got:\n%s", out)
+		}
+		if !strings.Contains(out, "https://github.com/o/r/pull/9") {
+			t.Errorf("expected the PR URL, got:\n%s", out)
+		}
+	})
+
+	t.Run("waiting on blocked dep", func(t *testing.T) {
+		dir, store, cleanup := setupStatusTest(t)
+		defer cleanup()
+
+		now := time.Now().Truncate(time.Second).UTC()
+		if err := store.InsertGroup(storage.TaskGroup{
+			ID: "g2", Name: "docs", EpicBranch: "feature/docs", BaseBranch: "main",
+			Lang: "go", State: "open", CreatedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.InsertTask(storage.Task{
+			ID: "d1", State: "blocked", GroupID: "g2", SpecPath: "/specs/docs/parts/01-models.md", CreatedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.InsertTask(storage.Task{
+			ID: "d2", State: "open", GroupID: "g2", DependsOn: "d1",
+			SpecPath: "/specs/docs/parts/02-api.md", CreatedAt: now.Add(time.Minute),
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		out := runStatusCmd(t, dir, []string{})
+
+		if !strings.Contains(out, "waiting on 01-models (blocked)") {
+			t.Errorf("expected the blocked-dependency phrasing, got:\n%s", out)
+		}
+	})
+
+	t.Run("json includes groups", func(t *testing.T) {
+		dir, store, cleanup := setupStatusTest(t)
+		defer cleanup()
+
+		now := time.Now().Truncate(time.Second).UTC()
+		if err := store.InsertGroup(storage.TaskGroup{
+			ID: "g3", Name: "payments", EpicBranch: "feature/payments", BaseBranch: "main",
+			Lang: "go", State: "open", CreatedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.InsertTask(storage.Task{
+			ID: "j1", State: "done", GroupID: "g3", SpecPath: "/specs/payments/parts/01-models.md", CreatedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		out := runStatusCmd(t, dir, []string{"--json"})
+
+		var parsed struct {
+			Groups []struct {
+				Name       string `json:"name"`
+				EpicBranch string `json:"epic_branch"`
+				Done       int    `json:"done"`
+				Total      int    `json:"total"`
+				Parts      []struct {
+					ID     string `json:"id"`
+					Detail string `json:"detail"`
+				} `json:"parts"`
+			} `json:"groups"`
+		}
+		if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+			t.Fatalf("expected valid JSON: %v\nraw: %s", err, out)
+		}
+		if len(parsed.Groups) != 1 {
+			t.Fatalf("expected 1 group, got %d", len(parsed.Groups))
+		}
+		g := parsed.Groups[0]
+		if g.Name != "payments" || g.EpicBranch != "feature/payments" || g.Done != 1 || g.Total != 1 {
+			t.Errorf("unexpected group JSON: %+v", g)
+		}
+		if len(g.Parts) != 1 || g.Parts[0].ID != "01-models" || g.Parts[0].Detail != "done" {
+			t.Errorf("unexpected parts JSON: %+v", g.Parts)
+		}
+	})
+}
+
 // ----- helpers -----
 
 func setupStatusTest(t *testing.T) (dir string, store *storage.SQLiteStore, cleanup func()) {

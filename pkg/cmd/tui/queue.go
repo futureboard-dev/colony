@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/futureboard-dev/colony/pkg/storage"
@@ -141,6 +142,15 @@ func (m *Model) queueDetail(tasks []storage.Task, w, rows int) string {
 		fmt.Fprintf(&b, " %s %s\n", m.theme.Dim.Render("Base:"), t.BaseBranch)
 	}
 
+	if t.GroupID != "" {
+		fmt.Fprintf(&b, " %s %s   %s %s\n",
+			m.theme.Dim.Render("Group:"), groupNameFromSpecPath(t.SpecPath),
+			m.theme.Dim.Render("Epic:"), t.BaseBranch)
+		if waiting := unmetDependencies(t, m.tasks); len(waiting) > 0 {
+			fmt.Fprintf(&b, " %s %s\n", m.theme.Dim.Render("Waiting on:"), strings.Join(waiting, ", "))
+		}
+	}
+
 	used := strings.Count(b.String(), "\n")
 	remaining := rows - used - 1
 
@@ -166,6 +176,59 @@ func (m *Model) queueDetail(tasks []storage.Task, w, rows int) string {
 		b.WriteString("  " + m.theme.Dim.Render(truncate(strings.Join(parts, "  ·  "), w-3)))
 	}
 	return b.String()
+}
+
+// groupNameFromSpecPath recovers a group's display name from a group task's
+// spec path, e.g. ".../specs/payments/parts/02-api.md" -> "payments". Group
+// tasks don't carry the group's name directly, only its ID, so this is
+// derived from the same spec-dir layout `task add --group` writes.
+func groupNameFromSpecPath(specPath string) string {
+	if specPath == "" {
+		return ""
+	}
+	return filepath.Base(filepath.Dir(filepath.Dir(specPath)))
+}
+
+// partLabelFromSpec derives a group task's short display label from its spec
+// file name (e.g. "02-api.md" -> "02-api"), falling back to the task ID.
+func partLabelFromSpec(t storage.Task) string {
+	if t.SpecPath == "" {
+		return t.ID
+	}
+	base := filepath.Base(t.SpecPath)
+	return strings.TrimSuffix(base, filepath.Ext(base))
+}
+
+// unmetDependencies returns the display labels of t's dependencies that
+// aren't done yet, resolved against all currently-loaded tasks (not just the
+// queue's filtered/sorted view, so dependencies outside the current filter
+// still show up).
+func unmetDependencies(t storage.Task, all []storage.Task) []string {
+	if t.DependsOn == "" {
+		return nil
+	}
+	stateByID := make(map[string]string, len(all))
+	labelByID := make(map[string]string, len(all))
+	for _, o := range all {
+		stateByID[o.ID] = o.State
+		labelByID[o.ID] = partLabelFromSpec(o)
+	}
+	var waiting []string
+	for id := range strings.SplitSeq(t.DependsOn, ",") {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if stateByID[id] == "done" {
+			continue
+		}
+		label := labelByID[id]
+		if label == "" {
+			label = id
+		}
+		waiting = append(waiting, label)
+	}
+	return waiting
 }
 
 // sessionsForTask returns sessions recorded against the given task. Sessions

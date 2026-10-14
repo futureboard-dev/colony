@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -87,7 +88,7 @@ type SessionFilter struct {
 type Task struct {
 	ID            string
 	Description   string
-	State         string // "open", "needs-fix", "done", "blocked"
+	State         string // "open", "needs-fix", "running", "done", "blocked"
 	SpecPath      string // path to the spec file (--file)
 	BaseBranch    string // base branch (--base)
 	GateOverrides string // comma-joined gate names to skip, e.g. "format,lint"
@@ -96,14 +97,36 @@ type Task struct {
 	LastFeedback  string
 	Branch        string // worktree branch created for this task (for continue/reuse)
 	PRURL         string // PR URL linked to this task (for OBSERVE CI/PR polling)
+	GroupID       string // task_groups.id this task belongs to, empty for standalone tasks
+	DependsOn     string // comma-joined task IDs this task depends on, same style as GateOverrides
 	CreatedAt     time.Time
 	UpdatedAt     *time.Time
 }
 
 // TaskFilter controls which tasks to return from QueryTasks.
 type TaskFilter struct {
-	ID     string   // optional — filter by exact task ID
-	States []string // optional — filter by one or more states
+	ID      string   // optional — filter by exact task ID
+	States  []string // optional — filter by one or more states
+	GroupID string   // optional — filter by task_groups.id
+}
+
+// TaskGroup represents a set of dependent tasks split from one feature spec
+// and landed together on a shared epic branch.
+type TaskGroup struct {
+	ID         string
+	Name       string
+	EpicBranch string
+	BaseBranch string
+	Lang       string
+	State      string // "open", "done", "blocked"
+	PRURL      string
+	CreatedAt  time.Time
+	UpdatedAt  *time.Time
+}
+
+// GroupFilter controls which groups to return from QueryGroups.
+type GroupFilter struct {
+	ID string // optional — filter by exact group ID
 }
 
 // Store is the persistence interface for mission runs.
@@ -126,6 +149,12 @@ type Store interface {
 	UpdateTaskBranch(id, branch string) error
 	IncrementCycle(id string) error
 	PickNextOpenTask() (*Task, error)
+	ClaimNextTask() (*Task, error)
+
+	// Group CRUD
+	InsertGroup(g TaskGroup) error
+	QueryGroups(f GroupFilter) ([]TaskGroup, error)
+	UpdateGroup(id, state, prURL string) error
 }
 
 // SQLiteStore implements Store using modernc.org/sqlite.
@@ -152,6 +181,17 @@ func Open(dbPath string) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 	db.SetMaxOpenConns(1)
+	// WAL mode lets readers and a writer proceed concurrently, and busy_timeout
+	// makes a writer wait for a lock instead of failing immediately — both
+	// needed once parallel loop workers share this one *sql.DB.
+	if _, err := db.Exec(`PRAGMA journal_mode=WAL`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("enable WAL mode: %w", err)
+	}
+	if _, err := db.Exec(`PRAGMA busy_timeout=5000`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("set busy_timeout: %w", err)
+	}
 	if _, err := db.Exec(schemaDDL); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate schema: %w", err)
@@ -164,6 +204,9 @@ func Open(dbPath string) (*SQLiteStore, error) {
 		`ALTER TABLE tasks ADD COLUMN pr_url TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE steps ADD COLUMN output TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE sessions ADD COLUMN task_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sessions ADD COLUMN pid INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE tasks ADD COLUMN group_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE tasks ADD COLUMN depends_on TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := db.Exec(alter); err != nil &&
 			!strings.Contains(err.Error(), "duplicate column") {
@@ -178,12 +221,55 @@ func (s *SQLiteStore) Close() error {
 	return s.db.Close()
 }
 
+// InsertSession records the session along with the current process ID, so a
+// session whose process died without finishing it can be detected later.
 func (s *SQLiteStore) InsertSession(sess Session) error {
 	_, err := s.db.Exec(
-		`INSERT OR REPLACE INTO sessions (id, mission_name, task_id, started_at, status) VALUES (?,?,?,?,?)`,
-		sess.ID, sess.MissionName, sess.TaskID, sess.StartedAt.UTC().Format(time.RFC3339), sess.Status,
+		`INSERT OR REPLACE INTO sessions (id, mission_name, task_id, started_at, status, pid) VALUES (?,?,?,?,?,?)`,
+		sess.ID, sess.MissionName, sess.TaskID, sess.StartedAt.UTC().Format(time.RFC3339), sess.Status, os.Getpid(),
 	)
 	return err
+}
+
+// ReapStaleSessions marks running sessions as interrupted when the process
+// that started them is gone (killed, crashed, rebooted), and returns how many
+// it marked. Rows with pid 0 predate the pid column and are left untouched,
+// since there is no way to tell whether they are still live.
+func (s *SQLiteStore) ReapStaleSessions() (int, error) {
+	rows, err := s.db.Query(`SELECT id, pid FROM sessions WHERE status='running' AND pid != 0`)
+	if err != nil {
+		return 0, fmt.Errorf("query running sessions: %w", err)
+	}
+	var stale []string
+	for rows.Next() {
+		var id string
+		var pid int
+		if err := rows.Scan(&id, &pid); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scan session: %w", err)
+		}
+		if !processAlive(pid) {
+			stale = append(stale, id)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterate sessions: %w", err)
+	}
+	now := time.Now()
+	for _, id := range stale {
+		if err := s.UpdateSession(id, "interrupted", now); err != nil {
+			return 0, fmt.Errorf("mark session %s interrupted: %w", id, err)
+		}
+	}
+	return len(stale), nil
+}
+
+// processAlive probes pid with signal 0; EPERM means it exists but belongs to
+// another user.
+func processAlive(pid int) bool {
+	err := syscall.Kill(pid, 0)
+	return err == nil || err == syscall.EPERM
 }
 
 func (s *SQLiteStore) UpdateSession(id, status string, finishedAt time.Time) error {

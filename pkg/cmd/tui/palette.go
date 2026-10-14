@@ -75,7 +75,7 @@ var paletteCommands = []cmdSpec{
 		Summary: "Build one spec end to end",
 		Flags: []cmdFlag{
 			{Name: "spec", Kind: flagString, Placeholder: "path/to/TASK.md", Help: "spec markdown file"},
-			{Name: "lang", Kind: flagString, Required: true, Placeholder: "typescript", Help: "typescript, python, go"},
+			{Name: "lang", Kind: flagString, Required: true, Placeholder: "typescript", Help: "typescript, python, go, none"},
 			{Name: "base", Kind: flagString, Placeholder: "branch", Help: "must not be main/master"},
 			{Name: "provider", Kind: flagString, Default: "deepseek", Placeholder: "deepseek", Help: "deepseek or anthropic"},
 			{Name: "model", Kind: flagString, Placeholder: "model", Help: "override config model"},
@@ -93,7 +93,7 @@ var paletteCommands = []cmdSpec{
 		Summary: "Fan a spec out across subtask agents",
 		Flags: []cmdFlag{
 			{Name: "spec", Kind: flagString, Placeholder: "path/to/TASK.md", Help: "spec markdown file"},
-			{Name: "lang", Kind: flagString, Required: true, Placeholder: "typescript", Help: "typescript, python, go"},
+			{Name: "lang", Kind: flagString, Required: true, Placeholder: "typescript", Help: "typescript, python, go, none"},
 			{Name: "mode", Kind: flagString, Default: "standard", Placeholder: "standard", Help: "quick, standard, full"},
 			{Name: "review-depth", Kind: flagString, Default: "deep", Placeholder: "deep", Help: "fast or deep"},
 			{Name: "no-format", Kind: flagBool, Help: "skip the format gate"},
@@ -111,6 +111,16 @@ var paletteCommands = []cmdSpec{
 			{Name: "provider", Kind: flagString, Default: "deepseek", Placeholder: "deepseek", Help: "deepseek or anthropic"},
 			{Name: "interactive", Kind: flagBool, Help: "collaborate in a live session"},
 			{Name: "continue", Kind: flagBool, Help: "revise existing TASK.md"},
+		},
+	},
+	{
+		Name:    "task add --group",
+		Argv:    []string{"task", "add"},
+		Summary: "Enqueue a split spec directory as a dependency-ordered group",
+		Flags: []cmdFlag{
+			{Name: "group", Kind: flagString, Required: true, Placeholder: "path/to/.colony/specs/<name>", Help: "spec directory with parts/ (from spec-feature --split)"},
+			{Name: "lang", Kind: flagString, Required: true, Placeholder: "go", Help: "typescript, python, go"},
+			{Name: "base", Kind: flagString, Placeholder: "branch", Help: "epic branch base (default: repo default branch)"},
 		},
 	},
 	{
@@ -195,6 +205,7 @@ var paletteCommands = []cmdSpec{
 		PosFrom:     func(t storageTaskRef) string { return t.Branch },
 		Flags: []cmdFlag{
 			{Name: "worktree-only", Kind: flagBool, Help: "remove worktree, keep local branch"},
+			{Name: "yes", Kind: flagBool, Default: "true", Help: "skip the confirmation prompt"},
 		},
 	},
 	{
@@ -323,12 +334,12 @@ func (p *paletteState) buildArgv(spec cmdSpec) ([]string, error) {
 	for i, f := range spec.Flags {
 		switch f.Kind {
 		case flagBool:
-			if p.bools[i] != (f.Default == "true") {
-				if p.bools[i] {
-					argv = append(argv, "--"+f.Name)
-				} else {
-					argv = append(argv, "--"+f.Name+"=false")
-				}
+			// A default-on bool still goes on argv: the palette default (e.g.
+			// --yes) can differ from cobra's, and the child has no stdin.
+			if p.bools[i] {
+				argv = append(argv, "--"+f.Name)
+			} else if f.Default == "true" {
+				argv = append(argv, "--"+f.Name+"=false")
 			}
 		default:
 			v := strings.TrimSpace(p.values[i])

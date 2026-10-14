@@ -31,6 +31,29 @@ func TestBuildContinueContainsLang(t *testing.T) {
 	}
 }
 
+func TestSpecSplitPrompt(t *testing.T) {
+	spec := "# Agent Task Spec\n\n## 1. Foo\n\nDo something unique-marker-xyz."
+	p, err := SpecSplit(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(p, "unique-marker-xyz") {
+		t.Error("SpecSplit prompt should embed the spec content")
+	}
+	if !strings.Contains(p, "exactly one owner") {
+		t.Error("SpecSplit prompt should state that every file has exactly one owner")
+	}
+	if !strings.Contains(p, "PART 00: contracts") {
+		t.Error("SpecSplit prompt should ask for a contracts part when interfaces are shared")
+	}
+	if !strings.Contains(p, "## PLAN") {
+		t.Error("SpecSplit prompt should ask for a PLAN section")
+	}
+	if !strings.Contains(p, "only earlier") {
+		t.Error("SpecSplit prompt should state that dependencies point only to earlier parts")
+	}
+}
+
 func TestFixContainsGateAndErrors(t *testing.T) {
 	p, err := Fix("Type check", "cannot use string as int")
 	if err != nil {

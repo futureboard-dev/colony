@@ -260,7 +260,7 @@ func TestPaletteFlagsMatchCobraDefinitions(t *testing.T) {
 		"loop retry-gate":   {},
 		"gate":              {"lang", "no-format"},
 		"task list":         {},
-		"task done":         {"worktree-only"},
+		"task done":         {"worktree-only", "yes"},
 		"mission run":       {"mission", "input", "output"},
 		"mission audit":     {"session", "decision", "status", "purge", "show-output"},
 		"log":               {"all", "live", "session"},
@@ -278,6 +278,37 @@ func TestPaletteFlagsMatchCobraDefinitions(t *testing.T) {
 				t.Errorf("%s flag %d = %q, want %q", name, i, f.Name, flags[i])
 			}
 		}
+	}
+}
+
+// TestPaletteHasTaskAddGroupEntry pins that the palette exposes the group
+// workflow next to spec-feature, since it's a separate entry point users
+// reach for after `spec-feature --split`.
+func TestPaletteHasTaskAddGroupEntry(t *testing.T) {
+	specIdx, spec := specByName(t, "task add --group")
+	if spec.Argv[0] != "task" || spec.Argv[1] != "add" {
+		t.Errorf("expected Argv {task, add}, got %v", spec.Argv)
+	}
+
+	specFeatureIdx, _ := specByName(t, "spec-feature")
+	if specIdx <= specFeatureIdx {
+		t.Errorf("expected task add --group to sit after spec-feature in the picker, got indices %d, %d", specFeatureIdx, specIdx)
+	}
+
+	var hasGroup, hasLang bool
+	for _, f := range spec.Flags {
+		switch f.Name {
+		case "group":
+			hasGroup = f.Required
+		case "lang":
+			hasLang = f.Required
+		}
+	}
+	if !hasGroup {
+		t.Error("expected a required --group flag")
+	}
+	if !hasLang {
+		t.Error("expected a required --lang flag")
 	}
 }
 
@@ -305,5 +336,22 @@ func TestPaletteModalFitsMinimumTerminal(t *testing.T) {
 	m.selectPaletteCommand(idx)
 	if got := strings.Count(m.renderPaletteModal(minWidth, minHeight), "\n") + 1; got > minHeight {
 		t.Errorf("craft form is %d rows, exceeds %d", got, minHeight)
+	}
+}
+
+func TestPaletteTaskDoneSkipsConfirmPrompt(t *testing.T) {
+	// The palette child runs without stdin, so the [y/N] prompt can't be answered.
+	idx, spec := specByName(t, "task done")
+	m := newTestModel(t, ViewDashboard, sampleStore())
+	m.openPalette()
+	m.selectPaletteCommand(idx)
+	m.palette.posValue = "colony/t-1"
+
+	argv, err := m.palette.buildArgv(spec)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := strings.Join(argv, " "); got != "task done colony/t-1 --yes" {
+		t.Errorf("argv = %q, want --yes passed to the child", got)
 	}
 }
