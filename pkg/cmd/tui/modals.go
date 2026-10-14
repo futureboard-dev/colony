@@ -125,6 +125,7 @@ func (m *Model) renderLoopControlModal(frameW, frameH int) string {
 	b.WriteString("\n" + m.theme.Subtitle.Render(" ── When idle ──") + "\n")
 	b.WriteString(m.styleHints("[Enter] Run once (--once)") + "\n")
 	b.WriteString(m.styleHints("[b] Run continuously") + "\n")
+	b.WriteString(m.styleHints("[p] Run in parallel…          (set --parallel N)") + "\n")
 	b.WriteString(m.styleHints("[i] Run once interactive      (hands over the terminal)") + "\n")
 	b.WriteString(m.styleHints("[c] Run with flags…           (command palette)") + "\n")
 	b.WriteString("\n" + m.styleHints("[Esc] close"))

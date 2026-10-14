@@ -780,6 +780,8 @@ func (m *Model) dispatchModalMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.startLoop("loop", []string{"loop"})
 		case "i":
 			return m, m.runInteractiveLoop()
+		case "p":
+			m.openPaletteAt("loop", "parallel")
 		case "c":
 			m.openPalette()
 		}

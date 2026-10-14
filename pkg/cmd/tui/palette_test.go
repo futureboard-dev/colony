@@ -251,9 +251,9 @@ func TestPaletteFlagsMatchCobraDefinitions(t *testing.T) {
 	// Guards against the palette drifting from pkg/cmd. Each entry is the flag
 	// set declared by the corresponding cobra command's init().
 	want := map[string][]string{
-		"loop":              {"once", "watch", "lang", "max-passes", "max-cycles", "idle", "escalate-to", "retry-blocked", "review"},
+		"loop":              {"once", "watch", "lang", "max-passes", "max-cycles", "idle", "escalate-to", "retry-blocked", "review", "parallel"},
 		"swarm":             {"spec", "lang", "mode", "review-depth", "no-format", "no-pr"},
-		"spec-feature":      {"file", "provider", "interactive", "continue"},
+		"spec-feature":      {"file", "provider", "interactive", "continue", "split", "force"},
 		"loop status":       {"state", "json"},
 		"loop run":          {"lang"},
 		"loop retry-review": {},
