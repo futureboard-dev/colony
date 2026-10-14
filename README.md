@@ -545,6 +545,10 @@ colony spec-feature payments --split "accept card payments with Stripe"
 | `colony loop stop` | Stop after the running parts finish |
 | `colony loop --retry-blocked --parallel N` | Put blocked parts back in the queue and carry on |
 
+In `colony tui`: Loop Control (`l`) → `[p]` opens the loop form on
+`--parallel`, and the command palette (`c`) has `spec-feature` (with
+`--split` and `--force`) and `task add --group`.
+
 `--lang` sets the gates (`go`, `typescript`, `python`). Use `none` for a
 language colony has no gates for (e.g. C#); parts then land without a build
 check, so build the epic branch yourself after the contracts part lands.
