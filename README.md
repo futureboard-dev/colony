@@ -488,79 +488,120 @@ If you prefer not to use the built-in scheduler, add an entry manually:
 
 ## Spec Split & Swarm
 
-For a feature too large for one task, split its spec into dependent parts and
-build them in parallel, landing each on a shared epic branch that opens a
-single PR once every part is done.
+For a feature too big for one task: split its spec into parts, build the parts
+in parallel (each in its own worktree, each waiting only for the parts it
+needs), land them one by one on an epic branch, and open a single PR at the end.
+
+### From a big spec to one PR
 
 ```bash
-# 1. Split a spec you already have, as-is (copied to SOURCE.md)...
-colony spec-feature payments --split --file specs/payments.md
-#    ...or split a generated TASK.md (generated first if missing)
-colony spec-feature payments --split "handle card payments"
+# 1. Split the spec. It is copied unchanged to SOURCE.md; the LLM writes a plan
+#    and one short brief per part that points into it.
+colony spec-feature payments --split --file specs/payments.md --provider anthropic
 
-# 2. Review the waves, critical path and plan
+# 2. Review before anything runs: waves, critical path, who owns which shared
+#    file, reserved migration numbers, and notes on what to fix first.
 $EDITOR .colony/specs/payments/PLAN.md
+$EDITOR .colony/specs/payments/parts/03-api.md     # optional hand edits
 
-# 3. Edit a part if needed — the frontmatter (id, depends_on) is the source
-#    of truth for the next step, so hand edits to dependencies are honored
-$EDITOR .colony/specs/payments/parts/02-api.md
+#    Not happy with the split? Run it again:
+colony spec-feature payments --split --file specs/payments.md --force
 
-# 4. Enqueue the whole group: creates the epic branch feature/payments and
-#    inserts one task per part, in topological order
+# 3. Queue the parts: creates the local branch feature/payments and one task
+#    per part, in dependency order.
 colony task add --group .colony/specs/payments --lang go
 
-# 5. Build every claimable part concurrently — 02 and 03 don't start until
-#    01 is done, but run at the same time once they can
+# 4. Build. Up to 3 parts at once; a part starts as soon as everything it
+#    depends on has landed.
 colony loop --parallel 3
 
-# 6. Check progress
+# 5. Watch progress (in another terminal).
 colony loop status
 ```
 
-- **Splitting** (`--split`) calls the LLM once to divide the spec into 1–12
-  parts. Shared interfaces, stubs and one extension point per part go in a
-  `00-contracts` part, so other parts depend on it rather than on each other.
-  Every file has one owner (`Owns:`), and sequence numbers such as migrations
-  are assigned up front (`Reserves:`); two owners of the same file or number
-  is a warning. With `--file` the spec is copied to `SOURCE.md` and never
-  rewritten; otherwise `TASK.md` is split, generated first if missing. An
-  existing `parts/` directory is refused unless you pass `--force`.
-- **PLAN.md** lists the waves (parts that can run at the same time), the
-  critical path, and the LLM's notes on shared files, reservations, hook
-  points and anything to fix before building.
-- **Part files** live at `.colony/specs/<name>/parts/NN-<slug>.md`, each with
-  a frontmatter header (`id`, `depends_on`, `source`, `owns`, `reserves`)
-  followed by a short brief that points into the source spec. The agent
-  building a part gets its brief, `PLAN.md`, the handoff notes of the parts
-  it depends on, and the full source spec.
-- **Handoff notes**: each part's agent writes `PART_NOTES.md` in its worktree
-  (what it built, the real names of its interfaces, anything that differs from
-  the plan). The file is listed in `.git/info/exclude`, so it is never
-  committed; when the part lands it moves to `.colony/specs/<name>/notes/<id>.md`.
-- **Waiting on dependencies**: with `--parallel`, the loop doesn't count itself
-  idle while parts are running, so dependents start as soon as the parts they
-  need land, however long those take. `task add --group` re-validates the dependency graph from this
-  frontmatter, so hand edits (adding, dropping, or rewiring a dependency) are
-  respected — and a graph with a cycle or a missing dependency is rejected
-  before anything is enqueued.
-- **The epic branch** (`feature/<name>`) is created locally from `--base`
-  (default: the repo's default branch) and stays local — worktrees share
-  refs, so each part merges it directly with no fetch — until every part in
-  the group is done, at which point it's pushed and one PR opens against the
-  group's base branch.
-- **Landing** squashes each finished part onto the epic branch's tip via an
-  atomic `git update-ref` compare-and-swap, so two parts finishing back to
-  back can't clobber each other; a losing part re-integrates against the new
-  tip and retries (up to 3 attempts) before it's marked `blocked`.
-- **`--parallel N`** (default 1, unchanged loop behavior) runs up to N tasks
-  at once — group or otherwise — respecting `depends_on`. Each worker's
-  output is prefixed `[<task-id or part-id>]` so concurrent logs stay
-  attributable. A crash or kill mid-build leaves tasks `running`; the next
-  `colony loop` start resets them to `needs-fix` automatically.
-- **`colony loop status`** has a `Groups` section (also under `groups` in
-  `--json`) showing each group's epic branch, `done/total` count, and every
-  part's state — `running`, `waiting on <ids>`, `waiting on <id> (blocked)`,
-  `done`, or `blocked` — plus the PR URL once the group completes.
+When the last part lands, the loop pushes `feature/payments` and opens one PR
+against the base branch.
+
+No spec yet? Give requirements instead and colony writes `TASK.md` first, then
+splits it:
+
+```bash
+colony spec-feature payments --split "accept card payments with Stripe"
+```
+
+### Commands
+
+| Command | What it does |
+| --- | --- |
+| `colony spec-feature <name> --split --file <spec>` | Copy `<spec>` to `SOURCE.md` and split it as-is |
+| `colony spec-feature <name> --split "<requirements>"` | Generate `TASK.md` if missing, then split it |
+| `colony spec-feature <name> --split` | Split an existing `.colony/specs/<name>/TASK.md` |
+| `... --force` | Replace an existing `parts/` directory |
+| `... --provider anthropic` | Use Anthropic instead of DeepSeek for the split |
+| `colony task add --group <spec-dir> --lang <lang>` | Create `feature/<name>` and queue every part |
+| `... --base <branch>` | Branch the epic from `<branch>` (default: the repo's default branch) |
+| `colony loop --parallel N` | Build up to N parts at once (default 1) |
+| `colony loop status` / `--json` | Queue plus a Groups section: done/total, each part's state, PR URL |
+| `colony loop stop` | Stop after the running parts finish |
+| `colony loop --retry-blocked --parallel N` | Put blocked parts back in the queue and carry on |
+
+`--lang` sets the gates (`go`, `typescript`, `python`). Use `none` for a
+language colony has no gates for (e.g. C#); parts then land without a build
+check, so build the epic branch yourself after the contracts part lands.
+
+### The spec folder
+
+```
+.colony/specs/payments/
+  SOURCE.md          the spec, unchanged (or TASK.md when colony generated it)
+  PLAN.md            waves, critical path, shared files, reservations, notes
+  parts/
+    00-contracts.md  shared interfaces, stubs, one extension point per part
+    01-models.md     frontmatter (id, depends_on, source, owns, reserves) + brief
+    ...
+  notes/
+    00-contracts.md  handoff notes, written when each part lands
+```
+
+### How it works
+
+- **Contracts first.** When parts share interfaces, types, config or a file
+  every part touches (service registration, routes), the split adds a
+  `00-contracts` part with stubs and one extension point per part. Other parts
+  depend on 00 instead of on each other, which is what lets them run in
+  parallel.
+- **One owner per file, numbers reserved up front.** Each part lists its files
+  (`owns`) and its migration numbers or similar (`reserves`). Two parts
+  claiming the same file or number is a warning in the output and in PLAN.md.
+- **Briefs, not rewrites.** Parts point into the source spec (sections, test
+  IDs) instead of copying it, so a long spec loses no detail. A part's agent
+  gets its brief, `PLAN.md`, the notes of the parts it depends on, and the full
+  source spec.
+- **Handoff notes.** Each agent writes `PART_NOTES.md` in its worktree: what it
+  built, the exact names of its interfaces, and anything that differs from the
+  plan. The file is in `.git/info/exclude`, so it is never committed; when the
+  part lands it moves to `notes/<id>.md` for the parts that depend on it.
+- **Hand edits.** Edit part files before `task add --group`: it re-reads their
+  frontmatter and rejects a cycle or a missing dependency before queueing
+  anything. After queueing, brief edits still reach the agent, but dependency
+  changes need a re-queue.
+- **Waiting on dependencies.** A part runs only after every part it depends on
+  is `done`, which means it has landed on the epic branch. The loop doesn't
+  count itself idle while parts are running, so it never gives up on a long
+  part's dependents.
+- **The epic branch** (`feature/<name>`) stays local until every part is done.
+  Each part starts from it, and merges it again before landing to pick up
+  siblings that landed in the meantime.
+- **Landing** squashes a part to one commit on the epic tip with an atomic
+  `git update-ref` compare-and-swap. If a sibling landed first, the part merges
+  the new tip, re-runs its gates and tries again (3 attempts), then is marked
+  `blocked`. A merge conflict also marks it `blocked`.
+- **Parallel workers** prefix their output with `[<part-id>]`. If the loop is
+  killed, parts left `running` are reset to `needs-fix` on the next start and
+  continue in their existing worktrees.
+- **Blocked parts** hold up only the parts that depend on them; `loop status`
+  shows those as `waiting on <id> (blocked)`. Fix the cause, then run
+  `colony loop --retry-blocked --parallel N`.
 
 For systemd:
 
