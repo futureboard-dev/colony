@@ -77,6 +77,48 @@ func TestLoopControlParallelOpensLoopForm(t *testing.T) {
 	}
 }
 
+func TestRememberLoopArgs(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"parallel run is remembered", []string{"loop", "--parallel", "3"}, "loop --parallel 3"},
+		{"plain run is remembered", []string{"loop"}, "loop"},
+		{"retry-blocked is dropped", []string{"loop", "--retry-blocked", "--parallel", "2"}, "loop --parallel 2"},
+		{"once is not remembered", []string{"loop", "--once"}, "loop --parallel 4"},
+		{"subcommand is not remembered", []string{"loop", "status"}, "loop --parallel 4"},
+		{"other command is not remembered", []string{"craft", "--spec", "x"}, "loop --parallel 4"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			rememberLoopArgs(dir, []string{"loop", "--parallel", "4"})
+			rememberLoopArgs(dir, tc.args)
+			if got := strings.Join(lastLoopArgs(dir), " "); got != tc.want {
+				t.Errorf("lastLoopArgs = %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	t.Run("nothing recorded falls back to plain loop", func(t *testing.T) {
+		if got := lastLoopArgs(t.TempDir()); len(got) != 1 || got[0] != "loop" {
+			t.Errorf("lastLoopArgs = %v", got)
+		}
+	})
+}
+
+func TestLoopControlShowsRestartArgs(t *testing.T) {
+	dir := t.TempDir()
+	rememberLoopArgs(dir, []string{"loop", "--parallel", "3"})
+	m := newTestModel(t, ViewDashboard, sampleStore())
+	m.opts.ColonyDir = dir
+
+	if out := m.renderLoopControlModal(120, 40); !strings.Contains(out, "restarts as: colony loop --parallel 3") {
+		t.Errorf("expected the restart args in the modal, got:\n%s", out)
+	}
+}
+
 func TestStartLoopRefusesWhenPidFileIsLive(t *testing.T) {
 	dir := t.TempDir()
 	// Our own PID is definitely alive, so this stands in for a running loop.
