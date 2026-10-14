@@ -259,7 +259,7 @@ func runSpecFeatureSplit(cmd *cobra.Command, args []string, cfg *config.Config, 
 		return fmt.Errorf("read %s: %w", sourceFile, err)
 	}
 
-	splitPrompt, err := prompt.SpecSplit(string(specData), repoFileList(root))
+	splitPrompt, err := prompt.SpecSplit(string(specData), repoFileList(root), repoConventions(root))
 	if err != nil {
 		return fmt.Errorf("build split prompt: %w", err)
 	}
@@ -666,9 +666,28 @@ func repoFileList(root string) string {
 	return strings.Join(files, "\n")
 }
 
+// maxConventionsBytes caps how much of the repo's CLAUDE.md goes into the
+// split prompt.
+const maxConventionsBytes = 20000
+
+// repoConventions returns the repo's CLAUDE.md for the split prompt, so the
+// split places new code where the repo's rules say it goes (it sees only file
+// names otherwise). A repo without one returns "".
+func repoConventions(root string) string {
+	data, err := os.ReadFile(filepath.Join(root, "CLAUDE.md"))
+	if err != nil {
+		return ""
+	}
+	if len(data) > maxConventionsBytes {
+		return string(data[:maxConventionsBytes]) + "\n... (truncated)"
+	}
+	return string(data)
+}
+
 // validateParts checks the part graph parseParts produced: unique IDs,
 // dependencies that resolve to a known part, and no cycles (via topological
-// sort) are errors. A file owned, or a number reserved, by two parts, and an
+// sort) are errors. A path owned by two parts (including a "dir/**" that
+// covers another part's path), a number reserved by two parts, and an
 // item that looks like a placeholder or a description, are reported as warnings only — the caller decides whether to surface them.
 func validateParts(parts []specPart) ([]string, error) {
 	seen := make(map[string]bool, len(parts))
@@ -690,7 +709,8 @@ func validateParts(parts []specPart) ([]string, error) {
 	}
 
 	var warnings []string
-	fileOwner := make(map[string]string)
+	type claim struct{ path, part string }
+	var claims []claim
 	reservedBy := make(map[string]string)
 	for _, p := range parts {
 		for _, item := range append(append([]string{}, p.Owns...), p.Reserves...) {
@@ -699,11 +719,7 @@ func validateParts(parts []specPart) ([]string, error) {
 			}
 		}
 		for _, f := range p.Owns {
-			if owner, ok := fileOwner[f]; ok && owner != p.ID {
-				warnings = append(warnings, fmt.Sprintf("%q is owned by both part %q and part %q", f, owner, p.ID))
-				continue
-			}
-			fileOwner[f] = p.ID
+			claims = append(claims, claim{f, p.ID})
 		}
 		for _, r := range p.Reserves {
 			if owner, ok := reservedBy[r]; ok && owner != p.ID {
@@ -713,7 +729,26 @@ func validateParts(parts []specPart) ([]string, error) {
 			reservedBy[r] = p.ID
 		}
 	}
+	for i, a := range claims {
+		for _, b := range claims[i+1:] {
+			switch {
+			case a.part == b.part:
+			case a.path == b.path:
+				warnings = append(warnings, fmt.Sprintf("%q is owned by both part %q and part %q", a.path, a.part, b.part))
+			case ownsCover(a.path, b.path) || ownsCover(b.path, a.path):
+				warnings = append(warnings, fmt.Sprintf("%q (part %q) overlaps %q (part %q)", a.path, a.part, b.path, b.part))
+			}
+		}
+	}
 	return warnings, nil
+}
+
+// ownsCover reports whether owns entry dir, a directory written "dir/**",
+// covers path: the directory itself or anything under it, including a
+// nested "dir/sub/**".
+func ownsCover(dir, path string) bool {
+	d, ok := strings.CutSuffix(dir, "/**")
+	return ok && (path == d || strings.HasPrefix(path, d+"/"))
 }
 
 // topoSortParts returns part IDs in dependency order (a part always follows
