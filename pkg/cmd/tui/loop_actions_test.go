@@ -3,6 +3,7 @@ package tui
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -46,6 +47,33 @@ func TestLoopControlOpensPalette(t *testing.T) {
 	}
 	if !m.palette.picking {
 		t.Error("palette should open on the command picker")
+	}
+}
+
+func TestLoopControlParallelOpensLoopForm(t *testing.T) {
+	m := newTestModel(t, ViewDashboard, sampleStore())
+	m.modal = ModalLoopControl
+
+	m.Update(key("p"))
+
+	if m.modal != ModalPalette || m.palette.picking {
+		t.Fatalf("expected the loop form to open, got modal %d picking=%v", m.modal, m.palette.picking)
+	}
+	spec := paletteCommands[m.palette.spec]
+	if spec.Name != "loop" {
+		t.Fatalf("expected the loop command, got %q", spec.Name)
+	}
+	if f := spec.Flags[m.palette.focus]; f.Name != "parallel" {
+		t.Errorf("expected focus on --parallel, got --%s", f.Name)
+	}
+
+	m.palette.values[m.palette.focus] = "3"
+	argv, err := m.palette.buildArgv(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(argv, " "); got != "loop --parallel 3" {
+		t.Errorf("argv = %q, want %q", got, "loop --parallel 3")
 	}
 }
 
