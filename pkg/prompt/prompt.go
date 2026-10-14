@@ -140,13 +140,15 @@ func SpecFeatureRevise(existingSpec string) (string, error) {
 
 // SpecSplit builds a prompt that asks the LLM to split a large spec into a
 // plan plus short per-part briefs that reference the spec rather than restate it.
-func SpecSplit(spec string) (string, error) {
+// files is the repo's file list (one path per line, may be empty); the split
+// has no file tools, so this is how it names real paths and free numbers.
+func SpecSplit(spec, files string) (string, error) {
 	t, err := template.New("").Delims("[[", "]]").Parse(specSplitTmpl)
 	if err != nil {
 		return "", err
 	}
 	var buf bytes.Buffer
-	if err := t.Execute(&buf, map[string]any{"Spec": spec}); err != nil {
+	if err := t.Execute(&buf, map[string]any{"Spec": spec, "Files": files}); err != nil {
 		return "", err
 	}
 	return buf.String(), nil

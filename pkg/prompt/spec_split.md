@@ -29,6 +29,12 @@ Rules:
   that in 00 and depend on 00 instead. This is what lets parts run in parallel.
 - Reserve sequence numbers now. Migration numbers, ports, IDs and similar go on
   the owning part's Reserves: line, so parallel parts never pick the same one.
+  Use the next free number from the repository file list (e.g. after
+  Script0039 comes Script0040). Never write a placeholder like {N}.
+- Owns: and Reserves: hold only concrete items: repository paths (a directory
+  may end in /**) and names. Take existing paths from the repository file list.
+  No descriptions, no parentheses, no placeholders, and no commas inside an
+  item. Put any explanation in the brief instead.
 - Shared hook points. When two parts would add branches to the same function or
   callback, either 00 defines a small handler interface they each implement, or
   the later part depends on the earlier one. Say which in the plan.
@@ -62,3 +68,10 @@ Reserves: <comma-separated reserved numbers or names, or none>
 Source spec to split:
 
 [[.Spec]]
+[[if .Files]]
+---
+
+Repository files (git ls-files):
+
+[[.Files]]
+[[end]]

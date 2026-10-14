@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/futureboard-dev/colony/pkg/module"
 	"github.com/futureboard-dev/colony/pkg/prompt"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 var specFeatureCmd = &cobra.Command{
@@ -257,7 +259,7 @@ func runSpecFeatureSplit(cmd *cobra.Command, args []string, cfg *config.Config, 
 		return fmt.Errorf("read %s: %w", sourceFile, err)
 	}
 
-	splitPrompt, err := prompt.SpecSplit(string(specData))
+	splitPrompt, err := prompt.SpecSplit(string(specData), repoFileList(root))
 	if err != nil {
 		return fmt.Errorf("build split prompt: %w", err)
 	}
@@ -328,19 +330,24 @@ func runSpecFeatureSplit(cmd *cobra.Command, args []string, cfg *config.Config, 
 // frontmatter is the source of truth `task add --group` reads back; the body
 // is the part's brief, which points into the source spec.
 func formatPartFile(p specPart) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "---\nid: %s\ndepends_on: [%s]\n", p.ID, strings.Join(p.DependsOn, ", "))
-	if p.Source != "" {
-		fmt.Fprintf(&b, "source: %s\n", p.Source)
-	}
-	if len(p.Owns) > 0 {
-		fmt.Fprintf(&b, "owns: [%s]\n", strings.Join(p.Owns, ", "))
-	}
-	if len(p.Reserves) > 0 {
-		fmt.Fprintf(&b, "reserves: [%s]\n", strings.Join(p.Reserves, ", "))
-	}
-	fmt.Fprintf(&b, "---\n%s\n", p.Body)
-	return b.String()
+	var fm strings.Builder
+	enc := yaml.NewEncoder(&fm)
+	enc.SetIndent(2)
+	// Encoding plain strings and string slices cannot fail.
+	_ = enc.Encode(partFrontmatter{ID: p.ID, DependsOn: p.DependsOn, Source: p.Source, Owns: p.Owns, Reserves: p.Reserves})
+	_ = enc.Close()
+	return "---\n" + fm.String() + "---\n" + p.Body + "\n"
+}
+
+// partFrontmatter is a part file's header. It is real YAML, written and read
+// with a YAML library, so paths with braces, commas or backticks stay intact
+// and editors that parse frontmatter accept it.
+type partFrontmatter struct {
+	ID        string   `yaml:"id"`
+	DependsOn []string `yaml:"depends_on"`
+	Source    string   `yaml:"source,omitempty"`
+	Owns      []string `yaml:"owns,omitempty"`
+	Reserves  []string `yaml:"reserves,omitempty"`
 }
 
 // partWaves groups parts by how early they can start: wave 1 has no
@@ -639,10 +646,30 @@ func parseParts(output string) ([]specPart, error) {
 	return parts, nil
 }
 
+// maxRepoFiles caps the file list given to the split prompt, so a huge repo
+// can't blow the context; the split only needs enough to name real paths.
+const maxRepoFiles = 3000
+
+// repoFileList returns the repo's tracked files (git ls-files) for the split
+// prompt. The split runs without file tools, so this is how it sees real
+// paths and the next free migration number. Outside a git repo it returns "".
+func repoFileList(root string) string {
+	out, err := exec.Command("git", "-C", root, "ls-files").Output()
+	if err != nil {
+		return ""
+	}
+	files := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(files) > maxRepoFiles {
+		more := len(files) - maxRepoFiles
+		files = append(files[:maxRepoFiles], fmt.Sprintf("... (%d more files not shown)", more))
+	}
+	return strings.Join(files, "\n")
+}
+
 // validateParts checks the part graph parseParts produced: unique IDs,
 // dependencies that resolve to a known part, and no cycles (via topological
-// sort) are errors. A file owned, or a number reserved, by two parts is
-// reported as a warning only — the caller decides whether to surface them.
+// sort) are errors. A file owned, or a number reserved, by two parts, and an
+// item that looks like a placeholder or a description, are reported as warnings only — the caller decides whether to surface them.
 func validateParts(parts []specPart) ([]string, error) {
 	seen := make(map[string]bool, len(parts))
 	for _, p := range parts {
@@ -666,6 +693,11 @@ func validateParts(parts []specPart) ([]string, error) {
 	fileOwner := make(map[string]string)
 	reservedBy := make(map[string]string)
 	for _, p := range parts {
+		for _, item := range append(append([]string{}, p.Owns...), p.Reserves...) {
+			if strings.ContainsAny(item, "{} \t") {
+				warnings = append(warnings, fmt.Sprintf("part %q lists %q, which looks like a placeholder or a description, not a path or name", p.ID, item))
+			}
+		}
 		for _, f := range p.Owns {
 			if owner, ok := fileOwner[f]; ok && owner != p.ID {
 				warnings = append(warnings, fmt.Sprintf("%q is owned by both part %q and part %q", f, owner, p.ID))
