@@ -191,6 +191,58 @@ func TestLandOnEpic(t *testing.T) {
 		}
 	})
 
+	t.Run("notes move to the spec folder and spec files never land", func(t *testing.T) {
+		root, epicBranch := setupEpicRoot(t, "payments")
+		store, err := storage.Open(filepath.Join(t.TempDir(), "missions.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer store.Close()
+
+		specDir := t.TempDir()
+		partPath := filepath.Join(specDir, "parts", "01-api.md")
+		if err := os.MkdirAll(filepath.Dir(partPath), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(partPath, []byte(formatPartFile(specPart{ID: "01-api", Body: "x"})), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		epicSHA := revParseAt(t, root, epicBranch)
+		branch := "agent/01-api"
+		wt := filepath.Join(t.TempDir(), "01-api")
+		addWorktreeAt(t, root, wt, branch, epicBranch, true)
+		if err := excludeFromGit(wt, "/"+partNotesFile); err != nil {
+			t.Fatal(err)
+		}
+		writeFileForCmd(t, wt, "SPEC.md", "spec")
+		writeFileForCmd(t, wt, partNotesFile, "built ApiHandler")
+		writeFileForCmd(t, wt, "api.txt", "code")
+		// An agent that commits everything mid-run must still not leak either file.
+		runCmd(t, wt, "git", "add", "-A")
+		runCmd(t, wt, "git", "commit", "-m", "wip", "--quiet")
+
+		task := storage.Task{ID: "t1", Description: "api", State: "running", GroupID: "g1", BaseBranch: epicBranch, SpecPath: partPath, CreatedAt: time.Now()}
+		if err := store.InsertTask(task); err != nil {
+			t.Fatal(err)
+		}
+		if err := landOnEpic(context.Background(), nil, wt, branch, "go", &task, epicSHA, store, os.Stderr); err != nil {
+			t.Fatalf("landOnEpic: %v", err)
+		}
+
+		tree := runCmdOut(t, root, "git", "ls-tree", "--name-only", epicBranch)
+		if !strings.Contains(tree, "api.txt") || strings.Contains(tree, "SPEC.md") || strings.Contains(tree, partNotesFile) {
+			t.Errorf("epic tree should hold only the code, got:\n%s", tree)
+		}
+		notes, err := os.ReadFile(filepath.Join(specDir, "notes", "01-api.md"))
+		if err != nil || string(notes) != "built ApiHandler" {
+			t.Errorf("expected notes in the spec folder, got %q err=%v", notes, err)
+		}
+		if _, err := os.Stat(filepath.Join(wt, partNotesFile)); !os.IsNotExist(err) {
+			t.Error("expected the worktree notes file to be removed")
+		}
+	})
+
 	t.Run("stale epic sha triggers remerge and retry", func(t *testing.T) {
 		root, epicBranch := setupEpicRoot(t, "payments")
 		store, err := storage.Open(filepath.Join(t.TempDir(), "missions.db"))
@@ -771,6 +823,61 @@ func TestRunLoop_ParallelRespectsDeps(t *testing.T) {
 	}
 	if !starts["d02"].After(starts["d01"]) || !starts["d03"].After(starts["d01"]) {
 		t.Errorf("expected d02 and d03 to start only after d01, got starts=%v", starts)
+	}
+}
+
+func TestRunLoop_ParallelNotIdleWhileDependencyRuns(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "missions.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	now := time.Now()
+	if err := store.InsertTask(storage.Task{ID: "i01", Description: "d", State: "open", CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.InsertTask(storage.Task{ID: "i02", Description: "d", State: "open", DependsOn: "i01", CreatedAt: now.Add(time.Millisecond)}); err != nil {
+		t.Fatal(err)
+	}
+
+	work := func(_ context.Context, tsk *storage.Task, _ io.Writer) error {
+		if tsk.ID == "i01" {
+			time.Sleep(200 * time.Millisecond)
+		}
+		return store.UpdateTaskState(tsk.ID, "done", "")
+	}
+
+	// idleLimit=1: before the fix, the first empty pick while i01 was still
+	// running ended the loop and i02 never started.
+	if err := runLoopParallel(context.Background(), t.TempDir(), store, 2, 1, 2, work); err != nil {
+		t.Fatalf("runLoopParallel: %v", err)
+	}
+	tasks, err := store.QueryTasks(storage.TaskFilter{ID: "i02"})
+	if err != nil || len(tasks) != 1 || tasks[0].State != "done" {
+		t.Fatalf("expected i02 to run once i01 finished, got %+v err=%v", tasks, err)
+	}
+}
+
+func TestExcludeFromGit(t *testing.T) {
+	root := t.TempDir()
+	runCmd(t, root, "git", "init", "--initial-branch=main", "--quiet")
+	writeFileForCmd(t, root, partNotesFile, "notes")
+
+	for range 2 {
+		if err := excludeFromGit(root, "/"+partNotesFile); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if status := runCmdOut(t, root, "git", "status", "--porcelain"); strings.Contains(status, partNotesFile) {
+		t.Errorf("expected %s to be ignored, status:\n%s", partNotesFile, status)
+	}
+	data, err := os.ReadFile(filepath.Join(root, ".git", "info", "exclude"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(data), "/"+partNotesFile); n != 1 {
+		t.Errorf("expected the pattern once, found %d times", n)
 	}
 }
 

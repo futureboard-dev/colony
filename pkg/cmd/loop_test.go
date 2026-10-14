@@ -186,6 +186,35 @@ func TestTaskInput_SplitPart(t *testing.T) {
 		}
 	})
 
+	t.Run("plan, dependency notes and handoff instruction", func(t *testing.T) {
+		if err := os.WriteFile(filepath.Join(dir, "PLAN.md"), []byte("Wave 1: 00-contracts"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(dir, "notes"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "notes", "00-contracts.md"), []byte("IMitIdIntentHandler lives in Hub/Ports"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		dependent := filepath.Join(partsDir, "03-bind.md")
+		content := formatPartFile(specPart{ID: "03-bind", DependsOn: []string{"00-contracts", "02-missing-notes"}, Source: "../SOURCE.md", Body: "Implement §5.7."})
+		if err := os.WriteFile(dependent, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+		got, err := taskInput(&storage.Task{SpecPath: dependent})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{"Wave 1: 00-contracts", "# Notes from 00-contracts", "IMitIdIntentHandler lives in Hub/Ports", "write " + partNotesFile} {
+			if !strings.Contains(got, want) {
+				t.Errorf("input missing %q:\n%s", want, got)
+			}
+		}
+		if strings.Contains(got, "Notes from 02-missing-notes") {
+			t.Error("a dependency without notes should be skipped")
+		}
+	})
+
 	t.Run("missing source errors", func(t *testing.T) {
 		if err := os.Remove(filepath.Join(dir, "SOURCE.md")); err != nil {
 			t.Fatal(err)

@@ -531,7 +531,15 @@ colony loop status
 - **Part files** live at `.colony/specs/<name>/parts/NN-<slug>.md`, each with
   a frontmatter header (`id`, `depends_on`, `source`, `owns`, `reserves`)
   followed by a short brief that points into the source spec. The agent
-  building a part gets its brief plus the full source spec. `task add --group` re-validates the dependency graph from this
+  building a part gets its brief, `PLAN.md`, the handoff notes of the parts
+  it depends on, and the full source spec.
+- **Handoff notes**: each part's agent writes `PART_NOTES.md` in its worktree
+  (what it built, the real names of its interfaces, anything that differs from
+  the plan). The file is listed in `.git/info/exclude`, so it is never
+  committed; when the part lands it moves to `.colony/specs/<name>/notes/<id>.md`.
+- **Waiting on dependencies**: with `--parallel`, the loop doesn't count itself
+  idle while parts are running, so dependents start as soon as the parts they
+  need land, however long those take. `task add --group` re-validates the dependency graph from this
   frontmatter, so hand edits (adding, dropping, or rewiring a dependency) are
   respected — and a graph with a cycle or a missing dependency is rejected
   before anything is enqueued.

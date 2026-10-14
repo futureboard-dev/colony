@@ -522,11 +522,15 @@ func runLoopParallel(ctx context.Context, root string, store *storage.SQLiteStor
 			return fmt.Errorf("pick task: %w", err)
 		}
 		if task == nil {
-			consecutiveIdle++
-			fmt.Fprintf(os.Stderr, "%sidle: no tasks ready (%d/%d)%s\n", ansiBlue, consecutiveIdle, idleLimit, ansiReset)
-			if consecutiveIdle >= idleLimit {
-				stopReason = fmt.Sprintf("idle limit reached (%d consecutive)", idleLimit)
-				break
+			// A running worker can finish and unlock dependent parts, so
+			// waiting on it is not idle. Only count passes with nothing running.
+			if len(sem) == 0 {
+				consecutiveIdle++
+				fmt.Fprintf(os.Stderr, "%sidle: no tasks ready (%d/%d)%s\n", ansiBlue, consecutiveIdle, idleLimit, ansiReset)
+				if consecutiveIdle >= idleLimit {
+					stopReason = fmt.Sprintf("idle limit reached (%d consecutive)", idleLimit)
+					break
+				}
 			}
 			if loopOnce {
 				break
@@ -691,6 +695,11 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 
 	if err := os.WriteFile(filepath.Join(workdir, "SPEC.md"), []byte(input), 0644); err != nil {
 		return fmt.Errorf("write SPEC.md: %w", err)
+	}
+	if task.GroupID != "" {
+		if err := excludeFromGit(workdir, "/"+partNotesFile); err != nil {
+			return fmt.Errorf("exclude %s: %w", partNotesFile, err)
+		}
 	}
 
 	baseBranch := task.BaseBranch
@@ -1008,6 +1017,11 @@ func landOnEpic(ctx context.Context, cfg *config.Config, workdir, branch, lang s
 	epicBranch := task.BaseBranch
 	const maxAttempts = 3
 
+	if err := collectPartNotes(workdir, task.SpecPath); err != nil {
+		return err
+	}
+	_ = os.Remove(filepath.Join(workdir, "SPEC.md"))
+
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		mbOut, err := exec.Command("git", "-C", workdir, "merge-base", "HEAD", epicSHA).Output()
 		if err != nil {
@@ -1300,9 +1314,9 @@ func taskInput(task *storage.Task) (string, error) {
 	return task.Description + "\n\n" + spec, nil
 }
 
-// partWithSource gives a split part's agent its brief plus the full source
-// spec the brief points into, since briefs reference the spec instead of
-// restating it.
+// partWithSource gives a split part's agent its brief, the group's plan, the
+// handoff notes of the parts it depends on, and the full source spec the
+// brief points into (briefs reference the spec instead of restating it).
 func partWithSource(partPath string, part groupPart) (string, error) {
 	sourcePath := part.Source
 	if !filepath.IsAbs(sourcePath) {
@@ -1312,8 +1326,97 @@ func partWithSource(partPath string, part groupPart) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read source spec for part %q: %w", part.ID, err)
 	}
-	return "# Your part: " + part.ID + "\n\n" + part.Body +
-		"\n\n# Source spec\n\nBuild only your part above. The full spec is here for reference.\n\n" + string(source), nil
+	featureDir := filepath.Dir(filepath.Dir(partPath))
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Your part: %s\n\n%s\n", part.ID, part.Body)
+	if plan, err := os.ReadFile(filepath.Join(featureDir, "PLAN.md")); err == nil {
+		fmt.Fprintf(&b, "\n# Plan for all parts\n\n%s\n", plan)
+	}
+	for _, dep := range part.DependsOn {
+		if notes, err := os.ReadFile(partNotesPath(partPath, dep)); err == nil {
+			fmt.Fprintf(&b, "\n# Notes from %s (already built, on your base branch)\n\n%s\n", dep, notes)
+		}
+	}
+	fmt.Fprintf(&b, "\n# Handoff notes\n\nBefore you finish, write %s at the repository root for the parts that build on yours: "+
+		"what you built, the exact names of the types, interfaces and functions they will use, and anything that differs from the plan. "+
+		"It is not committed.\n", partNotesFile)
+	fmt.Fprintf(&b, "\n# Source spec\n\nBuild only your part above. The full spec is here for reference.\n\n%s", source)
+	return b.String(), nil
+}
+
+// partNotesFile is where a part's agent writes its handoff notes in its
+// worktree. It is git-excluded and moved to the spec folder when the part lands.
+const partNotesFile = "PART_NOTES.md"
+
+// partNotesPath is where a landed part's notes live: <spec-dir>/notes/<id>.md,
+// next to the parts/ directory holding partPath.
+func partNotesPath(partPath, partID string) string {
+	return filepath.Join(filepath.Dir(filepath.Dir(partPath)), "notes", partID+".md")
+}
+
+// collectPartNotes moves the agent's handoff notes out of the worktree into
+// the spec folder, so dependents can read them and they never reach a commit.
+// A part that wrote no notes is not an error.
+func collectPartNotes(workdir, specPath string) error {
+	src := filepath.Join(workdir, partNotesFile)
+	notes, err := os.ReadFile(src)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read %s: %w", partNotesFile, err)
+	}
+	part, err := parsePartFrontmatter(specPath)
+	if err != nil {
+		return fmt.Errorf("read part for notes: %w", err)
+	}
+	dst := partNotesPath(specPath, part.ID)
+	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+		return fmt.Errorf("create notes dir: %w", err)
+	}
+	if err := os.WriteFile(dst, notes, 0644); err != nil {
+		return fmt.Errorf("write notes: %w", err)
+	}
+	return os.Remove(src)
+}
+
+// excludeFromGit adds pattern to the repository's .git/info/exclude (shared
+// by every worktree and never committed) unless it is already listed.
+func excludeFromGit(workdir, pattern string) error {
+	out, err := exec.Command("git", "-C", workdir, "rev-parse", "--git-common-dir").Output()
+	if err != nil {
+		return fmt.Errorf("find git dir: %w", err)
+	}
+	gitDir := strings.TrimSpace(string(out))
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(workdir, gitDir)
+	}
+	path := filepath.Join(gitDir, "info", "exclude")
+	existing, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	for line := range strings.SplitSeq(string(existing), "\n") {
+		if strings.TrimSpace(line) == pattern {
+			return nil
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	if len(existing) > 0 && !strings.HasSuffix(string(existing), "\n") {
+		pattern = "\n" + pattern
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.WriteString(pattern + "\n"); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // withPriorFeedback appends the reason a needs-fix task was last rejected, so
