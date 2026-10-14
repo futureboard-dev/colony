@@ -175,6 +175,23 @@ func TestWithPriorFeedback(t *testing.T) {
 			t.Errorf("got %q", got)
 		}
 	})
+	t.Run("claimed needs-fix task still gets feedback", func(t *testing.T) {
+		store, err := storage.Open(filepath.Join(t.TempDir(), "missions.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer store.Close()
+		if err := store.InsertTask(storage.Task{ID: "r1", Description: "d", State: "needs-fix", LastFeedback: "gate failed: lint", CreatedAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+		task, err := pickNextTask(context.Background(), store)
+		if err != nil || task == nil {
+			t.Fatalf("pickNextTask: task=%v err=%v", task, err)
+		}
+		if got := withPriorFeedback("spec", task); !strings.Contains(got, "gate failed: lint") {
+			t.Errorf("claimed retry lost its feedback: %q", got)
+		}
+	})
 }
 
 // TestPickNextTask_ReturnsOldestOpen verifies ordering by created_at.
@@ -926,7 +943,7 @@ func TestFinishTask_SquashCommit(t *testing.T) {
 	// Run finishTask which should squash. Note: gh/pr step may fail if gh is
 	// not installed; that is a delivery failure, not a squash failure — the
 	// commit is still made locally.
-	prURL, finishErr := finishTask(workdir, "feature/test", base, "test-label")
+	prURL, finishErr := finishTask(workdir, "feature/test", base, "test-label", os.Stderr)
 	if finishErr != nil && !strings.Contains(finishErr.Error(), "gh pr create") {
 		t.Fatalf("finishTask unexpected error: %v", finishErr)
 	}

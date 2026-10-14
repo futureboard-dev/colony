@@ -34,6 +34,9 @@ var specFeatureTmpl string
 //go:embed spec_feature_revise.md
 var specFeatureReviseTmpl string
 
+//go:embed spec_split.md
+var specSplitTmpl string
+
 // ModulePrompts exposes the module-prompts directory as an embedded filesystem.
 //
 //go:embed module-prompts
@@ -130,6 +133,20 @@ func SpecFeatureRevise(existingSpec string) (string, error) {
 	}
 	var buf bytes.Buffer
 	if err := t.Execute(&buf, map[string]any{"Spec": existingSpec}); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
+}
+
+// SpecSplit builds a prompt that asks the LLM to split a large Agent Task
+// Spec into dependent, independently-buildable parts.
+func SpecSplit(spec string) (string, error) {
+	t, err := template.New("").Delims("[[", "]]").Parse(specSplitTmpl)
+	if err != nil {
+		return "", err
+	}
+	var buf bytes.Buffer
+	if err := t.Execute(&buf, map[string]any{"Spec": spec}); err != nil {
 		return "", err
 	}
 	return buf.String(), nil

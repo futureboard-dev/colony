@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/futureboard-dev/colony/pkg/mission/nodes"
 	"github.com/futureboard-dev/colony/pkg/module"
 	"github.com/futureboard-dev/colony/pkg/observe"
+	"github.com/futureboard-dev/colony/pkg/output"
 	"github.com/futureboard-dev/colony/pkg/prompt"
 	"github.com/futureboard-dev/colony/pkg/storage"
 	"github.com/spf13/cobra"
@@ -60,6 +62,7 @@ var (
 	loopIdleLimit    int
 	loopRetryBlock   bool
 	loopReview       bool
+	loopParallel     int
 )
 
 func init() {
@@ -72,6 +75,7 @@ func init() {
 	loopCmd.Flags().IntVar(&loopIdleLimit, "idle", 10, "consecutive idle passes before stopping")
 	loopCmd.Flags().BoolVar(&loopRetryBlock, "retry-blocked", false, "re-queue blocked tasks (needs-fix) to continue them in their existing worktree")
 	loopCmd.Flags().BoolVar(&loopReview, "review", false, "run an LLM review gate before marking a task done (also auto-enabled when a 'review' role is configured)")
+	loopCmd.Flags().IntVar(&loopParallel, "parallel", 1, "number of tasks to build concurrently (dependencies are still respected)")
 
 	loopCmd.AddCommand(loopStatusCmd)
 	loopCmd.AddCommand(loopScheduleCmd)
@@ -167,20 +171,7 @@ func runLoopRetryReview(cmd *cobra.Command, args []string) error {
 		baseBranch = module.DefaultBranch()
 	}
 
-	if err := integrateTask(cmd.Context(), cfg, workdir, task.Branch, baseBranch, lang, task, store); err != nil {
-		return nil // integrateTask already marked blocked
-	}
-
-	prURL, finishErr := finishTask(workdir, task.Branch, baseBranch, missionLabel(task))
-	if finishErr != nil {
-		fmt.Fprintf(os.Stderr, "%sloop: task %q done (review passed) — warning: %v%s\n", ansiYellow, task.ID, finishErr, ansiReset)
-		_ = store.UpdateTaskState(task.ID, "done", "warning: "+finishErr.Error())
-		return nil
-	}
-
-	fmt.Fprintf(os.Stderr, "%sloop: task %q done → %s%s\n", ansiGreen, task.ID, prURL, ansiReset)
-	_ = store.UpdateTaskState(task.ID, "done", prURL)
-	return nil
+	return finishOrLand(cmd.Context(), cfg, workdir, task.Branch, baseBranch, lang, task, store, os.Stderr)
 }
 
 // loopRetryGateCmd re-runs the gate→fix flow on a task's existing worktree,
@@ -292,20 +283,7 @@ func runLoopRetryGate(cmd *cobra.Command, args []string) error {
 
 	_ = store.UpdateSession(sessID, "completed", time.Now())
 
-	if err := integrateTask(cmd.Context(), cfg, workdir, task.Branch, baseBranch, lang, task, store); err != nil {
-		return nil // integrateTask already marked blocked
-	}
-
-	prURL, finishErr := finishTask(workdir, task.Branch, baseBranch, missionLabel(task))
-	if finishErr != nil {
-		fmt.Fprintf(os.Stderr, "%sloop: task %q done (gate passed) — warning: %v%s\n", ansiYellow, task.ID, finishErr, ansiReset)
-		_ = store.UpdateTaskState(task.ID, "done", "warning: "+finishErr.Error())
-		return nil
-	}
-
-	fmt.Fprintf(os.Stderr, "%sloop: task %q done → %s%s\n", ansiGreen, task.ID, prURL, ansiReset)
-	_ = store.UpdateTaskState(task.ID, "done", prURL)
-	return nil
+	return finishOrLand(cmd.Context(), cfg, workdir, task.Branch, baseBranch, lang, task, store, os.Stderr)
 }
 
 var loopRunLang string
@@ -367,7 +345,7 @@ func runLoopRun(cmd *cobra.Command, args []string) error {
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := processTask(ctx, cfg, root, store, task); err != nil {
+	if err := processTask(ctx, cfg, root, store, task, os.Stderr); err != nil {
 		_ = markTaskBlocked(store, task.ID, err.Error())
 		return fmt.Errorf("task %q failed: %w", task.ID, err)
 	}
@@ -395,6 +373,10 @@ func runLoop(cmd *cobra.Command, args []string) error {
 	defer func() { _ = store.Close() }()
 	reapStaleSessions(store)
 
+	if err := resetRunningTasks(store); err != nil {
+		return fmt.Errorf("reset running tasks: %w", err)
+	}
+
 	if loopRetryBlock {
 		n, rqErr := requeueBlocked(store)
 		if rqErr != nil {
@@ -412,6 +394,44 @@ func runLoop(cmd *cobra.Command, args []string) error {
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	if resolveParallelCount(loopParallel) == 1 {
+		return runLoopSequential(ctx, cfg, root, store, maxPasses, idleLimit)
+	}
+	work := func(ctx context.Context, t *storage.Task, logw io.Writer) error {
+		return processTask(ctx, cfg, root, store, t, logw)
+	}
+	return runLoopParallel(ctx, root, store, maxPasses, idleLimit, resolveParallelCount(loopParallel), work)
+}
+
+// resolveParallelCount normalizes --parallel: anything less than 1 (including
+// the zero value) means "no concurrency", i.e. 1.
+func resolveParallelCount(n int) int {
+	if n < 1 {
+		return 1
+	}
+	return n
+}
+
+// resetRunningTasks moves every "running" task back to "needs-fix" at loop
+// start, so a crash or kill -9 mid-build doesn't strand a task claimed but
+// never finished. This assumes one loop process per project — no locking is
+// added here for multiple concurrent loops.
+func resetRunningTasks(store *storage.SQLiteStore) error {
+	running, err := store.QueryTasks(storage.TaskFilter{States: []string{"running"}})
+	if err != nil {
+		return err
+	}
+	for _, t := range running {
+		if err := store.UpdateTaskState(t.ID, "needs-fix", t.LastFeedback); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// runLoopSequential is the original single-task-at-a-time loop. --parallel
+// defaults to 1 and always takes this path, so its behavior is unchanged.
+func runLoopSequential(ctx context.Context, cfg *config.Config, root string, store *storage.SQLiteStore, maxPasses, idleLimit int) error {
 	totalPasses := 0
 	consecutiveIdle := 0
 
@@ -449,7 +469,7 @@ func runLoop(cmd *cobra.Command, args []string) error {
 		consecutiveIdle = 0
 		totalPasses++
 
-		if err := processTask(ctx, cfg, root, store, task); err != nil {
+		if err := processTask(ctx, cfg, root, store, task, os.Stderr); err != nil {
 			fmt.Fprintf(os.Stderr, "%sloop: task %q failed: %v%s\n", ansiRed, task.ID, err, ansiReset)
 			_ = markTaskBlocked(store, task.ID, err.Error())
 		}
@@ -471,6 +491,104 @@ func runLoop(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// runLoopParallel runs up to `parallel` tasks concurrently via a semaphore and
+// a WaitGroup. The main goroutine claims tasks (ClaimNextTask's transactional
+// claim prevents double-claims across workers) while fewer than `parallel`
+// workers are active, launching one goroutine per claimed task; idle,
+// sentinel, and max-passes checks all count claimed tasks, the same way the
+// sequential loop counts processed ones. work is the per-task unit of work
+// (processTask in production; tests inject a fake to control timing without
+// running a real build). On stop it waits for in-flight workers before
+// returning.
+func runLoopParallel(ctx context.Context, root string, store *storage.SQLiteStore, maxPasses, idleLimit, parallel int, work func(context.Context, *storage.Task, io.Writer) error) error {
+	sem := make(chan struct{}, parallel)
+	var wg sync.WaitGroup
+
+	totalPasses := 0
+	consecutiveIdle := 0
+	stopReason := ""
+
+	for stopReason == "" {
+		if maxPasses > 0 && totalPasses >= maxPasses {
+			stopReason = fmt.Sprintf("reached max-passes (%d)", maxPasses)
+			break
+		}
+
+		task, err := pickNextTask(ctx, store)
+		if err != nil {
+			wg.Wait()
+			return fmt.Errorf("pick task: %w", err)
+		}
+		if task == nil {
+			consecutiveIdle++
+			fmt.Fprintf(os.Stderr, "%sidle: no tasks ready (%d/%d)%s\n", ansiBlue, consecutiveIdle, idleLimit, ansiReset)
+			if consecutiveIdle >= idleLimit {
+				stopReason = fmt.Sprintf("idle limit reached (%d consecutive)", idleLimit)
+				break
+			}
+			if loopOnce {
+				break
+			}
+			if err := sleepInterruptibly(ctx); err != nil {
+				break
+			}
+			if sentinelExists(root) {
+				stopReason = "stop sentinel detected"
+				_ = removeSentinel(root)
+				break
+			}
+			continue
+		}
+
+		consecutiveIdle = 0
+		totalPasses++
+
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(t *storage.Task) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			prefixed := output.NewPrefixWriter(os.Stderr, workerLabel(t))
+			defer func() { _ = prefixed.Close() }()
+
+			if err := work(ctx, t, prefixed); err != nil {
+				fmt.Fprintf(prefixed, "%sloop: task %q failed: %v%s\n", ansiRed, t.ID, err, ansiReset)
+				_ = markTaskBlocked(store, t.ID, err.Error())
+			}
+		}(task)
+
+		if loopOnce {
+			break
+		}
+		if sentinelExists(root) {
+			stopReason = "stop sentinel detected"
+			_ = removeSentinel(root)
+			break
+		}
+		if ctx.Err() != nil {
+			stopReason = "interrupted"
+			break
+		}
+	}
+
+	if stopReason != "" {
+		fmt.Fprintf(os.Stderr, "%sloop: %s, exiting%s\n", ansiBlue, stopReason, ansiReset)
+	}
+	wg.Wait()
+	return nil
+}
+
+// workerLabel picks the prefix a parallel worker's output is tagged with: the
+// part ID (its spec file's basename) for group tasks, or the task ID otherwise.
+func workerLabel(t *storage.Task) string {
+	if t.GroupID != "" && t.SpecPath != "" {
+		base := filepath.Base(t.SpecPath)
+		return strings.TrimSuffix(base, filepath.Ext(base))
+	}
+	return t.ID
 }
 
 func sleepInterruptibly(ctx context.Context) error {
@@ -499,15 +617,12 @@ func removeSentinel(root string) error {
 	return err
 }
 
-func pickNextTask(ctx context.Context, store *storage.SQLiteStore) (*storage.Task, error) {
-	tasks, err := store.QueryTasks(storage.TaskFilter{States: []string{"open", "needs-fix"}})
-	if err != nil {
-		return nil, err
-	}
-	if len(tasks) == 0 {
-		return nil, nil
-	}
-	return &tasks[0], nil
+// pickNextTask claims the next actionable task, atomically moving it to
+// "running" so parallel workers and the --watch daemon never pick the same
+// task twice. ctx is unused — ClaimNextTask is a single local DB transaction —
+// but kept so call sites don't change.
+func pickNextTask(_ context.Context, store *storage.SQLiteStore) (*storage.Task, error) {
+	return store.ClaimNextTask()
 }
 
 // parseGateOverrides converts a task's comma-joined GateOverrides (e.g.
@@ -546,7 +661,7 @@ func resolveGateLang(store *storage.SQLiteStore, task *storage.Task, flagLang st
 	return flagLang, nil
 }
 
-func processTask(ctx context.Context, cfg *config.Config, root string, store *storage.SQLiteStore, task *storage.Task) error {
+func processTask(ctx context.Context, cfg *config.Config, root string, store *storage.SQLiteStore, task *storage.Task, logw io.Writer) error {
 	lang, err := resolveGateLang(store, task, loopLang, loopLangExplicit)
 	if err != nil {
 		return err
@@ -559,11 +674,11 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 	input = withPriorFeedback(input, task)
 
 	projectName := module.ProjectName(root)
-	workdir, branch, err := resolveWorktree(root, projectName, task)
+	workdir, branch, err := resolveWorktreeSafe(root, projectName, task)
 	if err != nil {
 		return fmt.Errorf("setup worktree: %w", err)
 	}
-	module.InstallDeps(lang, workdir, os.Stderr)
+	module.InstallDeps(lang, workdir, logw)
 	if task.Branch != branch {
 		if err := store.UpdateTaskBranch(task.ID, branch); err != nil {
 			return fmt.Errorf("record task branch: %w", err)
@@ -635,7 +750,7 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 		if _, ok := runErr.(*graph.ErrStuck); ok {
 			feedback := extractFeedback(out, runErr)
 			_ = store.UpdateTaskState(task.ID, "blocked", feedback)
-			fmt.Fprintf(os.Stderr, "%sloop: task %q stuck (identical failure repeated), blocked%s\n", ansiRed, task.ID, ansiReset)
+			fmt.Fprintf(logw, "%sloop: task %q stuck (identical failure repeated), blocked%s\n", ansiRed, task.ID, ansiReset)
 			return nil
 		}
 
@@ -649,7 +764,7 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 		if _, ok := runErr.(*graph.ErrMaxCycles); ok {
 			feedback := extractFeedback(out, runErr)
 			_ = store.UpdateTaskState(task.ID, "blocked", feedback)
-			fmt.Fprintf(os.Stderr, "%sloop: task %q hit max-cycles, blocked (use --retry-blocked to resume)%s\n", ansiRed, task.ID, ansiReset)
+			fmt.Fprintf(logw, "%sloop: task %q hit max-cycles, blocked (use --retry-blocked to resume)%s\n", ansiRed, task.ID, ansiReset)
 			return nil
 		}
 
@@ -658,20 +773,7 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 
 	_ = store.UpdateSession(sessID, "completed", time.Now())
 
-	if err := integrateTask(ctx, cfg, workdir, branch, baseBranch, lang, task, store); err != nil {
-		return nil
-	}
-
-	prURL, finishErr := finishTask(workdir, branch, baseBranch, missionLabel(task))
-	if finishErr != nil {
-		fmt.Fprintf(os.Stderr, "%sloop: task %q done (gate passed) — warning: %v%s\n", ansiYellow, task.ID, finishErr, ansiReset)
-		_ = store.UpdateTaskState(task.ID, "done", "warning: "+finishErr.Error())
-		return nil
-	}
-
-	fmt.Fprintf(os.Stderr, "%sloop: task %q done → %s%s\n", ansiGreen, task.ID, prURL, ansiReset)
-	_ = store.UpdateTaskState(task.ID, "done", prURL)
-	return nil
+	return finishOrLand(ctx, cfg, workdir, branch, baseBranch, lang, task, store, logw)
 }
 
 // maxFixerOutput bounds the gate output handed to the fixer agent. crush takes
@@ -687,33 +789,67 @@ func capGateOutput(s string) string {
 	return s[:maxFixerOutput] + "\n…(truncated — fix the errors shown above first)\n"
 }
 
-func integrateTask(ctx context.Context, cfg *config.Config, workdir, branch, baseBranch, lang string, task *storage.Task, store *storage.SQLiteStore) error {
-	out := os.Stderr
-	fmt.Fprintf(out, "%sloop: integrating %s with origin/%s%s\n", ansiBlue, branch, baseBranch, ansiReset)
+// integrateTask merges the task's target into workdir and re-gates. Non-group
+// tasks fetch and merge origin/<baseBranch>, unchanged. Group tasks merge the
+// local epic branch ref directly — worktrees share refs, so no fetch is
+// needed — and integrateTask returns the epic branch's SHA as observed at
+// merge time, which landOnEpic uses as the "old" value in its update-ref CAS.
+func integrateTask(ctx context.Context, cfg *config.Config, workdir, branch, baseBranch, lang string, task *storage.Task, store *storage.SQLiteStore, out io.Writer) (string, error) {
+	isGroup := task.GroupID != ""
 
-	fetch := exec.Command("git", "fetch", "origin", baseBranch)
-	fetch.Dir = workdir
-	fetch.Stdout = out
-	fetch.Stderr = out
-	if err := fetch.Run(); err != nil {
-		_ = store.UpdateTaskState(task.ID, "blocked", fmt.Sprintf("git fetch origin/%s failed: %v", baseBranch, err))
-		return fmt.Errorf("git fetch: %w", err)
-	}
+	var epicSHA string
+	if isGroup {
+		fmt.Fprintf(out, "%sloop: integrating %s with local %s (group task)%s\n", ansiBlue, branch, baseBranch, ansiReset)
 
-	merge := exec.Command("git", "merge", "FETCH_HEAD")
-	merge.Dir = workdir
-	merge.Stdout = out
-	merge.Stderr = out
-	if err := merge.Run(); err != nil {
-		abort := exec.Command("git", "merge", "--abort")
-		abort.Dir = workdir
-		_ = abort.Run()
+		shaOut, shaErr := exec.Command("git", "-C", workdir, "rev-parse", baseBranch).Output()
+		if shaErr != nil {
+			_ = store.UpdateTaskState(task.ID, "blocked", fmt.Sprintf("epic branch %s not found: %v", baseBranch, shaErr))
+			return "", fmt.Errorf("resolve epic branch %s: %w", baseBranch, shaErr)
+		}
+		epicSHA = strings.TrimSpace(string(shaOut))
 
-		conflictFiles := getConflictFiles(workdir)
-		feedback := fmt.Sprintf("merge conflict with origin/%s. Conflicting files: %s", baseBranch, strings.Join(conflictFiles, ", "))
-		_ = store.UpdateTaskState(task.ID, "blocked", feedback)
-		fmt.Fprintf(out, "%sloop: task %q blocked — merge conflict with origin/%s%s\n", ansiRed, task.ID, baseBranch, ansiReset)
-		return fmt.Errorf("merge conflict with origin/%s", baseBranch)
+		merge := exec.Command("git", "merge", baseBranch)
+		merge.Dir = workdir
+		merge.Stdout = out
+		merge.Stderr = out
+		if err := merge.Run(); err != nil {
+			abort := exec.Command("git", "merge", "--abort")
+			abort.Dir = workdir
+			_ = abort.Run()
+
+			conflictFiles := getConflictFiles(workdir)
+			feedback := fmt.Sprintf("merge conflict with %s. Conflicting files: %s", baseBranch, strings.Join(conflictFiles, ", "))
+			_ = store.UpdateTaskState(task.ID, "blocked", feedback)
+			fmt.Fprintf(out, "%sloop: task %q blocked — merge conflict with %s%s\n", ansiRed, task.ID, baseBranch, ansiReset)
+			return "", fmt.Errorf("merge conflict with %s", baseBranch)
+		}
+	} else {
+		fmt.Fprintf(out, "%sloop: integrating %s with origin/%s%s\n", ansiBlue, branch, baseBranch, ansiReset)
+
+		fetch := exec.Command("git", "fetch", "origin", baseBranch)
+		fetch.Dir = workdir
+		fetch.Stdout = out
+		fetch.Stderr = out
+		if err := fetch.Run(); err != nil {
+			_ = store.UpdateTaskState(task.ID, "blocked", fmt.Sprintf("git fetch origin/%s failed: %v", baseBranch, err))
+			return "", fmt.Errorf("git fetch: %w", err)
+		}
+
+		merge := exec.Command("git", "merge", "FETCH_HEAD")
+		merge.Dir = workdir
+		merge.Stdout = out
+		merge.Stderr = out
+		if err := merge.Run(); err != nil {
+			abort := exec.Command("git", "merge", "--abort")
+			abort.Dir = workdir
+			_ = abort.Run()
+
+			conflictFiles := getConflictFiles(workdir)
+			feedback := fmt.Sprintf("merge conflict with origin/%s. Conflicting files: %s", baseBranch, strings.Join(conflictFiles, ", "))
+			_ = store.UpdateTaskState(task.ID, "blocked", feedback)
+			fmt.Fprintf(out, "%sloop: task %q blocked — merge conflict with origin/%s%s\n", ansiRed, task.ID, baseBranch, ansiReset)
+			return "", fmt.Errorf("merge conflict with origin/%s", baseBranch)
+		}
 	}
 
 	fmt.Fprintf(out, "%sloop: merge clean — re-running gates%s\n", ansiBlue, ansiReset)
@@ -757,14 +893,14 @@ func integrateTask(ctx context.Context, cfg *config.Config, workdir, branch, bas
 		gateOutput, gateErr = gate()
 	}
 	if gateErr != nil {
-		feedback := fmt.Sprintf("integration gate failed after merge with origin/%s:\n%s", baseBranch, gateOutput)
+		feedback := fmt.Sprintf("integration gate failed after merge with %s:\n%s", baseBranch, gateOutput)
 		_ = store.UpdateTaskState(task.ID, "blocked", feedback)
 		fmt.Fprintf(out, "%sloop: task %q blocked — integration gate failed after merge%s\n", ansiRed, task.ID, ansiReset)
-		return fmt.Errorf("integration gate after merge: %w\n%s", gateErr, gateOutput)
+		return "", fmt.Errorf("integration gate after merge: %w\n%s", gateErr, gateOutput)
 	}
 
 	fmt.Fprintf(out, "%sloop: integration gate passed%s\n", ansiBlue, ansiReset)
-	return nil
+	return epicSHA, nil
 }
 
 func getConflictFiles(workdir string) []string {
@@ -784,9 +920,7 @@ func getConflictFiles(workdir string) []string {
 	return files
 }
 
-func finishTask(workdir, branch, baseBranch, label string) (string, error) {
-	out := os.Stderr
-
+func finishTask(workdir, branch, baseBranch, label string, out io.Writer) (string, error) {
 	_ = os.Remove(filepath.Join(workdir, "SPEC.md"))
 
 	mergeBase := exec.Command("git", "merge-base", "HEAD", "origin/"+baseBranch)
@@ -820,6 +954,14 @@ func finishTask(workdir, branch, baseBranch, label string) (string, error) {
 	}
 	fmt.Fprintf(out, "%sloop: committed on branch %s%s\n", ansiBlue, branch, ansiReset)
 
+	return pushBranchAndOpenPR(workdir, branch, baseBranch, out)
+}
+
+// pushBranchAndOpenPR pushes branch to origin and opens a PR against
+// baseBranch, returning the PR URL. Shared by finishTask (one PR per
+// standalone task) and group completion (one PR for the epic branch, opened
+// once every task in the group is done).
+func pushBranchAndOpenPR(workdir, branch, baseBranch string, out io.Writer) (string, error) {
 	push := exec.Command("git", "push", "-u", "origin", branch)
 	push.Dir = workdir
 	push.Stdout = out
@@ -853,6 +995,145 @@ func finishTask(workdir, branch, baseBranch, label string) (string, error) {
 func runInDir(cmd *exec.Cmd, dir string) error {
 	cmd.Dir = dir
 	return cmd.Run()
+}
+
+// landOnEpic squashes a group task's part commits onto its epic branch via an
+// atomic compare-and-swap update-ref, so parallel sibling parts landing at
+// the same time can't overwrite each other. epicSHA is the epic branch's tip
+// as observed by integrateTask at merge time. On a stale-SHA CAS failure it
+// re-runs integration (merge + re-gate against the epic's new tip) and
+// retries, up to 3 total attempts, then marks the task blocked. landOnEpic
+// does not push — the epic branch stays local until the whole group is done.
+func landOnEpic(ctx context.Context, cfg *config.Config, workdir, branch, lang string, task *storage.Task, epicSHA string, store *storage.SQLiteStore, out io.Writer) error {
+	epicBranch := task.BaseBranch
+	const maxAttempts = 3
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		mbOut, err := exec.Command("git", "-C", workdir, "merge-base", "HEAD", epicSHA).Output()
+		if err != nil {
+			return fmt.Errorf("merge-base against epic %s: %w", epicBranch, err)
+		}
+		reset := exec.Command("git", "reset", "--soft", strings.TrimSpace(string(mbOut)))
+		reset.Dir = workdir
+		if err := reset.Run(); err != nil {
+			return fmt.Errorf("git reset --soft: %w", err)
+		}
+
+		add := exec.Command("git", "add", "-A")
+		add.Dir = workdir
+		if err := add.Run(); err != nil {
+			return fmt.Errorf("git add: %w", err)
+		}
+		if diff := exec.Command("git", "diff", "--cached", "--quiet"); runInDir(diff, workdir) == nil {
+			return fmt.Errorf("no changes to commit — agent produced an empty diff")
+		}
+
+		commit := exec.Command("git", "commit", "-m", "loop: "+missionLabel(task))
+		commit.Dir = workdir
+		commit.Stdout = out
+		commit.Stderr = out
+		if err := commit.Run(); err != nil {
+			return fmt.Errorf("git commit: %w", err)
+		}
+
+		partHeadOut, err := exec.Command("git", "-C", workdir, "rev-parse", "HEAD").Output()
+		if err != nil {
+			return fmt.Errorf("rev-parse HEAD: %w", err)
+		}
+		partHead := strings.TrimSpace(string(partHeadOut))
+
+		updateRef := exec.Command("git", "-C", workdir, "update-ref", "refs/heads/"+epicBranch, partHead, epicSHA)
+		if err := updateRef.Run(); err == nil {
+			_ = store.UpdateTaskState(task.ID, "done", epicBranch)
+			return nil
+		}
+
+		if attempt == maxAttempts {
+			break
+		}
+		fmt.Fprintf(out, "%sloop: epic branch %s moved during landing — re-integrating and retrying (attempt %d/%d)%s\n",
+			ansiYellow, epicBranch, attempt+1, maxAttempts, ansiReset)
+		newEpicSHA, err := integrateTask(ctx, cfg, workdir, branch, epicBranch, lang, task, store, out)
+		if err != nil {
+			return err // integrateTask already marked the task blocked
+		}
+		epicSHA = newEpicSHA
+	}
+
+	feedback := fmt.Sprintf("failed to land on epic branch %s after %d attempts (stale ref)", epicBranch, maxAttempts)
+	_ = store.UpdateTaskState(task.ID, "blocked", feedback)
+	return fmt.Errorf("land on epic %s: exceeded retry attempts", epicBranch)
+}
+
+// maybeCompleteGroup pushes the epic branch and opens one PR for the whole
+// group once every task in it is done. workdir can be any task's worktree —
+// worktrees of the same project share refs, so pushing the epic branch by
+// name doesn't require it to be checked out anywhere. A push/PR failure marks
+// the group blocked; this is the only case that does.
+func maybeCompleteGroup(groupID, workdir string, store *storage.SQLiteStore, out io.Writer) error {
+	tasks, err := store.QueryTasks(storage.TaskFilter{GroupID: groupID})
+	if err != nil {
+		return err
+	}
+	for _, t := range tasks {
+		if t.State != "done" {
+			return nil
+		}
+	}
+
+	groups, err := store.QueryGroups(storage.GroupFilter{ID: groupID})
+	if err != nil {
+		return err
+	}
+	if len(groups) == 0 {
+		return fmt.Errorf("group %q not found", groupID)
+	}
+	g := groups[0]
+	if g.State != "open" {
+		return nil
+	}
+
+	prURL, err := pushBranchAndOpenPR(workdir, g.EpicBranch, g.BaseBranch, out)
+	if err != nil {
+		_ = store.UpdateGroup(g.ID, "blocked", "")
+		return fmt.Errorf("push/PR for group %s: %w", g.Name, err)
+	}
+	fmt.Fprintf(out, "%sloop: group %q done → %s%s\n", ansiGreen, g.Name, prURL, ansiReset)
+	return store.UpdateGroup(g.ID, "done", prURL)
+}
+
+// finishOrLand runs integration and then, depending on whether task belongs
+// to a group, either lands it on the group's epic branch (and completes the
+// group if it was the last part) or pushes and opens a standalone PR exactly
+// as before. Errors from integration/landing are already recorded on the
+// task; the caller only needs to know the loop pass is over.
+func finishOrLand(ctx context.Context, cfg *config.Config, workdir, branch, baseBranch, lang string, task *storage.Task, store *storage.SQLiteStore, out io.Writer) error {
+	epicSHA, err := integrateTask(ctx, cfg, workdir, branch, baseBranch, lang, task, store, out)
+	if err != nil {
+		return nil
+	}
+
+	if task.GroupID != "" {
+		if err := landOnEpic(ctx, cfg, workdir, branch, lang, task, epicSHA, store, out); err != nil {
+			fmt.Fprintf(out, "%sloop: task %q failed to land on %s: %v%s\n", ansiRed, task.ID, baseBranch, err, ansiReset)
+			return nil
+		}
+		fmt.Fprintf(out, "%sloop: task %q landed on %s%s\n", ansiGreen, task.ID, baseBranch, ansiReset)
+		if cerr := maybeCompleteGroup(task.GroupID, workdir, store, out); cerr != nil {
+			fmt.Fprintf(out, "%sloop: group completion failed: %v%s\n", ansiYellow, cerr, ansiReset)
+		}
+		return nil
+	}
+
+	prURL, finishErr := finishTask(workdir, branch, baseBranch, missionLabel(task), out)
+	if finishErr != nil {
+		fmt.Fprintf(out, "%sloop: task %q done (gate passed) — warning: %v%s\n", ansiYellow, task.ID, finishErr, ansiReset)
+		_ = store.UpdateTaskState(task.ID, "done", "warning: "+finishErr.Error())
+		return nil
+	}
+	fmt.Fprintf(out, "%sloop: task %q done → %s%s\n", ansiGreen, task.ID, prURL, ansiReset)
+	_ = store.UpdateTaskState(task.ID, "done", prURL)
+	return nil
 }
 
 func escalateTask(ctx context.Context, cfg *config.Config, root string, store *storage.SQLiteStore, task *storage.Task, lang string, prevOut *graph.Output) error {
@@ -958,6 +1239,19 @@ func resolveWorktree(root, projectName string, task *storage.Task) (workdir, bra
 	branch = module.NewBranch(branchDesc(task))
 	workdir, err = module.SetupWorktreeLocal(root, projectName, branch, baseBranch)
 	return workdir, branch, err
+}
+
+// resolveWorktreeMu serializes worktree creation. Concurrent `git worktree
+// add` calls from parallel workers race on `.git`'s lock files, so parallel
+// loop runs must not call resolveWorktree at the same time.
+var resolveWorktreeMu sync.Mutex
+
+// resolveWorktreeSafe is resolveWorktree guarded by a mutex, for use by
+// processTask, which parallel workers may call concurrently.
+func resolveWorktreeSafe(root, projectName string, task *storage.Task) (workdir, branch string, err error) {
+	resolveWorktreeMu.Lock()
+	defer resolveWorktreeMu.Unlock()
+	return resolveWorktree(root, projectName, task)
 }
 
 func branchDesc(task *storage.Task) string {
@@ -1104,7 +1398,7 @@ func runWatchDaemon(ctx context.Context, cfg *config.Config, root string) error 
 		if err != nil {
 			slog.Error("pick task failed", "error", err)
 		} else if task != nil {
-			if err := processTask(ctx, cfg, root, store, task); err != nil {
+			if err := processTask(ctx, cfg, root, store, task, os.Stderr); err != nil {
 				slog.Error("task failed", "id", task.ID, "error", err)
 				_ = markTaskBlocked(store, task.ID, err.Error())
 			}

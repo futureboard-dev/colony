@@ -486,6 +486,65 @@ If you prefer not to use the built-in scheduler, add an entry manually:
 */10 * * * * /usr/local/bin/colony loop >> /path/to/project/.colony/logs/loop.log 2>&1
 ```
 
+## Spec Split & Swarm
+
+For a feature too large for one task, split its spec into dependent parts and
+build them in parallel, landing each on a shared epic branch that opens a
+single PR once every part is done.
+
+```bash
+# 1. Write the feature's TASK.md as usual
+colony spec-feature payments --file req.md
+
+# 2. Split it into 2–6 dependent parts under .colony/specs/payments/parts/
+colony spec-feature payments --split
+
+# 3. Edit a part if needed — the frontmatter (id, depends_on) is the source
+#    of truth for the next step, so hand edits to dependencies are honored
+$EDITOR .colony/specs/payments/parts/02-api.md
+
+# 4. Enqueue the whole group: creates the epic branch feature/payments and
+#    inserts one task per part, in topological order
+colony task add --group .colony/specs/payments --lang go
+
+# 5. Build every claimable part concurrently — 02 and 03 don't start until
+#    01 is done, but run at the same time once they can
+colony loop --parallel 3
+
+# 6. Check progress
+colony loop status
+```
+
+- **Splitting** (`--split`) calls the LLM once to divide the spec into parts
+  with disjoint CREATE/MODIFY file sets and dependencies pointing only to
+  earlier parts. If `TASK.md` doesn't exist yet, `--split` generates it first
+  (requirements required), then splits. An existing `parts/` directory is
+  refused unless you pass `--force`.
+- **Part files** live at `.colony/specs/<name>/parts/NN-<slug>.md`, each with
+  a frontmatter header (`id`, `depends_on`) followed by a full Agent Task
+  Spec body. `task add --group` re-validates the dependency graph from this
+  frontmatter, so hand edits (adding, dropping, or rewiring a dependency) are
+  respected — and a graph with a cycle or a missing dependency is rejected
+  before anything is enqueued.
+- **The epic branch** (`feature/<name>`) is created locally from `--base`
+  (default: the repo's default branch) and stays local — worktrees share
+  refs, so each part merges it directly with no fetch — until every part in
+  the group is done, at which point it's pushed and one PR opens against the
+  group's base branch.
+- **Landing** squashes each finished part onto the epic branch's tip via an
+  atomic `git update-ref` compare-and-swap, so two parts finishing back to
+  back can't clobber each other; a losing part re-integrates against the new
+  tip and retries (up to 3 attempts) before it's marked `blocked`.
+- **`--parallel N`** (default 1, unchanged loop behavior) runs up to N tasks
+  at once — group or otherwise — respecting `depends_on`. Each worker's
+  output is prefixed `[<task-id or part-id>]` so concurrent logs stay
+  attributable. A crash or kill mid-build leaves tasks `running`; the next
+  `colony loop` start resets them to `needs-fix` automatically.
+- **`colony loop status`** has a `Groups` section (also under `groups` in
+  `--json`) showing each group's epic branch, `done/total` count, and every
+  part's state — `running`, `waiting on <ids>`, `waiting on <id> (blocked)`,
+  `done`, or `blocked` — plus the PR URL once the group completes.
+
 For systemd:
 
 ```

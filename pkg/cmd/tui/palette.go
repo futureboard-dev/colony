@@ -114,6 +114,16 @@ var paletteCommands = []cmdSpec{
 		},
 	},
 	{
+		Name:    "task add --group",
+		Argv:    []string{"task", "add"},
+		Summary: "Enqueue a split spec directory as a dependency-ordered group",
+		Flags: []cmdFlag{
+			{Name: "group", Kind: flagString, Required: true, Placeholder: "path/to/.colony/specs/<name>", Help: "spec directory with parts/ (from spec-feature --split)"},
+			{Name: "lang", Kind: flagString, Required: true, Placeholder: "go", Help: "typescript, python, go"},
+			{Name: "base", Kind: flagString, Placeholder: "branch", Help: "epic branch base (default: repo default branch)"},
+		},
+	},
+	{
 		Name:    "loop status",
 		Argv:    []string{"loop", "status"},
 		Summary: "Queue, feedback, daemon liveness, sessions",
