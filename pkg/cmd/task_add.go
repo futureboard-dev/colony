@@ -28,7 +28,7 @@ var taskAddCmd = &cobra.Command{
 Flags:
   --file <path>     Path to a spec file (stored in spec_path)
   --base <branch>   Base branch (stored in base_branch)
-  --lang <lang>     Language for gates: typescript, python, go (required)
+  --lang <lang>     Language for gates: typescript, python, go, none (required)
   --no-format       Comma-joined gate names to skip (e.g. --no-format skips "format")`,
 	Args: cobra.ArbitraryArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -38,7 +38,7 @@ Flags:
 		}
 
 		if taskAddLang == "" {
-			return fmt.Errorf("--lang is required (typescript, python, go)")
+			return fmt.Errorf("--lang is required (typescript, python, go, none)")
 		}
 		if _, err := module.CommandsFor(taskAddLang); err != nil {
 			return err
@@ -98,6 +98,6 @@ Flags:
 func init() {
 	taskAddCmd.Flags().StringVar(&taskAddFile, "file", "", "path to a spec file")
 	taskAddCmd.Flags().StringVar(&taskAddBase, "base", "", "base branch")
-	taskAddCmd.Flags().StringVar(&taskAddLang, "lang", "", "language for gates: typescript, python, go (required)")
+	taskAddCmd.Flags().StringVar(&taskAddLang, "lang", "", "language for gates: typescript, python, go, none (required)")
 	taskAddCmd.Flags().BoolVar(&taskAddNoFormat, "no-format", false, "skip format gate")
 }

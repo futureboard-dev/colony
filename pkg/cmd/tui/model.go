@@ -860,7 +860,7 @@ func (m *Model) addTaskNow() error {
 	}
 	lang := trimSpace(m.addLang)
 	if lang == "" {
-		return fmt.Errorf("language is required (typescript, python, go)")
+		return fmt.Errorf("language is required (typescript, python, go, none)")
 	}
 	if _, err := module.CommandsFor(lang); err != nil {
 		return err

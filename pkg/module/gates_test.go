@@ -81,6 +81,24 @@ func TestCommandsForUnknown(t *testing.T) {
 	}
 }
 
+func TestRunGateCaptureAll_None(t *testing.T) {
+	t.Run("commands are all empty", func(t *testing.T) {
+		cmds, err := CommandsFor("none")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cmds != (LangCommands{}) {
+			t.Errorf("expected no commands, got %+v", cmds)
+		}
+	})
+	t.Run("gates pass on a non-project dir", func(t *testing.T) {
+		out, err := RunGateCaptureAll("none", t.TempDir(), nil)
+		if err != nil || out != "" {
+			t.Errorf("expected pass, got out=%q err=%v", out, err)
+		}
+	})
+}
+
 func TestCommandAvailable(t *testing.T) {
 	if !CommandAvailable("go build ./...") {
 		t.Error("expected 'go' to be available on PATH")

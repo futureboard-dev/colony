@@ -43,7 +43,7 @@ var (
 
 func init() {
 	swarmCmd.Flags().StringVar(&swarmSpec, "spec", "", "spec markdown file")
-	swarmCmd.Flags().StringVar(&swarmLang, "lang", "", "language: typescript, python, go")
+	swarmCmd.Flags().StringVar(&swarmLang, "lang", "", "language: typescript, python, go, none")
 	swarmCmd.Flags().StringVar(&swarmMode, "mode", "standard", "quick | standard | full")
 	swarmCmd.Flags().BoolVar(&swarmNoFormat, "no-format", false, "skip the format gate")
 	swarmCmd.Flags().BoolVar(&swarmNoPR, "no-pr", false, "skip push and PR creation after successful completion")

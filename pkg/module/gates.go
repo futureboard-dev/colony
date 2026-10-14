@@ -80,8 +80,12 @@ func CommandsFor(lang string) (LangCommands, error) {
 			Test:      "go test ./... -count=1",
 			Build:     "go build ./...",
 		}, nil
+	case "none":
+		// No gates: every step is empty, so runGates skips them all. For repos in
+		// languages colony has no toolchain for (e.g. C#) that still need loops.
+		return LangCommands{}, nil
 	default:
-		return LangCommands{}, fmt.Errorf("unknown language %q — use: typescript, python, go", lang)
+		return LangCommands{}, fmt.Errorf("unknown language %q — use: typescript, python, go, none", lang)
 	}
 }
 

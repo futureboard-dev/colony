@@ -75,7 +75,7 @@ var paletteCommands = []cmdSpec{
 		Summary: "Build one spec end to end",
 		Flags: []cmdFlag{
 			{Name: "spec", Kind: flagString, Placeholder: "path/to/TASK.md", Help: "spec markdown file"},
-			{Name: "lang", Kind: flagString, Required: true, Placeholder: "typescript", Help: "typescript, python, go"},
+			{Name: "lang", Kind: flagString, Required: true, Placeholder: "typescript", Help: "typescript, python, go, none"},
 			{Name: "base", Kind: flagString, Placeholder: "branch", Help: "must not be main/master"},
 			{Name: "provider", Kind: flagString, Default: "deepseek", Placeholder: "deepseek", Help: "deepseek or anthropic"},
 			{Name: "model", Kind: flagString, Placeholder: "model", Help: "override config model"},
@@ -93,7 +93,7 @@ var paletteCommands = []cmdSpec{
 		Summary: "Fan a spec out across subtask agents",
 		Flags: []cmdFlag{
 			{Name: "spec", Kind: flagString, Placeholder: "path/to/TASK.md", Help: "spec markdown file"},
-			{Name: "lang", Kind: flagString, Required: true, Placeholder: "typescript", Help: "typescript, python, go"},
+			{Name: "lang", Kind: flagString, Required: true, Placeholder: "typescript", Help: "typescript, python, go, none"},
 			{Name: "mode", Kind: flagString, Default: "standard", Placeholder: "standard", Help: "quick, standard, full"},
 			{Name: "review-depth", Kind: flagString, Default: "deep", Placeholder: "deep", Help: "fast or deep"},
 			{Name: "no-format", Kind: flagBool, Help: "skip the format gate"},

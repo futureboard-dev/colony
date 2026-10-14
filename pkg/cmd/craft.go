@@ -56,7 +56,7 @@ interrupted codegen). Use --headless to run in the background.`,
 
 func init() {
 	craftCmd.Flags().StringVar(&craftSpec, "spec", "", "spec markdown file")
-	craftCmd.Flags().StringVar(&craftLang, "lang", "", "language: typescript, python, go")
+	craftCmd.Flags().StringVar(&craftLang, "lang", "", "language: typescript, python, go, none")
 	craftCmd.Flags().StringVar(&craftModel, "model", "", "override model from config")
 	craftCmd.Flags().StringVar(&craftProvider, "provider", "deepseek", "model provider: deepseek (default, deepseek-reasoner) or anthropic (engineer role, claude-sonnet-4-6)")
 	craftCmd.Flags().StringVar(&craftResume, "resume", "", "worktree path: re-run gates only")

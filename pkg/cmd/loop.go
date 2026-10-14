@@ -355,7 +355,7 @@ func runLoopRun(cmd *cobra.Command, args []string) error {
 
 	if loopRunLang == "" {
 		if task.Lang == "" {
-			return fmt.Errorf("task %q has no recorded language — re-run with --lang <typescript|python|go>", task.ID)
+			return fmt.Errorf("task %q has no recorded language — re-run with --lang <typescript|python|go|none>", task.ID)
 		}
 	} else if task.Lang != loopRunLang {
 		if err := store.UpdateTaskLang(task.ID, loopRunLang); err != nil {
@@ -534,7 +534,7 @@ func resolveGateLang(store *storage.SQLiteStore, task *storage.Task, flagLang st
 		return task.Lang, nil
 	}
 	if !flagSet || flagLang == "" {
-		return "", fmt.Errorf("task %q has no recorded language — re-run with --lang <typescript|python|go> to gate it", task.ID)
+		return "", fmt.Errorf("task %q has no recorded language — re-run with --lang <typescript|python|go|none> to gate it", task.ID)
 	}
 	if _, err := module.CommandsFor(flagLang); err != nil {
 		return "", err
