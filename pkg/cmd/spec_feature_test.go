@@ -9,6 +9,7 @@ import (
 
 	"github.com/futureboard-dev/colony/pkg/llm"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 func TestSpecHash(t *testing.T) {
@@ -238,6 +239,19 @@ func TestValidateParts(t *testing.T) {
 		}
 	})
 
+	t.Run("placeholder or description warns", func(t *testing.T) {
+		parts := []specPart{
+			{ID: "00-contracts", Owns: []string{"src/Program.cs", "the existing client"}, Reserves: []string{"Script{N}"}, Body: "x"},
+		}
+		warnings, err := validateParts(parts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(warnings) != 2 || !strings.Contains(warnings[0], "the existing client") || !strings.Contains(warnings[1], "Script{N}") {
+			t.Errorf("expected warnings for the description and the placeholder, got %v", warnings)
+		}
+	})
+
 	t.Run("two parts reserving a number warns", func(t *testing.T) {
 		parts := []specPart{
 			{ID: "01-a", Reserves: []string{"Script0040"}, Body: "x"},
@@ -317,6 +331,77 @@ func TestPartWaves(t *testing.T) {
 		}
 		if got := criticalPath(flat); len(got) != 1 {
 			t.Errorf("expected a single-part critical path, got %v", got)
+		}
+	})
+}
+
+func TestPartFrontmatterYAML(t *testing.T) {
+	tricky := specPart{
+		ID:        "00-contracts",
+		DependsOn: []string{"01-a"},
+		Source:    "../SOURCE.md",
+		Owns:      []string{"src/Scripts/Script{N}_Session.sql", "a, b", "`Program.cs`", "src/Bridge/**"},
+		Reserves:  []string{"Script0040"},
+		Body:      "Define the ports.",
+	}
+	content := formatPartFile(tricky)
+
+	t.Run("header is valid YAML and round-trips", func(t *testing.T) {
+		fm, _, ok := strings.Cut(strings.TrimPrefix(content, "---\n"), "\n---\n")
+		if !ok {
+			t.Fatalf("no frontmatter in:\n%s", content)
+		}
+		var got partFrontmatter
+		if err := yaml.Unmarshal([]byte(fm), &got); err != nil {
+			t.Fatalf("frontmatter is not valid YAML: %v\n%s", err, fm)
+		}
+		if strings.Join(got.Owns, "|") != strings.Join(tricky.Owns, "|") || got.Reserves[0] != "Script0040" {
+			t.Errorf("owns/reserves changed: %+v", got)
+		}
+	})
+
+	t.Run("parsePartContent reads it back", func(t *testing.T) {
+		p, err := parsePartContent("00-contracts.md", content)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.ID != "00-contracts" || p.Source != "../SOURCE.md" || len(p.DependsOn) != 1 || p.Body != "Define the ports." {
+			t.Errorf("unexpected part: %+v", p)
+		}
+	})
+
+	t.Run("older flow-list header still parses", func(t *testing.T) {
+		p, err := parsePartContent("02-api.md", "---\nid: 02-api\ndepends_on: [01-models, 00-contracts]\n---\nbody\n")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Join(p.DependsOn, ",") != "01-models,00-contracts" {
+			t.Errorf("depends_on = %v", p.DependsOn)
+		}
+	})
+
+	t.Run("invalid YAML names the file", func(t *testing.T) {
+		_, err := parsePartContent("bad.md", "---\nid: x\nowns: [a/Script{N}.sql, b]\n---\nbody\n")
+		if err == nil || !strings.Contains(err.Error(), "bad.md: invalid frontmatter YAML") {
+			t.Errorf("expected a YAML error naming the file, got %v", err)
+		}
+	})
+}
+
+func TestRepoFileList(t *testing.T) {
+	t.Run("lists tracked files", func(t *testing.T) {
+		dir := t.TempDir()
+		runCmd(t, dir, "git", "init", "--initial-branch=main", "--quiet")
+		writeFileForCmd(t, dir, "Script0039_Board.sql", "x")
+		runCmd(t, dir, "git", "add", ".")
+		if got := repoFileList(dir); got != "Script0039_Board.sql" {
+			t.Errorf("repoFileList = %q", got)
+		}
+	})
+
+	t.Run("not a git repo gives empty", func(t *testing.T) {
+		if got := repoFileList(t.TempDir()); got != "" {
+			t.Errorf("expected empty list outside git, got %q", got)
 		}
 	})
 }
@@ -554,7 +639,7 @@ func TestSpecFeatureSplit(t *testing.T) {
 			t.Fatalf("read part file: %v", err)
 		}
 		content := string(data)
-		if !strings.HasPrefix(content, "---\nid: 02-api\ndepends_on: [01-models]\nsource: ../TASK.md\n---\n") {
+		if !strings.HasPrefix(content, "---\nid: 02-api\ndepends_on:\n  - 01-models\nsource: ../TASK.md\n---\n") {
 			t.Errorf("unexpected frontmatter, got:\n%s", content)
 		}
 	})

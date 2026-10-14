@@ -13,6 +13,7 @@ import (
 	"github.com/futureboard-dev/colony/pkg/storage"
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 var (
@@ -150,28 +151,11 @@ func parsePartContent(path, content string) (groupPart, error) {
 	}
 	body := strings.TrimSpace(rawBody)
 
-	p := groupPart{Path: path, Body: body}
-	for line := range strings.SplitSeq(frontmatter, "\n") {
-		line = strings.TrimSpace(line)
-		if v, ok := strings.CutPrefix(line, "id:"); ok {
-			p.ID = strings.TrimSpace(v)
-			continue
-		}
-		if v, ok := strings.CutPrefix(line, "source:"); ok {
-			p.Source = strings.TrimSpace(v)
-			continue
-		}
-		if v, ok := strings.CutPrefix(line, "depends_on:"); ok {
-			v = strings.TrimSpace(v)
-			v = strings.TrimPrefix(v, "[")
-			v = strings.TrimSuffix(v, "]")
-			for d := range strings.SplitSeq(v, ",") {
-				if d = strings.TrimSpace(d); d != "" {
-					p.DependsOn = append(p.DependsOn, d)
-				}
-			}
-		}
+	var fm partFrontmatter
+	if err := yaml.Unmarshal([]byte(frontmatter), &fm); err != nil {
+		return groupPart{}, fmt.Errorf("%s: invalid frontmatter YAML: %w", path, err)
 	}
+	p := groupPart{ID: fm.ID, DependsOn: fm.DependsOn, Source: fm.Source, Path: path, Body: body}
 	if p.ID == "" {
 		return groupPart{}, fmt.Errorf("%s: missing 'id' in frontmatter", path)
 	}

@@ -33,9 +33,22 @@ func TestBuildContinueContainsLang(t *testing.T) {
 
 func TestSpecSplitPrompt(t *testing.T) {
 	spec := "# Agent Task Spec\n\n## 1. Foo\n\nDo something unique-marker-xyz."
-	p, err := SpecSplit(spec)
+	p, err := SpecSplit(spec, "src/Db/Scripts/Script0039_Board.sql")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !strings.Contains(p, "Repository files") || !strings.Contains(p, "Script0039_Board.sql") {
+		t.Error("SpecSplit prompt should embed the repository file list")
+	}
+	if !strings.Contains(p, "Never write a placeholder") {
+		t.Error("SpecSplit prompt should forbid placeholder reservations")
+	}
+	noFiles, err := SpecSplit(spec, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(noFiles, "Repository files") {
+		t.Error("SpecSplit prompt should omit the file list section when there are no files")
 	}
 	if !strings.Contains(p, "unique-marker-xyz") {
 		t.Error("SpecSplit prompt should embed the spec content")
