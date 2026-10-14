@@ -35,6 +35,12 @@ Rules:
   may end in /**) and names. Take existing paths from the repository file list.
   No descriptions, no parentheses, no placeholders, and no commas inside an
   item. Put any explanation in the brief instead.
+- Follow the repository's conventions (below, when given) for where new code
+  goes: put new ports, models, endpoints, pages and tests next to the existing
+  ones of the same kind, not in a new top-level folder.
+- A part that owns a directory ("dir/**") owns everything in it, so no other
+  part may own a path inside it. When 00 creates stub files that later parts
+  fill in, list each stub under the part that fills it, not under 00.
 - Shared hook points. When two parts would add branches to the same function or
   callback, either 00 defines a small handler interface they each implement, or
   the later part depends on the earlier one. Say which in the plan.
@@ -68,6 +74,13 @@ Reserves: <comma-separated reserved numbers or names, or none>
 Source spec to split:
 
 [[.Spec]]
+[[if .Conventions]]
+---
+
+Repository conventions (CLAUDE.md):
+
+[[.Conventions]]
+[[end]]
 [[if .Files]]
 ---
 

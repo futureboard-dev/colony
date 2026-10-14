@@ -142,13 +142,15 @@ func SpecFeatureRevise(existingSpec string) (string, error) {
 // plan plus short per-part briefs that reference the spec rather than restate it.
 // files is the repo's file list (one path per line, may be empty); the split
 // has no file tools, so this is how it names real paths and free numbers.
-func SpecSplit(spec, files string) (string, error) {
+// conventions is the repo's CLAUDE.md (may be empty), so new code is placed
+// where the repo's rules say it goes.
+func SpecSplit(spec, files, conventions string) (string, error) {
 	t, err := template.New("").Delims("[[", "]]").Parse(specSplitTmpl)
 	if err != nil {
 		return "", err
 	}
 	var buf bytes.Buffer
-	if err := t.Execute(&buf, map[string]any{"Spec": spec, "Files": files}); err != nil {
+	if err := t.Execute(&buf, map[string]any{"Spec": spec, "Files": files, "Conventions": conventions}); err != nil {
 		return "", err
 	}
 	return buf.String(), nil

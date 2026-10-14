@@ -239,6 +239,29 @@ func TestValidateParts(t *testing.T) {
 		}
 	})
 
+	t.Run("directory owned by one part covering another part's path warns", func(t *testing.T) {
+		parts := []specPart{
+			{ID: "00-contracts", Owns: []string{"src/Bridge/Registration/**", "src/Program.cs"}, Body: "x"},
+			{ID: "01-keys", Owns: []string{"src/Bridge/Registration/KeysRegistration.cs"}, Body: "y"},
+			{ID: "02-links", Owns: []string{"src/Bridge/**"}, Body: "z"},
+			{ID: "03-other", Owns: []string{"src/Bridge2/File.cs", "src/Program.cs.bak"}, Body: "w"},
+		}
+		warnings, err := validateParts(parts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// 00's dir covers 01's file; 02's dir covers both of them; src/Bridge2 and
+		// Program.cs.bak only share a prefix and must not count.
+		if len(warnings) != 3 {
+			t.Fatalf("expected 3 overlap warnings, got %d: %v", len(warnings), warnings)
+		}
+		for _, w := range warnings {
+			if strings.Contains(w, "03-other") {
+				t.Errorf("sibling with a shared prefix should not overlap: %s", w)
+			}
+		}
+	})
+
 	t.Run("placeholder or description warns", func(t *testing.T) {
 		parts := []specPart{
 			{ID: "00-contracts", Owns: []string{"src/Program.cs", "the existing client"}, Reserves: []string{"Script{N}"}, Body: "x"},
@@ -384,6 +407,30 @@ func TestPartFrontmatterYAML(t *testing.T) {
 		_, err := parsePartContent("bad.md", "---\nid: x\nowns: [a/Script{N}.sql, b]\n---\nbody\n")
 		if err == nil || !strings.Contains(err.Error(), "bad.md: invalid frontmatter YAML") {
 			t.Errorf("expected a YAML error naming the file, got %v", err)
+		}
+	})
+}
+
+func TestRepoConventions(t *testing.T) {
+	t.Run("reads CLAUDE.md", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFileForCmd(t, dir, "CLAUDE.md", "Ports live in Domain/Ports.")
+		if got := repoConventions(dir); got != "Ports live in Domain/Ports." {
+			t.Errorf("repoConventions = %q", got)
+		}
+	})
+
+	t.Run("caps a long file", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFileForCmd(t, dir, "CLAUDE.md", strings.Repeat("x", maxConventionsBytes+10))
+		if got := repoConventions(dir); len(got) > maxConventionsBytes+20 || !strings.HasSuffix(got, "(truncated)") {
+			t.Errorf("expected a truncated file, got %d bytes", len(got))
+		}
+	})
+
+	t.Run("no CLAUDE.md gives empty", func(t *testing.T) {
+		if got := repoConventions(t.TempDir()); got != "" {
+			t.Errorf("expected empty, got %q", got)
 		}
 	})
 }
