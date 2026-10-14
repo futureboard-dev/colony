@@ -1286,10 +1286,34 @@ func taskInput(task *storage.Task) (string, error) {
 		return "", fmt.Errorf("read spec file %q: %w", task.SpecPath, err)
 	}
 	spec := string(data)
+	if strings.HasPrefix(spec, "---\n") {
+		if part, err := parsePartContent(task.SpecPath, spec); err == nil && part.Source != "" {
+			spec, err = partWithSource(task.SpecPath, part)
+			if err != nil {
+				return "", err
+			}
+		}
+	}
 	if task.Description == "" {
 		return spec, nil
 	}
 	return task.Description + "\n\n" + spec, nil
+}
+
+// partWithSource gives a split part's agent its brief plus the full source
+// spec the brief points into, since briefs reference the spec instead of
+// restating it.
+func partWithSource(partPath string, part groupPart) (string, error) {
+	sourcePath := part.Source
+	if !filepath.IsAbs(sourcePath) {
+		sourcePath = filepath.Join(filepath.Dir(partPath), sourcePath)
+	}
+	source, err := os.ReadFile(sourcePath)
+	if err != nil {
+		return "", fmt.Errorf("read source spec for part %q: %w", part.ID, err)
+	}
+	return "# Your part: " + part.ID + "\n\n" + part.Body +
+		"\n\n# Source spec\n\nBuild only your part above. The full spec is here for reference.\n\n" + string(source), nil
 }
 
 // withPriorFeedback appends the reason a needs-fix task was last rejected, so

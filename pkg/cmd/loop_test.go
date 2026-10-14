@@ -158,6 +158,56 @@ func TestLoopOnce_EscalationCeiling(t *testing.T) {
 	}
 }
 
+func TestTaskInput_SplitPart(t *testing.T) {
+	dir := t.TempDir()
+	partsDir := filepath.Join(dir, "parts")
+	if err := os.MkdirAll(partsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	partPath := filepath.Join(partsDir, "01-signin.md")
+	part := formatPartFile(specPart{ID: "01-signin", Source: "../SOURCE.md", Body: "Implement §5.3."})
+	if err := os.WriteFile(partPath, []byte(part), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("brief plus source", func(t *testing.T) {
+		if err := os.WriteFile(filepath.Join(dir, "SOURCE.md"), []byte("## 5.3 Customer sign-in\nfull detail"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		got, err := taskInput(&storage.Task{SpecPath: partPath})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(got, "# Your part: 01-signin\n\nImplement §5.3.") || !strings.Contains(got, "full detail") {
+			t.Errorf("expected brief then source, got:\n%s", got)
+		}
+		if strings.Contains(got, "source: ../SOURCE.md") {
+			t.Errorf("frontmatter should not reach the agent, got:\n%s", got)
+		}
+	})
+
+	t.Run("missing source errors", func(t *testing.T) {
+		if err := os.Remove(filepath.Join(dir, "SOURCE.md")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := taskInput(&storage.Task{SpecPath: partPath}); err == nil || !strings.Contains(err.Error(), "source spec") {
+			t.Errorf("expected a source spec read error, got %v", err)
+		}
+	})
+
+	t.Run("part without source unchanged", func(t *testing.T) {
+		plain := filepath.Join(partsDir, "02-docs.md")
+		content := formatPartFile(specPart{ID: "02-docs", Body: "Write docs."})
+		if err := os.WriteFile(plain, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+		got, err := taskInput(&storage.Task{SpecPath: plain})
+		if err != nil || got != content {
+			t.Errorf("expected the file as-is, got %q err=%v", got, err)
+		}
+	})
+}
+
 func TestWithPriorFeedback(t *testing.T) {
 	t.Run("needs-fix with feedback appends it", func(t *testing.T) {
 		got := withPriorFeedback("spec", &storage.Task{State: "needs-fix", LastFeedback: "review: missing tests"})

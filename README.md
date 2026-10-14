@@ -493,11 +493,13 @@ build them in parallel, landing each on a shared epic branch that opens a
 single PR once every part is done.
 
 ```bash
-# 1. Write the feature's TASK.md as usual
-colony spec-feature payments --file req.md
+# 1. Split a spec you already have, as-is (copied to SOURCE.md)...
+colony spec-feature payments --split --file specs/payments.md
+#    ...or split a generated TASK.md (generated first if missing)
+colony spec-feature payments --split "handle card payments"
 
-# 2. Split it into 2–6 dependent parts under .colony/specs/payments/parts/
-colony spec-feature payments --split
+# 2. Review the waves, critical path and plan
+$EDITOR .colony/specs/payments/PLAN.md
 
 # 3. Edit a part if needed — the frontmatter (id, depends_on) is the source
 #    of truth for the next step, so hand edits to dependencies are honored
@@ -515,14 +517,21 @@ colony loop --parallel 3
 colony loop status
 ```
 
-- **Splitting** (`--split`) calls the LLM once to divide the spec into parts
-  with disjoint CREATE/MODIFY file sets and dependencies pointing only to
-  earlier parts. If `TASK.md` doesn't exist yet, `--split` generates it first
-  (requirements required), then splits. An existing `parts/` directory is
-  refused unless you pass `--force`.
+- **Splitting** (`--split`) calls the LLM once to divide the spec into 1–12
+  parts. Shared interfaces, stubs and one extension point per part go in a
+  `00-contracts` part, so other parts depend on it rather than on each other.
+  Every file has one owner (`Owns:`), and sequence numbers such as migrations
+  are assigned up front (`Reserves:`); two owners of the same file or number
+  is a warning. With `--file` the spec is copied to `SOURCE.md` and never
+  rewritten; otherwise `TASK.md` is split, generated first if missing. An
+  existing `parts/` directory is refused unless you pass `--force`.
+- **PLAN.md** lists the waves (parts that can run at the same time), the
+  critical path, and the LLM's notes on shared files, reservations, hook
+  points and anything to fix before building.
 - **Part files** live at `.colony/specs/<name>/parts/NN-<slug>.md`, each with
-  a frontmatter header (`id`, `depends_on`) followed by a full Agent Task
-  Spec body. `task add --group` re-validates the dependency graph from this
+  a frontmatter header (`id`, `depends_on`, `source`, `owns`, `reserves`)
+  followed by a short brief that points into the source spec. The agent
+  building a part gets its brief plus the full source spec. `task add --group` re-validates the dependency graph from this
   frontmatter, so hand edits (adding, dropping, or rewiring a dependency) are
   respected — and a graph with a cycle or a missing dependency is rejected
   before anything is enqueued.

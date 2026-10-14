@@ -121,19 +121,25 @@ func runTaskAdd(cmd *cobra.Command, args []string) error {
 type groupPart struct {
 	ID        string
 	DependsOn []string
+	Source    string // source spec path, relative to the part file
 	Body      string
 	Path      string
 }
 
 // parsePartFrontmatter reads one parts/NN-<slug>.md file, in the format
-// formatPartFile writes: a "---" delimited frontmatter block holding "id:"
-// and "depends_on: [...]", followed by the Agent Task Spec body.
+// formatPartFile writes: a "---" delimited frontmatter block holding "id:",
+// "depends_on: [...]" and optionally "source:", followed by the brief.
 func parsePartFrontmatter(path string) (groupPart, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return groupPart{}, err
 	}
-	content := string(data)
+	return parsePartContent(path, string(data))
+}
+
+// parsePartContent parses an already-read part file; path is used for errors
+// and recorded on the result.
+func parsePartContent(path, content string) (groupPart, error) {
 	if !strings.HasPrefix(content, "---\n") {
 		return groupPart{}, fmt.Errorf("%s: missing frontmatter (expected to start with '---')", path)
 	}
@@ -149,6 +155,10 @@ func parsePartFrontmatter(path string) (groupPart, error) {
 		line = strings.TrimSpace(line)
 		if v, ok := strings.CutPrefix(line, "id:"); ok {
 			p.ID = strings.TrimSpace(v)
+			continue
+		}
+		if v, ok := strings.CutPrefix(line, "source:"); ok {
+			p.Source = strings.TrimSpace(v)
 			continue
 		}
 		if v, ok := strings.CutPrefix(line, "depends_on:"); ok {

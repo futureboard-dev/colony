@@ -150,6 +150,35 @@ func TestParseParts(t *testing.T) {
 		}
 	})
 
+	t.Run("owns, reserves and plan", func(t *testing.T) {
+		fixture := "## PLAN\n- Reserved: Script0040 → 01\n\n## PART 00: contracts\nDepends-On: none\nOwns: src/Program.cs, src/Ports/\nReserves: none\nDefine the ports.\n\n## PART 01: signin\nDepends-On: 00\nOwns: src/Auth/\nReserves: Script0040\nImplement §5.3.\n"
+		parts, err := parseParts(fixture)
+		if err != nil {
+			t.Fatalf("parseParts: %v", err)
+		}
+		if len(parts) != 2 || parts[0].ID != "00-contracts" || parts[1].DependsOn[0] != "00-contracts" {
+			t.Fatalf("unexpected parts: %+v", parts)
+		}
+		if strings.Join(parts[0].Owns, "|") != "src/Program.cs|src/Ports/" || len(parts[0].Reserves) != 0 {
+			t.Errorf("part 00 owns=%v reserves=%v", parts[0].Owns, parts[0].Reserves)
+		}
+		if len(parts[1].Reserves) != 1 || parts[1].Reserves[0] != "Script0040" {
+			t.Errorf("part 01 reserves=%v", parts[1].Reserves)
+		}
+		if parts[1].Body != "Implement §5.3." {
+			t.Errorf("body should exclude header lines, got %q", parts[1].Body)
+		}
+		if plan := parsePlan(fixture); plan != "- Reserved: Script0040 → 01" {
+			t.Errorf("parsePlan = %q", plan)
+		}
+	})
+
+	t.Run("no plan section", func(t *testing.T) {
+		if plan := parsePlan(fourPartFixture()); plan != "" {
+			t.Errorf("expected empty plan, got %q", plan)
+		}
+	})
+
 	t.Run("malformed header returns error", func(t *testing.T) {
 		fixture := "## PART one: foo\nDepends-On: none\nBody.\n"
 		if _, err := parseParts(fixture); err == nil {
@@ -195,19 +224,31 @@ func TestValidateParts(t *testing.T) {
 		}
 	})
 
-	t.Run("overlapping files warns but passes", func(t *testing.T) {
-		body1 := "# Agent Task Spec\n\n## 2. Files In Scope\n\nCREATE:\n- `pkg/shared.go`: shared type\n\nMODIFY:\n\nDO NOT TOUCH:\n"
-		body2 := "# Agent Task Spec\n\n## 2. Files In Scope\n\nCREATE:\n- `pkg/shared.go`: also touches it\n\nMODIFY:\n\nDO NOT TOUCH:\n"
+	t.Run("two owners of a file warns but passes", func(t *testing.T) {
 		parts := []specPart{
-			{ID: "01-a", Body: body1},
-			{ID: "02-b", Body: body2},
+			{ID: "01-a", Owns: []string{"pkg/shared.go"}, Body: "x"},
+			{ID: "02-b", Owns: []string{"pkg/shared.go"}, Body: "y"},
 		}
 		warnings, err := validateParts(parts)
 		if err != nil {
 			t.Fatalf("expected overlap to be a warning, not an error: %v", err)
 		}
-		if len(warnings) == 0 {
-			t.Error("expected a warning about the overlapping file")
+		if len(warnings) != 1 || !strings.Contains(warnings[0], "pkg/shared.go") {
+			t.Errorf("expected one warning naming the file, got %v", warnings)
+		}
+	})
+
+	t.Run("two parts reserving a number warns", func(t *testing.T) {
+		parts := []specPart{
+			{ID: "01-a", Reserves: []string{"Script0040"}, Body: "x"},
+			{ID: "02-b", Reserves: []string{"Script0040"}, Body: "y"},
+		}
+		warnings, err := validateParts(parts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(warnings) != 1 || !strings.Contains(warnings[0], "Script0040") {
+			t.Errorf("expected one warning naming the reservation, got %v", warnings)
 		}
 	})
 
@@ -238,6 +279,44 @@ func TestValidateParts(t *testing.T) {
 		}
 		if pos["02-api"] >= pos["04-docs"] || pos["03-ui"] >= pos["04-docs"] {
 			t.Errorf("expected 04-docs after its dependencies, order=%v", order)
+		}
+	})
+}
+
+func TestPartWaves(t *testing.T) {
+	parts, err := parseParts(fourPartFixture())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("groups parts by earliest start", func(t *testing.T) {
+		var got []string
+		for _, w := range partWaves(parts) {
+			ids := make([]string, len(w))
+			for i, p := range w {
+				ids[i] = p.ID
+			}
+			got = append(got, strings.Join(ids, ","))
+		}
+		want := []string{"01-models", "02-api,03-ui", "04-docs"}
+		if strings.Join(got, " | ") != strings.Join(want, " | ") {
+			t.Errorf("waves = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("critical path follows the longest chain", func(t *testing.T) {
+		if got := strings.Join(criticalPath(parts), " → "); got != "01-models → 02-api → 04-docs" {
+			t.Errorf("critical path = %q", got)
+		}
+	})
+
+	t.Run("parallel roots give a one-part path", func(t *testing.T) {
+		flat := []specPart{{ID: "01-a"}, {ID: "02-b"}}
+		if waves := partWaves(flat); len(waves) != 1 || len(waves[0]) != 2 {
+			t.Errorf("expected both parts in wave 1, got %v", waves)
+		}
+		if got := criticalPath(flat); len(got) != 1 {
+			t.Errorf("expected a single-part critical path, got %v", got)
 		}
 	})
 }
@@ -475,7 +554,7 @@ func TestSpecFeatureSplit(t *testing.T) {
 			t.Fatalf("read part file: %v", err)
 		}
 		content := string(data)
-		if !strings.HasPrefix(content, "---\nid: 02-api\ndepends_on: [01-models]\n---\n") {
+		if !strings.HasPrefix(content, "---\nid: 02-api\ndepends_on: [01-models]\nsource: ../TASK.md\n---\n") {
 			t.Errorf("unexpected frontmatter, got:\n%s", content)
 		}
 	})
@@ -513,6 +592,58 @@ func TestSpecFeatureSplit(t *testing.T) {
 		}
 		if !strings.Contains(out, "Next: colony task add --group") {
 			t.Errorf("expected a Next: line, got:\n%s", out)
+		}
+		if !strings.Contains(out, "Wave 2") || !strings.Contains(out, "Critical path: 01-models → 02-api → 04-docs") {
+			t.Errorf("expected waves and critical path, got:\n%s", out)
+		}
+		plan, err := os.ReadFile(filepath.Join(featureDir, "PLAN.md"))
+		if err != nil {
+			t.Fatalf("expected PLAN.md: %v", err)
+		}
+		if !strings.Contains(string(plan), "Critical path:") {
+			t.Errorf("PLAN.md missing waves, got:\n%s", plan)
+		}
+	})
+
+	t.Run("file spec split as-is", func(t *testing.T) {
+		dir := initTestRepo(t)
+		setupMinimalProject(t, dir)
+		origWd, _ := os.Getwd()
+		os.Chdir(dir)
+		defer os.Chdir(origWd)
+
+		specFile := filepath.Join(t.TempDir(), "bridge.md")
+		original := "# Spec: bridge\n\n## 5.3 Customer sign-in\n\nLong hand-written detail.\n"
+		if err := os.WriteFile(specFile, []byte(original), 0644); err != nil {
+			t.Fatal(err)
+		}
+		withPlan := "## PLAN\n- Notes: move the spec out of reports/\n\n" + splitFixture
+
+		stubSpecFeatureLLM(t, "generation must not run", withPlan)
+		resetSpecFeatureFlags()
+		sfSplit = true
+		sfFile = specFile
+
+		cmd := &cobra.Command{}
+		if _, err := captureStdout(t, func() error { return runSpecFeature(cmd, []string{"bridge"}) }); err != nil {
+			t.Fatalf("runSpecFeature: %v", err)
+		}
+
+		featureDir := filepath.Join(dir, ".colony", "specs", "bridge")
+		source, err := os.ReadFile(filepath.Join(featureDir, "SOURCE.md"))
+		if err != nil || string(source) != original {
+			t.Fatalf("expected SOURCE.md to be an unchanged copy, err=%v got %q", err, source)
+		}
+		if _, err := os.Stat(filepath.Join(featureDir, "TASK.md")); !os.IsNotExist(err) {
+			t.Error("expected no TASK.md to be generated for a --file split")
+		}
+		part, err := parsePartFrontmatter(filepath.Join(featureDir, "parts", "02-api.md"))
+		if err != nil || part.Source != "../SOURCE.md" {
+			t.Errorf("expected part source ../SOURCE.md, got %+v err=%v", part, err)
+		}
+		plan, _ := os.ReadFile(filepath.Join(featureDir, "PLAN.md"))
+		if !strings.Contains(string(plan), "move the spec out of reports/") {
+			t.Errorf("expected the LLM plan in PLAN.md, got:\n%s", plan)
 		}
 	})
 }

@@ -1,44 +1,64 @@
-You are a senior product engineer splitting a large Agent Task Spec into
-buildable parts.
+You are a senior product engineer splitting a large feature spec into parts
+that separate agents build in parallel, each in its own git worktree.
 
 This is a one-shot task: produce the split in a single response. Follow any
 project or repository instructions (e.g. CLAUDE.md) for style, standards, and
 context, but override the one behavior that conflicts with one-shot output — do
 not propose a plan, ask for confirmation, or stop to request approval before
-writing. Respond with the split parts only, on the first turn.
+writing. Respond with the plan and parts only, on the first turn.
 
-Given the Agent Task Spec below, split it into 2–6 parts (a single part if the
-feature is small enough that splitting would add no value). Each part is
-itself a complete Agent Task Spec, in exactly the same markdown format as the
-spec below (same numbered sections: Files In Scope, Done Criteria, Explicit
-Decisions, Environment Variables Needed, Tests to Write, Context).
+Each agent receives its part's brief AND the full source spec below, so a brief
+must NOT restate the spec. Point into it instead: section numbers or headings
+(e.g. "§5.3 Customer sign-in"), acceptance test IDs, contract names. Keep each
+brief short.
+
+Split into 1–12 parts (a single part if splitting would add no value).
 
 Rules:
-- CREATE and MODIFY file sets must be disjoint across parts — no two parts
-  create or modify the same file.
-- Shared contracts (types, interfaces, schema, config) go in a foundation part
-  that other parts depend on.
+- Every file has exactly one owner. List each part's files on its Owns: line.
+  No two parts may own the same file.
+- Contracts first. When two or more parts share an interface, type, schema,
+  config key, or a file that every part must touch (service registration,
+  route tables, DI setup), add PART 00: contracts. It defines the shared
+  interfaces with stub or no-op implementations and no behaviour, and creates
+  one extension point per part (e.g. a registration file per part, called once
+  from the shared file) so later parts edit only their own files. Part 00 must
+  compile and pass its gates on its own.
+- Depend on code, not on interfaces. A part depends on another only when it
+  needs code that part writes. If it only needs a type, interface or stub, put
+  that in 00 and depend on 00 instead. This is what lets parts run in parallel.
+- Reserve sequence numbers now. Migration numbers, ports, IDs and similar go on
+  the owning part's Reserves: line, so parallel parts never pick the same one.
+- Shared hook points. When two parts would add branches to the same function or
+  callback, either 00 defines a small handler interface they each implement, or
+  the later part depends on the earlier one. Say which in the plan.
 - Each part must compile and pass its own gates given only the parts it
-  depends on — do not assume work from a sibling part that isn't a dependency.
-- Dependencies point to only earlier parts (lower part numbers). A later part
-  may depend on any subset of earlier parts, or on none.
-- Parts whose dependencies are all satisfied can be built in parallel — the
-  dependency graph is general, not necessarily a single chain.
+  depends on — do not assume work from a sibling that isn't a dependency.
+- Dependencies point to only earlier parts (lower part numbers).
 
-Output format, repeated for each part:
+Output format. First the plan, then each part:
+
+## PLAN
+- Shared files and owners: <file → part, for files more than one part needed>
+- Reserved: <number → part>
+- Hook points: <function → handler interface in 00, or the order the parts run in>
+- Notes: <anything a human must fix before building, and the main risks>
 
 ## PART NN: <slug>
 Depends-On: none
-<Agent Task Spec body for this part, in the exact format above>
+Owns: <comma-separated file paths or directories>
+Reserves: <comma-separated reserved numbers or names, or none>
+<brief: Goal (one or two sentences); Implement (source sections); Done when
+(acceptance test IDs or criteria); Uses (contracts from 00); Do not touch>
 
-- NN is a two-digit, 1-based part number (01, 02, ...).
+- NN is a two-digit part number: 00 for the contracts part, otherwise from 01.
 - <slug> is a short kebab-case name for the part.
-- Depends-On is either the literal "none" or a comma-separated list of
-  two-digit part numbers this part depends on, e.g. "Depends-On: 01, 02".
-- Do not add commentary outside the "## PART NN: <slug>" blocks.
+- Depends-On is the literal "none" or a comma-separated list of two-digit part
+  numbers, e.g. "Depends-On: 00, 02".
+- Do not add commentary outside the PLAN and "## PART NN: <slug>" blocks.
 
 ---
 
-Agent Task Spec to split:
+Source spec to split:
 
 [[.Spec]]

@@ -40,8 +40,14 @@ func TestSpecSplitPrompt(t *testing.T) {
 	if !strings.Contains(p, "unique-marker-xyz") {
 		t.Error("SpecSplit prompt should embed the spec content")
 	}
-	if !strings.Contains(p, "disjoint") {
-		t.Error("SpecSplit prompt should state that file sets must be disjoint across parts")
+	if !strings.Contains(p, "exactly one owner") {
+		t.Error("SpecSplit prompt should state that every file has exactly one owner")
+	}
+	if !strings.Contains(p, "PART 00: contracts") {
+		t.Error("SpecSplit prompt should ask for a contracts part when interfaces are shared")
+	}
+	if !strings.Contains(p, "## PLAN") {
+		t.Error("SpecSplit prompt should ask for a PLAN section")
 	}
 	if !strings.Contains(p, "only earlier") {
 		t.Error("SpecSplit prompt should state that dependencies point only to earlier parts")

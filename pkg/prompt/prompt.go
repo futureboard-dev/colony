@@ -138,8 +138,8 @@ func SpecFeatureRevise(existingSpec string) (string, error) {
 	return buf.String(), nil
 }
 
-// SpecSplit builds a prompt that asks the LLM to split a large Agent Task
-// Spec into dependent, independently-buildable parts.
+// SpecSplit builds a prompt that asks the LLM to split a large spec into a
+// plan plus short per-part briefs that reference the spec rather than restate it.
 func SpecSplit(spec string) (string, error) {
 	t, err := template.New("").Delims("[[", "]]").Parse(specSplitTmpl)
 	if err != nil {

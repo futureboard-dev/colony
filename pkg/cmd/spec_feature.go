@@ -50,7 +50,7 @@ func init() {
 	specFeatureCmd.Flags().BoolVar(&sfInteractive, "interactive", false, "collaborate on the spec in a live agent session instead of one-shot generation")
 	specFeatureCmd.Flags().BoolVar(&sfContinue, "continue", false, "revise an existing TASK.md using inline comments you added to it")
 	specFeatureCmd.Flags().StringVar(&sfProvider, "provider", "deepseek", "model provider for spec generation: deepseek (default, deepseek-reasoner) or anthropic (claude-opus-4-8)")
-	specFeatureCmd.Flags().BoolVar(&sfSplit, "split", false, "split TASK.md into dependent parts under parts/ for parallel building")
+	specFeatureCmd.Flags().BoolVar(&sfSplit, "split", false, "split the spec into dependent part briefs under parts/ plus PLAN.md; with --file, split that spec as-is")
 	specFeatureCmd.Flags().BoolVar(&sfForce, "force", false, "overwrite an existing parts/ directory")
 	rootCmd.AddCommand(specFeatureCmd)
 }
@@ -181,19 +181,37 @@ func runSpecFeature(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// runSpecFeatureSplit implements `spec-feature <name> --split`. If TASK.md
-// exists it is split as-is; otherwise it is generated first (requirements
-// required), exactly as plain spec-feature would, and then split.
+// runSpecFeatureSplit implements `spec-feature <name> --split`. With --file,
+// that spec is copied to SOURCE.md and split as-is. Otherwise an existing
+// TASK.md is split, or one is generated first from inline requirements,
+// exactly as plain spec-feature would. It writes parts/*.md briefs and PLAN.md.
 func runSpecFeatureSplit(cmd *cobra.Command, args []string, cfg *config.Config, root, slugName, featureDir, taskFile string) error {
-	if _, err := os.Stat(taskFile); err != nil {
+	// sourceFile is the spec the parts point into. A --file spec is split as-is
+	// (copied to SOURCE.md) so a long hand-written spec is never rewritten.
+	sourceFile := taskFile
+	if sfFile != "" {
+		sourceFile = filepath.Join(featureDir, "SOURCE.md")
+	}
+
+	partsDir := filepath.Join(featureDir, "parts")
+	if _, err := os.Stat(partsDir); err == nil && !sfForce {
+		return fmt.Errorf("parts directory already exists: %s (use --force to overwrite)", partsDir)
+	}
+
+	if sfFile != "" {
+		data, err := os.ReadFile(sfFile)
+		if err != nil {
+			return fmt.Errorf("read spec file: %w", err)
+		}
+		if err := os.MkdirAll(featureDir, 0755); err != nil {
+			return fmt.Errorf("cannot create spec directory: %w", err)
+		}
+		if err := os.WriteFile(sourceFile, data, 0644); err != nil {
+			return fmt.Errorf("write SOURCE.md: %w", err)
+		}
+	} else if _, err := os.Stat(taskFile); err != nil {
 		var input string
-		if sfFile != "" {
-			data, err := os.ReadFile(sfFile)
-			if err != nil {
-				return fmt.Errorf("read requirements file: %w", err)
-			}
-			input = string(data)
-		} else if len(args) > 1 {
+		if len(args) > 1 {
 			input = args[1]
 		}
 		if strings.TrimSpace(input) == "" {
@@ -234,14 +252,9 @@ func runSpecFeatureSplit(cmd *cobra.Command, args []string, cfg *config.Config, 
 		}
 	}
 
-	partsDir := filepath.Join(featureDir, "parts")
-	if _, err := os.Stat(partsDir); err == nil && !sfForce {
-		return fmt.Errorf("parts directory already exists: %s (use --force to overwrite)", partsDir)
-	}
-
-	specData, err := os.ReadFile(taskFile)
+	specData, err := os.ReadFile(sourceFile)
 	if err != nil {
-		return fmt.Errorf("read %s: %w", taskFile, err)
+		return fmt.Errorf("read %s: %w", sourceFile, err)
 	}
 
 	splitPrompt, err := prompt.SpecSplit(string(specData))
@@ -259,6 +272,10 @@ func runSpecFeatureSplit(cmd *cobra.Command, args []string, cfg *config.Config, 
 	parts, err := parseParts(out.String())
 	if err != nil {
 		return fmt.Errorf("parse split output: %w", err)
+	}
+	source := filepath.Join("..", filepath.Base(sourceFile))
+	for i := range parts {
+		parts[i].Source = source
 	}
 
 	warnings, err := validateParts(parts)
@@ -279,49 +296,134 @@ func runSpecFeatureSplit(cmd *cobra.Command, args []string, cfg *config.Config, 
 		}
 	}
 
+	var plan strings.Builder
+	fmt.Fprintf(&plan, "# Plan: %s\n\nSource: %s\n\n## Waves\n\n", slugName, filepath.Base(sourceFile))
+	writeWaves(&plan, parts)
+	if llmPlan := parsePlan(out.String()); llmPlan != "" {
+		fmt.Fprintf(&plan, "\n## Plan\n\n%s\n", llmPlan)
+	}
+	if len(warnings) > 0 {
+		plan.WriteString("\n## Warnings\n\n")
+		for _, w := range warnings {
+			fmt.Fprintf(&plan, "- %s\n", w)
+		}
+	}
+	planFile := filepath.Join(featureDir, "PLAN.md")
+	if err := os.WriteFile(planFile, []byte(plan.String()), 0644); err != nil {
+		return fmt.Errorf("write PLAN.md: %w", err)
+	}
+
 	for _, w := range warnings {
 		fmt.Printf("%s⚠ %s%s\n", ansiYellow, w, ansiReset)
 	}
 
 	fmt.Printf("%s✓ Split %s into %d parts%s\n", ansiGreen, slugName, len(parts), ansiReset)
-	printPartsTree(os.Stdout, parts)
+	writeWaves(os.Stdout, parts)
+	fmt.Printf("  Plan: %s\n", planFile)
 	fmt.Printf("  Next: colony task add --group %s --lang <lang>\n", featureDir)
 	return nil
 }
 
-// formatPartFile renders one part as a frontmatter-prefixed Agent Task Spec
-// file: the frontmatter (id, depends_on) is the source of truth `task add
-// --group` reads back; the body is the part's own spec.
+// formatPartFile renders one part as a frontmatter-prefixed brief: the
+// frontmatter is the source of truth `task add --group` reads back; the body
+// is the part's brief, which points into the source spec.
 func formatPartFile(p specPart) string {
-	return fmt.Sprintf("---\nid: %s\ndepends_on: [%s]\n---\n%s\n", p.ID, strings.Join(p.DependsOn, ", "), p.Body)
+	var b strings.Builder
+	fmt.Fprintf(&b, "---\nid: %s\ndepends_on: [%s]\n", p.ID, strings.Join(p.DependsOn, ", "))
+	if p.Source != "" {
+		fmt.Fprintf(&b, "source: %s\n", p.Source)
+	}
+	if len(p.Owns) > 0 {
+		fmt.Fprintf(&b, "owns: [%s]\n", strings.Join(p.Owns, ", "))
+	}
+	if len(p.Reserves) > 0 {
+		fmt.Fprintf(&b, "reserves: [%s]\n", strings.Join(p.Reserves, ", "))
+	}
+	fmt.Fprintf(&b, "---\n%s\n", p.Body)
+	return b.String()
 }
 
-// printPartsTree renders the dependency tree shown after a successful split:
-// parts with no dependencies at the top, then every dependent part annotated
-// with the part numbers it waits on.
-func printPartsTree(out io.Writer, parts []specPart) {
-	var roots, rest []specPart
+// partWaves groups parts by how early they can start: wave 1 has no
+// dependencies, and every other part sits one wave after its latest
+// dependency. Parts in the same wave can build in parallel. The graph must
+// already be validated (no cycles, no unknown dependencies).
+func partWaves(parts []specPart) [][]specPart {
+	byID := make(map[string]specPart, len(parts))
 	for _, p := range parts {
-		if len(p.DependsOn) == 0 {
-			roots = append(roots, p)
-		} else {
-			rest = append(rest, p)
+		byID[p.ID] = p
+	}
+	wave := make(map[string]int, len(parts))
+	var waveOf func(id string) int
+	waveOf = func(id string) int {
+		if w, ok := wave[id]; ok {
+			return w
+		}
+		w := 1
+		for _, d := range byID[id].DependsOn {
+			w = max(w, waveOf(d)+1)
+		}
+		wave[id] = w
+		return w
+	}
+
+	var waves [][]specPart
+	for _, p := range parts {
+		w := waveOf(p.ID)
+		for len(waves) < w {
+			waves = append(waves, nil)
+		}
+		waves[w-1] = append(waves[w-1], p)
+	}
+	return waves
+}
+
+// criticalPath returns the longest dependency chain, which bounds how fast
+// the group can finish however many parts run in parallel.
+func criticalPath(parts []specPart) []string {
+	waves := partWaves(parts)
+	if len(waves) == 0 {
+		return nil
+	}
+	waveOf := make(map[string]int, len(parts))
+	byID := make(map[string]specPart, len(parts))
+	for i, w := range waves {
+		for _, p := range w {
+			waveOf[p.ID] = i + 1
+			byID[p.ID] = p
 		}
 	}
-	for _, p := range roots {
-		fmt.Fprintf(out, "  %s\n", p.ID)
-	}
-	for i, p := range rest {
-		branch := "├─"
-		if i == len(rest)-1 {
-			branch = "└─"
+	cur := waves[len(waves)-1][0]
+	path := []string{cur.ID}
+	for len(cur.DependsOn) > 0 {
+		for _, d := range cur.DependsOn {
+			if waveOf[d] == waveOf[cur.ID]-1 {
+				cur = byID[d]
+				break
+			}
 		}
-		deps := make([]string, len(p.DependsOn))
-		for j, d := range p.DependsOn {
-			deps[j] = partNum(d)
-		}
-		fmt.Fprintf(out, "  %s %-14s (after %s)\n", branch, p.ID, strings.Join(deps, ", "))
+		path = append([]string{cur.ID}, path...)
 	}
+	return path
+}
+
+// writeWaves renders the waves and critical path shown after a split and
+// saved in PLAN.md.
+func writeWaves(out io.Writer, parts []specPart) {
+	for i, w := range partWaves(parts) {
+		fmt.Fprintf(out, "  Wave %d\n", i+1)
+		for _, p := range w {
+			if len(p.DependsOn) == 0 {
+				fmt.Fprintf(out, "    %s\n", p.ID)
+				continue
+			}
+			deps := make([]string, len(p.DependsOn))
+			for j, d := range p.DependsOn {
+				deps[j] = partNum(d)
+			}
+			fmt.Fprintf(out, "    %-20s (after %s)\n", p.ID, strings.Join(deps, ", "))
+		}
+	}
+	fmt.Fprintf(out, "  Critical path: %s\n", strings.Join(criticalPath(parts), " → "))
 }
 
 // partNum extracts the two-digit number prefix from a part ID like "02-api".
@@ -395,28 +497,65 @@ type specPart struct {
 	Num       string   // "01"
 	Slug      string   // "models"
 	DependsOn []string // full part IDs, e.g. ["01-models"]
-	Body      string   // the Agent Task Spec body for this part
+	Owns      []string // files or directories only this part may edit
+	Reserves  []string // sequence numbers or names only this part may use
+	Source    string   // source spec path, relative to the part file
+	Body      string   // the brief for this part
 }
 
 var (
 	partHeaderRe    = regexp.MustCompile(`^## PART (\d{2}): (.+)$`)
 	partHeaderLoose = regexp.MustCompile(`^## PART\b`)
 	dependsOnRe     = regexp.MustCompile(`^Depends-On:\s*(.+)$`)
+	planHeaderRe    = regexp.MustCompile(`^## PLAN\s*$`)
 )
+
+// parsePlan returns the body of the split output's "## PLAN" section (up to
+// the first part header), or "" when the LLM gave none.
+func parsePlan(output string) string {
+	lines := strings.Split(output, "\n")
+	for i, line := range lines {
+		if !planHeaderRe.MatchString(strings.TrimRight(line, "\r")) {
+			continue
+		}
+		end := i + 1
+		for end < len(lines) && !partHeaderLoose.MatchString(strings.TrimRight(lines[end], "\r")) {
+			end++
+		}
+		return strings.TrimSpace(strings.Join(lines[i+1:end], "\n"))
+	}
+	return ""
+}
+
+// splitList parses a comma-separated header value, treating "none" as empty.
+func splitList(v string) []string {
+	v = strings.TrimSpace(v)
+	if strings.EqualFold(v, "none") {
+		return nil
+	}
+	var items []string
+	for item := range strings.SplitSeq(v, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			items = append(items, item)
+		}
+	}
+	return items
+}
 
 // parseParts parses the LLM's split output into parts, mirroring the pattern
 // of parseSubtasks in pkg/cmd/swarm.go. Each part starts with a
 // "## PART NN: <slug>" header, followed immediately by a "Depends-On: ..."
-// line, followed by the part's Agent Task Spec body up to the next header (or
-// end of input). Depends-On part numbers are resolved to full part IDs
+// line, then optional "Owns: ..." and "Reserves: ..." lines, then the part's
+// brief up to the next header (or end of input). Depends-On part numbers are resolved to full part IDs
 // ("01-models") using the numbers seen in this same output.
 func parseParts(output string) ([]specPart, error) {
 	lines := strings.Split(output, "\n")
 
 	type rawPart struct {
-		num, slug string
-		deps      []string
-		body      string
+		num, slug      string
+		deps           []string
+		owns, reserves []string
+		body           string
 	}
 	var raws []rawPart
 
@@ -444,23 +583,28 @@ func parseParts(output string) ([]specPart, error) {
 		if dm == nil {
 			return nil, fmt.Errorf("part %s: malformed header — expected a Depends-On line, got %q", num, lines[i])
 		}
-		var deps []string
-		depVal := strings.TrimSpace(dm[1])
-		if !strings.EqualFold(depVal, "none") {
-			for d := range strings.SplitSeq(depVal, ",") {
-				if d = strings.TrimSpace(d); d != "" {
-					deps = append(deps, d)
-				}
-			}
-		}
+		deps := splitList(dm[1])
 		i++
+
+		var owns, reserves []string
+		for i < len(lines) {
+			line := strings.TrimSpace(lines[i])
+			if v, ok := strings.CutPrefix(line, "Owns:"); ok {
+				owns = splitList(v)
+			} else if v, ok := strings.CutPrefix(line, "Reserves:"); ok {
+				reserves = splitList(v)
+			} else {
+				break
+			}
+			i++
+		}
 
 		bodyStart := i
 		for i < len(lines) && !partHeaderLoose.MatchString(strings.TrimRight(lines[i], "\r")) {
 			i++
 		}
 		body := strings.TrimSpace(strings.Join(lines[bodyStart:i], "\n"))
-		raws = append(raws, rawPart{num: num, slug: slug, deps: deps, body: body})
+		raws = append(raws, rawPart{num: num, slug: slug, deps: deps, owns: owns, reserves: reserves, body: body})
 	}
 
 	if len(raws) == 0 {
@@ -487,6 +631,8 @@ func parseParts(output string) ([]specPart, error) {
 			Num:       r.num,
 			Slug:      r.slug,
 			DependsOn: dependsOn,
+			Owns:      r.owns,
+			Reserves:  r.reserves,
 			Body:      r.body,
 		})
 	}
@@ -495,8 +641,8 @@ func parseParts(output string) ([]specPart, error) {
 
 // validateParts checks the part graph parseParts produced: unique IDs,
 // dependencies that resolve to a known part, and no cycles (via topological
-// sort) are errors. Overlapping CREATE/MODIFY file paths across parts are
-// reported as warnings only — the caller decides whether to surface them.
+// sort) are errors. A file owned, or a number reserved, by two parts is
+// reported as a warning only — the caller decides whether to surface them.
 func validateParts(parts []specPart) ([]string, error) {
 	seen := make(map[string]bool, len(parts))
 	for _, p := range parts {
@@ -518,17 +664,21 @@ func validateParts(parts []specPart) ([]string, error) {
 
 	var warnings []string
 	fileOwner := make(map[string]string)
+	reservedBy := make(map[string]string)
 	for _, p := range parts {
-		files := append(extractFileSet(p.Body, "CREATE:", "MODIFY:"), extractFileSet(p.Body, "MODIFY:", "DO NOT TOUCH:")...)
-		for _, f := range files {
-			if f == "" {
-				continue
-			}
+		for _, f := range p.Owns {
 			if owner, ok := fileOwner[f]; ok && owner != p.ID {
-				warnings = append(warnings, fmt.Sprintf("file %q is in scope for both part %q and part %q", f, owner, p.ID))
+				warnings = append(warnings, fmt.Sprintf("%q is owned by both part %q and part %q", f, owner, p.ID))
 				continue
 			}
 			fileOwner[f] = p.ID
+		}
+		for _, r := range p.Reserves {
+			if owner, ok := reservedBy[r]; ok && owner != p.ID {
+				warnings = append(warnings, fmt.Sprintf("%q is reserved by both part %q and part %q", r, owner, p.ID))
+				continue
+			}
+			reservedBy[r] = p.ID
 		}
 	}
 	return warnings, nil
@@ -575,42 +725,4 @@ func topoSortParts(parts []specPart) ([]string, error) {
 		}
 	}
 	return order, nil
-}
-
-// extractFileSet reads the bullet-listed file paths between a header line
-// (e.g. "CREATE:") and the next section header (e.g. "MODIFY:") in a spec
-// body, matching the format spec_feature.md produces. Paths may be backtick
-// wrapped ("- `path`: description") or bare ("- path: description").
-func extractFileSet(body, header, nextHeader string) []string {
-	var files []string
-	collecting := false
-	for line := range strings.SplitSeq(body, "\n") {
-		trimmed := strings.TrimSpace(line)
-		switch {
-		case strings.EqualFold(trimmed, header):
-			collecting = true
-			continue
-		case collecting && strings.EqualFold(trimmed, nextHeader):
-			return files
-		case collecting && strings.HasPrefix(trimmed, "---"):
-			return files
-		case collecting && strings.HasPrefix(trimmed, "-"):
-			files = append(files, extractBulletPath(trimmed))
-		}
-	}
-	return files
-}
-
-// extractBulletPath pulls the file path out of one "- ..." bullet line.
-func extractBulletPath(bullet string) string {
-	s := strings.TrimSpace(strings.TrimPrefix(bullet, "-"))
-	if strings.HasPrefix(s, "`") {
-		if idx := strings.Index(s[1:], "`"); idx >= 0 {
-			return s[1 : idx+1]
-		}
-	}
-	if before, _, ok := strings.Cut(s, ":"); ok {
-		return strings.TrimSpace(before)
-	}
-	return s
 }
