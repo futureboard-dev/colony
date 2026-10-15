@@ -51,7 +51,42 @@ type LangCommands struct {
 	Build     string
 }
 
+// gateOverrides is set once per process from .colony/config.json by
+// SetGateOverrides, so the gate helpers can stay config-free.
+var gateOverrides LangCommands
+
+// SetGateOverrides records the project's gate commands from config. Call it
+// once after loading config; empty fields keep the language's built-ins.
+func SetGateOverrides(o LangCommands) {
+	gateOverrides = o
+}
+
+// CommandsFor returns the gate commands for lang, with any configured
+// overrides applied on top of the built-ins.
 func CommandsFor(lang string) (LangCommands, error) {
+	cmds, err := builtinCommands(lang)
+	if err != nil {
+		return cmds, err
+	}
+	for _, f := range []struct {
+		dst *string
+		src string
+	}{
+		{&cmds.Format, gateOverrides.Format},
+		{&cmds.Vet, gateOverrides.Vet},
+		{&cmds.Lint, gateOverrides.Lint},
+		{&cmds.TypeCheck, gateOverrides.TypeCheck},
+		{&cmds.Test, gateOverrides.Test},
+		{&cmds.Build, gateOverrides.Build},
+	} {
+		if f.src != "" {
+			*f.dst = f.src
+		}
+	}
+	return cmds, nil
+}
+
+func builtinCommands(lang string) (LangCommands, error) {
 	switch strings.ToLower(lang) {
 	case "typescript", "ts":
 		return LangCommands{

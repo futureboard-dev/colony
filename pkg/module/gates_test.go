@@ -99,6 +99,40 @@ func TestRunGateCaptureAll_None(t *testing.T) {
 	})
 }
 
+func TestGateOverrides(t *testing.T) {
+	t.Cleanup(func() { SetGateOverrides(LangCommands{}) })
+	SetGateOverrides(LangCommands{Test: "false", Build: "true"})
+
+	t.Run("none gains the configured commands", func(t *testing.T) {
+		cmds, err := CommandsFor("none")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cmds != (LangCommands{Test: "false", Build: "true"}) {
+			t.Errorf("got %+v", cmds)
+		}
+	})
+	t.Run("override replaces only the fields it sets", func(t *testing.T) {
+		cmds, err := CommandsFor("go")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cmds.Test != "false" || cmds.Vet != "go vet ./..." {
+			t.Errorf("got %+v", cmds)
+		}
+	})
+	t.Run("unknown lang still errors", func(t *testing.T) {
+		if _, err := CommandsFor("cobol"); err == nil {
+			t.Error("expected error")
+		}
+	})
+	t.Run("none fails when the configured test fails", func(t *testing.T) {
+		if _, err := RunGateCaptureAll("none", t.TempDir(), nil); err == nil {
+			t.Error("expected the failing test command to fail the gate")
+		}
+	})
+}
+
 func TestCommandAvailable(t *testing.T) {
 	if !CommandAvailable("go build ./...") {
 		t.Error("expected 'go' to be available on PATH")

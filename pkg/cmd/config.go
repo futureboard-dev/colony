@@ -39,5 +39,6 @@ func loadConfig() (*config.Config, string, error) {
 		return nil, "", err
 	}
 	module.SetWorktreeBase(cfg.WorktreeBase)
+	module.SetGateOverrides(module.LangCommands(cfg.Gates))
 	return cfg, root, nil
 }

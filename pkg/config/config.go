@@ -62,12 +62,26 @@ func (c LLMConfig) ValidateKey() error {
 // roles for its own run, leaving every other command on the global defaults.
 // WorktreeBase overrides where agent worktrees are created; empty means the
 // built-in default (~/Projects/.worktrees). "~" is expanded.
+// Gates overrides the quality-gate commands for this project.
 type Config struct {
 	Root         string                 `json:"root"`
 	WorktreeBase string                 `json:"worktree_base,omitempty"`
 	LLM          LLMConfig              `json:"llm"`
 	Roles        map[string]LLMConfig   `json:"roles,omitempty"`
 	Commands     map[string]ScopeConfig `json:"commands,omitempty"`
+	Gates        GateCommands           `json:"gates,omitempty"`
+}
+
+// GateCommands replaces individual quality-gate commands. A non-empty field
+// wins over the language's built-in command, so a lang "none" project (one
+// colony has no toolchain for, e.g. C#) can still gate on its own tests.
+type GateCommands struct {
+	Format    string `json:"format,omitempty"`
+	Vet       string `json:"vet,omitempty"`
+	Lint      string `json:"lint,omitempty"`
+	TypeCheck string `json:"typecheck,omitempty"`
+	Test      string `json:"test,omitempty"`
+	Build     string `json:"build,omitempty"`
 }
 
 // ScopeConfig overrides model selection for a single command. An empty LLM or

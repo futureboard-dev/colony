@@ -122,6 +122,28 @@ func TestLoadConfigWithoutCommandsBlock(t *testing.T) {
 	}
 }
 
+func TestLoadGates(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, ".colony"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	data := `{
+		"llm": {"provider": "anthropic", "model": "claude-sonnet-4-6"},
+		"gates": {"test": "dotnet test tests/A", "build": "dotnet build"}
+	}`
+	if err := os.WriteFile(filepath.Join(tmp, ".colony", "config.json"), []byte(data), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := GateCommands{Test: "dotnet test tests/A", Build: "dotnet build"}
+	if cfg.Gates != want {
+		t.Errorf("got %+v, want %+v", cfg.Gates, want)
+	}
+}
+
 func TestLoadMissingConfig(t *testing.T) {
 	tmp := t.TempDir()
 	_, err := Load(tmp)
