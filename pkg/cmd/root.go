@@ -23,6 +23,8 @@ Agents run in isolated git worktrees. Each role (coordinator, engineer, reviewer
 can use a different model. Provider switching is a config change, not a code change.
 
 Providers: anthropic → claude CLI, everything else → crush CLI.
+Set "cli": "codex" on an llm entry to run it through the codex CLI instead.
+colony init picks claude, codex or crush based on what is installed.
 
 Quick start:
   colony init

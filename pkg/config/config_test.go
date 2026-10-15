@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -154,7 +155,21 @@ func TestLoadSetsRootWhenEmpty(t *testing.T) {
 	}
 }
 
+// fakePath points PATH at a dir holding empty executables named clis, so
+// init's CLI detection sees exactly those and nothing from the host.
+func fakePath(t *testing.T, clis ...string) {
+	t.Helper()
+	dir := t.TempDir()
+	for _, cli := range clis {
+		if err := os.WriteFile(filepath.Join(dir, cli), []byte("#!/bin/sh\n"), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", dir)
+}
+
 func TestInitCreatesFile(t *testing.T) {
+	fakePath(t, "claude", "codex", "crush")
 	tmp := t.TempDir()
 	if err := Init(tmp); err != nil {
 		t.Fatal(err)
@@ -172,10 +187,73 @@ func TestInitCreatesFile(t *testing.T) {
 }
 
 func TestInitFailsIfAlreadyExists(t *testing.T) {
+	fakePath(t, "claude")
 	tmp := t.TempDir()
 	Init(tmp) //nolint:errcheck
 	if err := Init(tmp); err == nil {
 		t.Fatal("expected error on double init")
+	}
+}
+
+func TestInitPicksCLIFromPath(t *testing.T) {
+	cases := []struct {
+		name     string
+		clis     []string
+		wantCLI  string
+		provider string
+		model    string
+	}{
+		{"codex when no claude", []string{"codex", "crush"}, "codex", "openai", ""},
+		{"crush when only crush", []string{"crush"}, "", "openrouter", "deepseek/deepseek-v4.1-flash"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fakePath(t, tc.clis...)
+			tmp := t.TempDir()
+			if err := Init(tmp); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(tmp)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.LLM.CLI != tc.wantCLI || cfg.LLM.Provider != tc.provider || cfg.LLM.Model != tc.model {
+				t.Errorf("got llm %+v, want cli=%q provider=%q model=%q", cfg.LLM, tc.wantCLI, tc.provider, tc.model)
+			}
+			if !cfg.HasCommandRole("loop", "review") {
+				t.Error("expected loop review role so the review gate stays on")
+			}
+			if got := cfg.CommandRole("loop", "review"); got != cfg.LLM {
+				t.Errorf("loop review role should match default llm, got %+v", got)
+			}
+		})
+	}
+}
+
+func TestInitFailsWithNoAgentCLI(t *testing.T) {
+	fakePath(t)
+	tmp := t.TempDir()
+	err := Init(tmp)
+	if err == nil {
+		t.Fatal("expected error when no agent CLI is installed")
+	}
+	for _, cli := range []string{"claude", "codex", "crush"} {
+		if !strings.Contains(err.Error(), cli) {
+			t.Errorf("error should mention %s: %v", cli, err)
+		}
+	}
+	if _, statErr := os.Stat(filepath.Join(tmp, ".colony", "config.json")); !os.IsNotExist(statErr) {
+		t.Error("config.json must not be written when no agent CLI is found")
+	}
+}
+
+func TestValidateKeySkipsCodex(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "")
+	if err := (LLMConfig{Provider: "openai", CLI: "codex"}).ValidateKey(); err != nil {
+		t.Errorf("codex manages its own auth, expected no error: %v", err)
+	}
+	if err := (LLMConfig{Provider: "openai"}).ValidateKey(); err == nil {
+		t.Error("crush with openai still requires OPENAI_API_KEY")
 	}
 }
 

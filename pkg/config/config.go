@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 )
 
@@ -11,6 +12,9 @@ type LLMConfig struct {
 	Provider  string `json:"provider"`
 	Model     string `json:"model"`
 	APIKeyEnv string `json:"api_key_env,omitempty"`
+	// CLI pins the agent CLI: "claude", "codex" or "crush". Empty derives it
+	// from Provider (anthropic → claude, everything else → crush).
+	CLI string `json:"cli,omitempty"`
 }
 
 // KeyEnvName returns the env var name for the API key.
@@ -36,8 +40,9 @@ func (c LLMConfig) KeyEnvName() string {
 // ValidateKey checks that the required API key environment variable is set.
 // Anthropic is skipped — the claude CLI manages its own auth and does not need
 // ANTHROPIC_API_KEY; forwarding a key from env would be rejected by the CLI.
+// Codex is skipped for the same reason: `codex login` owns its auth.
 func (c LLMConfig) ValidateKey() error {
-	if c.Provider == "anthropic" {
+	if c.Provider == "anthropic" || c.CLI == "codex" {
 		return nil
 	}
 	key := c.KeyEnvName()
@@ -160,7 +165,53 @@ func Init(projectRoot string) error {
 	if _, err := os.Stat(path); err == nil {
 		return fmt.Errorf(".colony/config.json already exists")
 	}
-	cfg := Config{
+	cfg, err := defaultConfig(projectRoot)
+	if err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(data, '\n'), 0644)
+}
+
+// defaultConfig builds the init config for whichever agent CLI is on PATH,
+// preferring claude, then codex, then crush.
+func defaultConfig(projectRoot string) (Config, error) {
+	switch {
+	case onPath("claude"):
+		return claudeConfig(projectRoot), nil
+	case onPath("codex"):
+		// Model left empty so codex uses its own default.
+		llm := LLMConfig{Provider: "openai", CLI: "codex"}
+		return Config{
+			Root: projectRoot,
+			LLM:  llm,
+			// Defining the loop review role keeps the review gate on.
+			Commands: map[string]ScopeConfig{"loop": {Roles: map[string]LLMConfig{"review": llm}}},
+		}, nil
+	case onPath("crush"):
+		llm := LLMConfig{Provider: "openrouter", Model: "deepseek/deepseek-v4.1-flash"}
+		return Config{
+			Root:     projectRoot,
+			LLM:      llm,
+			Commands: map[string]ScopeConfig{"loop": {Roles: map[string]LLMConfig{"review": llm}}},
+		}, nil
+	}
+	return Config{}, fmt.Errorf("no agent CLI found — install one of:\n" +
+		"  claude  https://claude.ai/code\n" +
+		"  codex   npm install -g @openai/codex\n" +
+		"  crush   brew install charmbracelet/tap/crush")
+}
+
+func onPath(cli string) bool {
+	_, err := exec.LookPath(cli)
+	return err == nil
+}
+
+func claudeConfig(projectRoot string) Config {
+	return Config{
 		Root: projectRoot,
 		LLM: LLMConfig{
 			Provider: "anthropic",
@@ -194,9 +245,4 @@ func Init(projectRoot string) error {
 			},
 		},
 	}
-	data, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, append(data, '\n'), 0644)
 }

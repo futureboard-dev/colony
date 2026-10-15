@@ -13,7 +13,8 @@ import (
 	"github.com/futureboard-dev/colony/pkg/config"
 )
 
-// Executor delegates agent execution to claude (Anthropic) or crush (all other providers).
+// Executor delegates agent execution to claude (Anthropic), codex (when pinned
+// via LLMConfig.CLI) or crush (all other providers).
 // Colony owns orchestration; these CLIs own the agent loop, MCP, and tool ecosystems.
 type Executor struct {
 	cfg config.LLMConfig
@@ -24,6 +25,9 @@ func New(cfg config.LLMConfig) *Executor {
 }
 
 func (e *Executor) CLI() string {
+	if e.cfg.CLI != "" {
+		return e.cfg.CLI
+	}
 	if e.cfg.Provider == "anthropic" {
 		return "claude"
 	}
@@ -53,7 +57,7 @@ func (e *Executor) RunHeadless(ctx context.Context, workdir, prompt string, out 
 //
 // For claude, stdout is the stream-json event feed and is rendered through
 // streamClaude into a compact one-line-per-action view. For crush (which has
-// no structured stream format) output is passed through raw with --verbose.
+// no structured stream format) and codex, output is passed through raw.
 func (e *Executor) RunAgent(ctx context.Context, workdir, prompt string, out io.Writer) error {
 	if err := e.validateKeyIfNeeded(); err != nil {
 		return err
@@ -118,9 +122,9 @@ func (e *Executor) RunInteractive(workdir, initialPrompt string) error {
 }
 
 // Preflight verifies that crush run can execute tool calls (known flaky issue).
-// Skipped for anthropic — claude is reliable.
+// Skipped for claude and codex — the bug is crush-specific.
 func (e *Executor) Preflight() error {
-	if e.cfg.Provider == "anthropic" {
+	if e.CLI() != "crush" {
 		return nil
 	}
 	if err := checkInstalled("crush"); err != nil {
@@ -169,6 +173,15 @@ func (e *Executor) headlessArgs(prompt string) []string {
 			args = append(args, "--model", e.cfg.Model)
 		}
 		return args
+	case "codex":
+		// read-only sandbox keeps headless runs to text generation: the model
+		// can't edit files, though it may still run read-only shell commands.
+		args := []string{"exec", "--sandbox", "read-only"}
+		if e.cfg.Model != "" {
+			args = append(args, "-m", e.cfg.Model)
+		}
+		args = append(args, prompt)
+		return args
 	default:
 		args := []string{"run", "-q"}
 		if e.cfg.Model != "" {
@@ -193,6 +206,15 @@ func (e *Executor) agentArgs(prompt string) []string {
 		if e.cfg.Model != "" {
 			args = append(args, "--model", e.cfg.Model)
 		}
+		return args
+	case "codex":
+		// --full-auto = workspace-write sandbox with no approval prompts, so
+		// the agent can edit files in the worktree unattended.
+		args := []string{"exec", "--full-auto"}
+		if e.cfg.Model != "" {
+			args = append(args, "-m", e.cfg.Model)
+		}
+		args = append(args, prompt)
 		return args
 	default:
 		// crush has no structured stream format; --verbose surfaces its
@@ -245,6 +267,8 @@ func checkInstalled(cli string) error {
 		switch cli {
 		case "claude":
 			return fmt.Errorf("claude not installed\n  Install: https://claude.ai/code")
+		case "codex":
+			return fmt.Errorf("codex not installed\n  Install: npm install -g @openai/codex")
 		case "crush":
 			return fmt.Errorf("crush not installed\n  Install: brew install charmbracelet/tap/crush\n  Or: https://github.com/charmbracelet/crush")
 		}
