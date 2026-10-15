@@ -86,6 +86,23 @@ func TestFixContainsGateAndErrors(t *testing.T) {
 	}
 }
 
+// The fixer also receives review rejections and runs headless; it must treat
+// missing spec items as in scope and never stall asking for confirmation.
+func TestFixHandlesReviewFeedbackNonInteractively(t *testing.T) {
+	p, err := Fix("typescript", "Spec item 'Proposal Studio' is unimplemented")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Spec item 'Proposal Studio' is unimplemented", "SPEC.md", "non-interactively", "Never ask"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("Fix prompt missing %q", want)
+		}
+	}
+	if strings.Contains(p, "Fix ONLY these errors") {
+		t.Error("Fix prompt should not restrict the fixer to gate errors only")
+	}
+}
+
 func TestCoordinatorContainsSpec(t *testing.T) {
 	spec := "Add a promotional banner to the homepage"
 	p, err := Coordinator(spec)
