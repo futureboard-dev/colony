@@ -86,7 +86,7 @@ func (n *GateNode) Run(ctx context.Context, in graph.Input) (graph.Output, error
 		AgentID: n.agentID,
 		Envelope: graph.Envelope{
 			Decision: graph.REJECTED,
-			Feedback: handoff.Summary(fmt.Sprintf("Gate %q failed: %v.\n\n%s", lang, err, output), logPath, handoff.FeedbackLimit),
+			Feedback: handoff.Summary(fmt.Sprintf("Gate %q failed: %v.\n\n%s", lang, err, handoff.Distill(output)), logPath, handoff.FeedbackLimit),
 			Output:   mustMarshal(""),
 		},
 	}, nil

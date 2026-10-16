@@ -28,6 +28,12 @@ var reviewTmpl string
 //go:embed review_loop.md
 var reviewLoopTmpl string
 
+//go:embed review_batch.md
+var reviewBatchTmpl string
+
+//go:embed review_synthesize.md
+var reviewSynthesizeTmpl string
+
 //go:embed spec_feature.md
 var specFeatureTmpl string
 
@@ -110,6 +116,16 @@ func Review(spec, diff string) (string, error) {
 // the static template unchanged.
 func ReviewLoop() string {
 	return reviewLoopTmpl
+}
+
+// ReviewBatch returns the prompt for reviewing one batch of an oversized diff.
+func ReviewBatch() string {
+	return reviewBatchTmpl
+}
+
+// ReviewSynthesize returns the prompt that combines all-approved batch verdicts.
+func ReviewSynthesize() string {
+	return reviewSynthesizeTmpl
 }
 
 func SpecFeature(input string) (string, error) {

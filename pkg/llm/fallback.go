@@ -4,13 +4,13 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"github.com/futureboard-dev/colony/pkg/handoff"
 	"io"
 	"os"
 	"strings"
 	"sync"
 
 	"github.com/futureboard-dev/colony/pkg/config"
+	"github.com/futureboard-dev/colony/pkg/handoff"
 )
 
 // diagnosticTail bounds memory even for long coding runs.
@@ -93,7 +93,13 @@ func (e *Executor) runResult(ctx context.Context, workdir, prompt string, progre
 	}
 	result := Result{LogPath: log.Name()}
 	defer log.Close()
-	if err = handoff.CheckPrompt(prompt); err != nil {
+	// Headless calls are read-only judgements (reviews); they get the larger
+	// review budget, while agentic builder/fixer prompts keep the tighter cap.
+	limit := handoff.PromptLimit
+	if headless {
+		limit = handoff.ReviewLimit
+	}
+	if err = handoff.CheckPrompt(prompt, limit); err != nil {
 		return result, fmt.Errorf("%w; full log: %s", err, log.Name())
 	}
 	if progress == nil {

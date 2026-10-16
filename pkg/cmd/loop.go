@@ -148,9 +148,14 @@ func runLoopRetryReview(cmd *cobra.Command, args []string) error {
 
 	fmt.Fprintf(os.Stderr, "%sloop: retrying review for task %q on worktree %s%s\n", ansiBlue, taskID, workdir, ansiReset)
 
+	baseBranch := task.BaseBranch
+	if baseBranch == "" {
+		baseBranch = module.DefaultBranch()
+	}
+
 	node := nodes.NewReviewNode("review", reviewCfg)
 	out, runErr := node.Run(cmd.Context(), graph.Input{
-		Params: map[string]any{"workdir": workdir},
+		Params: map[string]any{"workdir": workdir, "base": baseBranch, "prior_feedback": task.LastFeedback},
 	})
 
 	if runErr != nil {
@@ -166,11 +171,6 @@ func runLoopRetryReview(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Fprintf(os.Stderr, "%sloop: review APPROVED — integrating%s\n", ansiGreen, ansiReset)
-
-	baseBranch := task.BaseBranch
-	if baseBranch == "" {
-		baseBranch = module.DefaultBranch()
-	}
 
 	return finishOrLand(cmd.Context(), cfg, workdir, task.Branch, baseBranch, lang, task, store, os.Stderr)
 }
@@ -235,13 +235,14 @@ func runLoopRetryGate(cmd *cobra.Command, args []string) error {
 		baseBranch = module.DefaultBranch()
 	}
 	opts := blueprint.BuildGateFixOpts{
-		Name:        "retry-gate-" + missionLabel(task),
-		Input:       input,
-		Lang:        lang,
-		Base:        baseBranch,
-		Workdir:     workdir,
-		MaxCycles:   loopMaxCycles,
-		SkipBuilder: true,
+		Name:          "retry-gate-" + missionLabel(task),
+		Input:         input,
+		Lang:          lang,
+		Base:          baseBranch,
+		Workdir:       workdir,
+		MaxCycles:     loopMaxCycles,
+		SkipBuilder:   true,
+		PriorFeedback: task.LastFeedback,
 	}
 	if loopReview || cfg.HasCommandRole("loop", graph.RoleReview) {
 		opts.ReviewRole = graph.RoleReview

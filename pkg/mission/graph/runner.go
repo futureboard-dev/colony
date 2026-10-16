@@ -315,7 +315,7 @@ func (r *defaultRunner) executeNode(
 	var out Output
 	var execErr error
 
-	if execErr = handoff.CheckPrompt(currentInput); execErr == nil {
+	if execErr = handoff.CheckPrompt(currentInput, handoff.PromptLimit); execErr == nil {
 		out, execErr = node.Run(ctx, Input{Text: currentInput, Params: m.Params})
 	}
 

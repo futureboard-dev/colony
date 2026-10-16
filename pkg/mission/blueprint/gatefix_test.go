@@ -253,3 +253,12 @@ func TestBuildGateFix_GateOverrides(t *testing.T) {
 		t.Error("expected format to be in skip_gates")
 	}
 }
+
+// TestBuildGateFix_PriorFeedback verifies the last rejection reaches node params,
+// where the review node reads it.
+func TestBuildGateFix_PriorFeedback(t *testing.T) {
+	m := BuildGateFix(BuildGateFixOpts{Name: "prior", Input: "test", PriorFeedback: "1. stub at a.go:3"})
+	if got := m.Params["prior_feedback"]; got != "1. stub at a.go:3" {
+		t.Errorf("expected prior_feedback param, got %v", got)
+	}
+}

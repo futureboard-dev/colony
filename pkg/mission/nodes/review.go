@@ -4,13 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/futureboard-dev/colony/pkg/handoff"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/futureboard-dev/colony/pkg/config"
+	"github.com/futureboard-dev/colony/pkg/handoff"
 	"github.com/futureboard-dev/colony/pkg/llm"
 	"github.com/futureboard-dev/colony/pkg/mission/graph"
 	"github.com/futureboard-dev/colony/pkg/prompt"
@@ -24,11 +24,14 @@ import (
 type ReviewNode struct {
 	agentID string
 	cfg     config.LLMConfig
+	// run is the headless model call; tests substitute it to exercise
+	// batching and coverage checks without a model CLI.
+	run func(ctx context.Context, workdir, prompt string) (llm.Result, error)
 }
 
 // NewReviewNode creates a ReviewNode.
 func NewReviewNode(agentID string, cfg config.LLMConfig) *ReviewNode {
-	return &ReviewNode{agentID: agentID, cfg: cfg}
+	return &ReviewNode{agentID: agentID, cfg: cfg, run: llm.New(cfg).RunHeadlessResult}
 }
 
 func (n *ReviewNode) Run(ctx context.Context, in graph.Input) (graph.Output, error) {
@@ -47,14 +50,18 @@ func (n *ReviewNode) Run(ctx context.Context, in graph.Input) (graph.Output, err
 	if diffErr != nil {
 		return graph.Output{}, fmt.Errorf("review coverage blocked: %w", diffErr)
 	}
-	evidencePath, err := handoff.Save(workdir, "review-input", "## Specification\n\n"+spec+"\n\n## Diff\n\n"+diff)
+	base, _ := in.Params["base"].(string)
+	reviewContext := "## Specification\n\n" + spec + committedOnBranch(workdir, base)
+	if prior, _ := in.Params["prior_feedback"].(string); strings.TrimSpace(prior) != "" {
+		reviewContext += "\n\n## Previously reported issues\n\nAn earlier attempt was rejected for the issues below; some may since have been fixed. Verify each against the current diff: any that is still unresolved is a reason to reject.\n\n" + handoff.Bound(prior, handoff.FeedbackLimit)
+	}
+	evidencePath, err := handoff.Save(workdir, "review-input", reviewContext+"\n\n## Diff\n\n"+diff)
 	if err != nil {
 		return graph.Output{}, err
 	}
-	// Never approve a partial diff. Generated clients, schemas and lockfiles are
-	// required evidence too: retain them and block until review is partitioned.
-	if len(spec)+len(diff) > handoff.ReviewLimit || strings.Contains(diff, "GIT binary patch") {
-		return graph.Output{}, fmt.Errorf("review coverage blocked: %d bytes (budget %d), or binary artifacts present; partition the review with explicit coverage for generated clients, schemas and other artifacts; no content was reviewed or approved; full input: %s", len(spec)+len(diff), handoff.ReviewLimit, evidencePath)
+	// A model cannot review binary content, so it can never be approved.
+	if strings.Contains(diff, "GIT binary patch") {
+		return graph.Output{}, fmt.Errorf("review coverage blocked: binary artifacts present; no content was reviewed or approved; full input: %s", evidencePath)
 	}
 	if diff == "" {
 		// No diff means the agent produced no changes — reject so the task is
@@ -69,49 +76,56 @@ func (n *ReviewNode) Run(ctx context.Context, in graph.Input) (graph.Output, err
 		}, nil
 	}
 
-	combined := injectInput(prompt.ReviewLoop(),
-		"## Specification\n\n"+spec+"\n\n## Git diff of implementation\n\n"+diff)
+	combined := injectInput(prompt.ReviewLoop(), reviewContext+"\n\n## Git diff of implementation\n\n"+diff)
+	if len(combined) > handoff.ReviewLimit {
+		// Never truncate: review every byte in batches with verified coverage.
+		return n.runBatches(ctx, workdir, reviewContext, diff, evidencePath)
+	}
 
-	runner := llm.New(n.cfg)
-	result, err := runner.RunHeadlessResult(ctx, workdir, combined)
+	result, err := n.run(ctx, workdir, combined)
 	if err != nil {
 		return graph.Output{AgentID: n.agentID}, fmt.Errorf("agent %q: review call failed: %w", n.agentID, err)
 	}
-	raw := result.Text
-
-	var env graph.Envelope
-	if err := json.Unmarshal([]byte(extractJSON(raw)), &env); err != nil {
-		preview := raw
-		if len(preview) > 500 {
-			preview = preview[:500] + "...(truncated)"
-		}
-		return graph.Output{AgentID: n.agentID, Raw: raw},
-			fmt.Errorf("agent %q: invalid review envelope: %w\n--- raw output ---\n%s\n---", n.agentID, err, preview)
-	}
-
-	if env.Decision != graph.APPROVED && env.Decision != graph.REJECTED {
-		return graph.Output{}, fmt.Errorf("invalid review decision %q; full log: %s", env.Decision, result.LogPath)
+	env, err := parseDecision(n.agentID, result)
+	if err != nil {
+		return graph.Output{AgentID: n.agentID, Raw: result.Text}, err
 	}
 	env.Feedback = handoff.Summary(env.Feedback, result.LogPath, handoff.FeedbackLimit)
-	return graph.Output{AgentID: n.agentID, Envelope: env, Raw: raw}, nil
+	return graph.Output{AgentID: n.agentID, Envelope: env, Raw: result.Text}, nil
 }
 
-// readSpec returns the contents of SPEC.md in workdir, or "" if absent.
-func readSpec(workdir string) string {
-	data, err := os.ReadFile(filepath.Join(workdir, "SPEC.md"))
-	if err != nil {
+// parseDecision extracts a review envelope that must decide APPROVED or REJECTED.
+func parseDecision(agentID string, result llm.Result) (graph.Envelope, error) {
+	var env graph.Envelope
+	if err := json.Unmarshal([]byte(extractJSON(result.Text)), &env); err != nil {
+		return env, fmt.Errorf("agent %q: invalid review envelope: %w\n--- raw output ---\n%s\n---", agentID, err, handoff.Bound(result.Text, 500))
+	}
+	if env.Decision != graph.APPROVED && env.Decision != graph.REJECTED {
+		return env, fmt.Errorf("invalid review decision %q; full log: %s", env.Decision, result.LogPath)
+	}
+	return env, nil
+}
+
+// committedOnBranch lists files already committed on this branch since base.
+// They are absent from the working diff (e.g. regenerated API clients committed
+// separately), so the reviewer must not reject the task for missing them.
+func committedOnBranch(workdir, base string) string {
+	if base == "" {
 		return ""
 	}
-	return string(data)
+	cmd := exec.Command("git", "log", "--stat", "--format=%h %s", "origin/"+base+"..HEAD")
+	cmd.Dir = workdir
+	out, err := cmd.Output()
+	if err != nil || len(strings.TrimSpace(string(out))) == 0 {
+		return ""
+	}
+	return "\n\n## Already committed on this branch (not in the diff below)\n\n" + handoff.Bound(string(out), handoff.FeedbackLimit)
 }
 
-// gitDiff returns the combined staged+unstaged diff of the worktree, including
-// untracked files (via --no-index would be heavy, so we add intent-to-add).
+// reviewDiff returns the combined staged+unstaged diff of the worktree against
+// HEAD plus every untracked file, without altering the index.
 // Returns "" when there are no changes.
-func gitDiff(workdir string) string { diff, _ := reviewDiff(workdir); return diff }
-
 func reviewDiff(workdir string) (string, error) {
-	// Read without altering the real index or staging new files.
 	cmd := exec.Command("git", "diff", "--binary", "HEAD", "--", ".", ":(exclude)SPEC.md", ":(exclude).colony")
 	cmd.Dir = workdir
 	out, err := cmd.Output()
