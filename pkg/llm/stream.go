@@ -13,6 +13,7 @@ import (
 type streamEvent struct {
 	Type    string `json:"type"`
 	IsError bool   `json:"is_error"`
+	Result  string `json:"result"`
 	Message struct {
 		Content []streamBlock `json:"content"`
 	} `json:"message"`
@@ -38,6 +39,10 @@ type toolInput struct {
 // one-line-per-action view to out. Lines that aren't valid JSON events are
 // passed through unchanged so nothing is silently swallowed (e.g. stderr text).
 func streamClaude(r io.Reader, out io.Writer) error {
+	return streamClaudeResult(r, out, nil)
+}
+
+func streamClaudeResult(r io.Reader, out, final io.Writer) error {
 	br := bufio.NewReader(r)
 	var resultErr error
 	for {
@@ -45,8 +50,14 @@ func streamClaude(r io.Reader, out io.Writer) error {
 		if s := strings.TrimSpace(line); s != "" {
 			renderEvent(s, out)
 			var ev streamEvent
-			if json.Unmarshal([]byte(s), &ev) == nil && ev.Type == "result" && ev.IsError {
-				resultErr = fmt.Errorf("claude returned an error result: %s", s)
+			if json.Unmarshal([]byte(s), &ev) == nil && ev.Type == "result" {
+				if ev.IsError {
+					resultErr = fmt.Errorf("claude returned an error result")
+				} else if final != nil {
+					if _, e := io.WriteString(final, ev.Result); e != nil {
+						return e
+					}
+				}
 			}
 		}
 		if err != nil {

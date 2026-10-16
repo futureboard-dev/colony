@@ -159,7 +159,8 @@ type Store interface {
 
 // SQLiteStore implements Store using modernc.org/sqlite.
 type SQLiteStore struct {
-	db *sql.DB
+	db      *sql.DB
+	logRoot string
 }
 
 // DefaultDBPath returns the default path for missions.db.
@@ -214,7 +215,7 @@ func Open(dbPath string) (*SQLiteStore, error) {
 			return nil, fmt.Errorf("migrate tasks columns: %w", err)
 		}
 	}
-	return &SQLiteStore{db: db}, nil
+	return &SQLiteStore{db: db, logRoot: filepath.Dir(dbPath)}, nil
 }
 
 func (s *SQLiteStore) Close() error {

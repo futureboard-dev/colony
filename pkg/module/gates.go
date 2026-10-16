@@ -293,7 +293,7 @@ func ChangedFiles(workdir, base string) []string {
 				continue
 			}
 			switch strings.ToLower(filepath.Ext(line)) {
-			case ".ts", ".tsx", ".js", ".jsx", ".cjs", ".mjs", ".json", ".css", ".scss":
+			case ".ts", ".tsx", ".js", ".jsx", ".cjs", ".mjs", ".json", ".css", ".scss", ".py", ".pyi":
 			default:
 				continue
 			}
@@ -318,9 +318,13 @@ func AutoFix(lang, workdir string, files []string, skipFormat bool, out io.Write
 	}
 	switch strings.ToLower(lang) {
 	case "typescript", "ts":
-		runFix(append([]string{"pnpm", "eslint", "--fix"}, files...), workdir, out)
+		if lintFiles := GateFiles(lang, "lint", files); len(lintFiles) > 0 {
+			runFix(append([]string{"pnpm", "eslint", "--fix"}, lintFiles...), workdir, out)
+		}
 		if !skipFormat {
-			runFix(append([]string{"pnpm", "prettier", "--write"}, files...), workdir, out)
+			if formatFiles := GateFiles(lang, "format", files); len(formatFiles) > 0 {
+				runFix(append([]string{"pnpm", "prettier", "--write"}, formatFiles...), workdir, out)
+			}
 		}
 	}
 }
@@ -374,6 +378,9 @@ func RunGateCaptureAll(lang string, workdir string, skip map[string]bool) (strin
 // keeps the gate — and its output — about the task's own changes. vet, typecheck,
 // test, and build stay whole-project because they can't be scoped to a subset.
 func RunGateCaptureScoped(lang string, workdir string, files []string, skip map[string]bool) (string, error) {
+	if files == nil {
+		files = []string{}
+	}
 	return runGates(lang, workdir, files, skip)
 }
 
@@ -401,8 +408,12 @@ func runGates(lang string, workdir string, files []string, skip map[string]bool)
 			continue
 		}
 		argv := strings.Fields(s.cmd)
-		if s.scoped && len(files) > 0 {
-			argv = scopeArgv(argv, files)
+		if s.scoped && files != nil {
+			selected := GateFiles(lang, s.name, files)
+			if len(selected) == 0 {
+				continue // Never fall back to whole-repo checks for an empty scope.
+			}
+			argv = scopeArgv(argv, selected)
 		}
 		out, err := runGateArgv(argv, workdir)
 		if err != nil {
@@ -413,6 +424,29 @@ func runGates(lang string, workdir string, files []string, skip map[string]bool)
 		}
 	}
 	return "", nil
+}
+
+// GateFiles selects paths supported by each language's format/lint tools.
+// Prettier accepts JSON/styles; ESLint's TypeScript parser does not.
+func GateFiles(lang, gate string, files []string) []string {
+	var selected []string
+	for _, file := range files {
+		ext := strings.ToLower(filepath.Ext(file))
+		keep := true
+		switch strings.ToLower(lang) {
+		case "python", "py":
+			keep = ext == ".py" || ext == ".pyi"
+		case "typescript", "ts":
+			keep = ext == ".ts" || ext == ".tsx" || ext == ".js" || ext == ".jsx" || ext == ".cjs" || ext == ".mjs"
+			if gate == "format" {
+				keep = keep || ext == ".json" || ext == ".css" || ext == ".scss"
+			}
+		}
+		if keep {
+			selected = append(selected, file)
+		}
+	}
+	return selected
 }
 
 // scopeArgv replaces a trailing whole-repo target (e.g. the "." in `eslint .`)

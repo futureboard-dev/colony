@@ -487,3 +487,96 @@ func writeFile(t *testing.T, dir, name, content string) {
 		t.Fatal(err)
 	}
 }
+
+func TestScopedGatesSelectSupportedFiles(t *testing.T) {
+	for _, tc := range []struct {
+		lang   string
+		want   []string
+		absent []string
+	}{
+		{"python", []string{"ruff format app.py types.pyi", "ruff check app.py types.pyi"}, []string{"migration.js", "schema.json", "view.tsx"}},
+		{"typescript", []string{"pnpm prettier --write migration.js schema.json view.tsx", "pnpm eslint migration.js view.tsx"}, []string{"app.py", "types.pyi", "eslint migration.js schema.json"}},
+	} {
+		t.Run(tc.lang, func(t *testing.T) {
+			dir := t.TempDir()
+			bin := t.TempDir()
+			log := filepath.Join(bin, "calls.log")
+			for _, name := range []string{"ruff", "pnpm"} {
+				path := filepath.Join(bin, name)
+				if err := os.WriteFile(path, []byte("#!/bin/sh\necho '"+name+"' \"$@\" >> '"+log+"'\n"), 0755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+			skip := map[string]bool{"vet": true, "typecheck": true, "test": true, "build": true}
+			files := []string{"migration.js", "app.py", "schema.json", "view.tsx", "types.pyi"}
+			if out, err := RunGateCaptureScoped(tc.lang, dir, files, skip); err != nil {
+				t.Fatalf("%v: %s", err, out)
+			}
+			calls := readFileOrEmpty(t, log)
+			for _, want := range tc.want {
+				if !strings.Contains(calls, want) {
+					t.Errorf("missing %q in %s", want, calls)
+				}
+			}
+			for _, bad := range tc.absent {
+				if strings.Contains(calls, bad) {
+					t.Errorf("unexpected %q in %s", bad, calls)
+				}
+			}
+		})
+	}
+}
+
+func TestScopedPythonGatesSkipJavaScriptOnlyChanges(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	skip := map[string]bool{"vet": true, "typecheck": true, "test": true, "build": true}
+	if out, err := RunGateCaptureScoped("python", t.TempDir(), []string{"migration.js"}, skip); err != nil {
+		t.Fatalf("ran Python tools on JS-only scope: %v %s", err, out)
+	}
+}
+
+func TestAutoFixDoesNotPassJSONToESLint(t *testing.T) {
+	bin := t.TempDir()
+	log := filepath.Join(bin, "calls.log")
+	if err := os.WriteFile(filepath.Join(bin, "pnpm"), []byte("#!/bin/sh\necho \"$@\" >> '"+log+"'\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	AutoFix("typescript", t.TempDir(), []string{"schema.json"}, false, io.Discard)
+	calls := readFileOrEmpty(t, log)
+	if strings.Contains(calls, "eslint") || !strings.Contains(calls, "prettier --write schema.json") {
+		t.Fatal(calls)
+	}
+}
+
+func TestChangedFilesIncludesPythonSources(t *testing.T) {
+	dir := t.TempDir()
+	for _, args := range [][]string{{"init", "-q"}, {"-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-qm", "initial"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %s", err, out)
+		}
+	}
+	for _, name := range []string{"app.py", "types.pyi", "migration.js", "README.md"} {
+		writeFile(t, dir, name, "\n")
+	}
+	got := strings.Join(ChangedFiles(dir, "HEAD"), ",")
+	for _, name := range []string{"app.py", "types.pyi", "migration.js"} {
+		if !strings.Contains(got, name) {
+			t.Errorf("missing %s in %s", name, got)
+		}
+	}
+	if strings.Contains(got, "README.md") {
+		t.Fatal(got)
+	}
+}
+
+func TestScopedEmptyFilesDoesNotRunWholeRepo(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	skip := map[string]bool{"vet": true, "typecheck": true, "test": true, "build": true}
+	if out, err := RunGateCaptureScoped("python", t.TempDir(), nil, skip); err != nil {
+		t.Fatalf("ran tools outside empty scope: %v %s", err, out)
+	}
+}

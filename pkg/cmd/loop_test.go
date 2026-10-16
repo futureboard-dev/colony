@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"github.com/futureboard-dev/colony/pkg/mission/graph"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1124,5 +1126,16 @@ func TestParseGateOverrides(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestExtractFeedbackPrefersCurrentFailure(t *testing.T) {
+	out := &graph.Output{Envelope: graph.Envelope{Feedback: "actionable rejection", Output: json.RawMessage(`"transcript"`)}, Raw: "raw transcript"}
+	if got := extractFeedback(out, nil); got != "actionable rejection" {
+		t.Fatal(got)
+	}
+	out.Envelope.Feedback = ""
+	if got := extractFeedback(out, fmt.Errorf("execution failed; full log: /log")); got != "execution failed; full log: /log" {
+		t.Fatal(got)
 	}
 }

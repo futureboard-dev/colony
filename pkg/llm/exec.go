@@ -58,7 +58,7 @@ func (e *Executor) runHeadless(ctx context.Context, workdir, prompt string, out 
 // For claude, stdout is the stream-json event feed and is rendered through
 // streamClaude into a compact one-line-per-action view. For crush (which has
 // no structured stream format) and codex, output is passed through raw.
-func (e *Executor) runAgent(ctx context.Context, workdir, prompt string, out io.Writer, diagnostics io.Writer) error {
+func (e *Executor) runAgent(ctx context.Context, workdir, prompt string, out io.Writer, diagnostics io.Writer, final io.Writer) error {
 	if err := e.validateKeyIfNeeded(); err != nil {
 		return err
 	}
@@ -66,7 +66,19 @@ func (e *Executor) runAgent(ctx context.Context, workdir, prompt string, out io.
 	if err := checkInstalled(cli); err != nil {
 		return err
 	}
-	cmd := exec.CommandContext(ctx, cli, e.agentArgs(prompt)...)
+	args := e.agentArgs(prompt)
+	var responsePath string
+	if cli == "codex" && final != nil {
+		response, err := os.CreateTemp(workdir, ".colony-response-*")
+		if err != nil {
+			return err
+		}
+		responsePath = response.Name()
+		response.Close()
+		defer os.Remove(responsePath)
+		args = append(args[:len(args)-1], "--output-last-message", responsePath, prompt)
+	}
+	cmd := exec.CommandContext(ctx, cli, args...)
 	cmd.Dir = workdir
 	cmd.Env = cleanEnvForClaude()
 
@@ -87,7 +99,7 @@ func (e *Executor) runAgent(ctx context.Context, workdir, prompt string, out io.
 		if err := cmd.Start(); err != nil {
 			return err
 		}
-		streamErr := streamClaude(io.TeeReader(stdout, diagnostics), stdoutW)
+		streamErr := streamClaudeResult(io.TeeReader(stdout, diagnostics), stdoutW, final)
 		if waitErr := cmd.Wait(); waitErr != nil {
 			return waitErr
 		}
@@ -96,7 +108,20 @@ func (e *Executor) runAgent(ctx context.Context, workdir, prompt string, out io.
 
 	cmd.Stdout = stdoutW
 	cmd.Stderr = stderrW
-	return cmd.Run()
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+	if responsePath != "" {
+		f, err := os.Open(responsePath)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		_, err = io.Copy(final, f)
+		return err
+	}
+	// Crush has no separate final-response protocol; never label its transcript a response.
+	return nil
 }
 
 // RunInteractive opens an interactive agent session. Blocks until user exits.
@@ -211,9 +236,9 @@ func (e *Executor) agentArgs(prompt string) []string {
 		}
 		return args
 	case "codex":
-		// --full-auto = workspace-write sandbox with no approval prompts, so
-		// the agent can edit files in the worktree unattended.
-		args := []string{"exec", "--full-auto"}
+		// exec runs non-interactively; grant writes within the worktree using
+		// the explicit sandbox option (--full-auto was removed in newer CLIs).
+		args := []string{"exec", "--sandbox", "workspace-write"}
 		if e.cfg.Model != "" {
 			args = append(args, "-m", e.cfg.Model)
 		}

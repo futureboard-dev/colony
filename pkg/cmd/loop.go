@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"github.com/futureboard-dev/colony/pkg/handoff"
 	"io"
 	"log/slog"
 	"os"
@@ -260,7 +261,7 @@ func runLoopRetryGate(cmd *cobra.Command, args []string) error {
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	sessID := "retry-gate-" + strings.TrimPrefix(task.Branch, "agent/")
+	sessID := "retry-gate-" + strings.TrimPrefix(task.Branch, "agent/") + "-" + fmt.Sprint(time.Now().UnixNano())
 	if err := store.InsertSession(storage.Session{
 		ID:          sessID,
 		MissionName: m.Name,
@@ -1425,7 +1426,7 @@ func withPriorFeedback(input string, task *storage.Task) string {
 	if task.State != "needs-fix" || task.LastFeedback == "" {
 		return input
 	}
-	return input + "\n\n## Previous attempt was rejected\n\nAddress this feedback from the last attempt:\n\n" + task.LastFeedback
+	return input + "\n\n## Previous attempt was rejected\n\nAddress this feedback from the last attempt:\n\n" + handoff.Bound(task.LastFeedback, handoff.FeedbackLimit)
 }
 
 func extractFeedback(out *graph.Output, runErr error) string {
@@ -1436,31 +1437,18 @@ func extractFeedback(out *graph.Output, runErr error) string {
 	case *graph.ErrStuck:
 		last = e.LastOutput
 	}
-	if last != nil {
-		if txt := last.Envelope.OutputText(); txt != "" {
-			return txt
-		}
-		if last.Raw != "" {
-			return last.Raw
-		}
-		if last.Envelope.Feedback != "" {
-			return last.Envelope.Feedback
-		}
+	if last == nil {
+		last = out
 	}
-
-	if out != nil {
-		if txt := out.Envelope.OutputText(); txt != "" {
-			return txt
-		}
-		if out.Raw != "" {
-			return out.Raw
-		}
-		if out.Envelope.Feedback != "" {
-			return out.Envelope.Feedback
-		}
+	if last != nil && last.Envelope.Feedback != "" {
+		return handoff.Bound(last.Envelope.Feedback, handoff.FeedbackLimit)
 	}
+	// Execution failure takes precedence over a partial response.
 	if runErr != nil {
-		return runErr.Error()
+		return handoff.Bound(runErr.Error(), handoff.FeedbackLimit)
+	}
+	if last != nil {
+		return handoff.Bound(last.Envelope.OutputText(), handoff.FeedbackLimit)
 	}
 	return ""
 }

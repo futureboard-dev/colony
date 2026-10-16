@@ -92,8 +92,11 @@ func TestArgsCodex(t *testing.T) {
 	})
 	t.Run("agent can write", func(t *testing.T) {
 		args := e.agentArgs("do the thing")
-		if args[0] != "exec" || !argsContain(args, "--full-auto") {
-			t.Errorf("codex agentArgs should be exec --full-auto: %v", args)
+		if args[0] != "exec" || !argsContain(args, "--sandbox") || !argsContain(args, "workspace-write") {
+			t.Errorf("codex agentArgs should use workspace-write sandbox: %v", args)
+		}
+		if argsContain(args, "--full-auto") || argsContain(args, "--dangerously-bypass-approvals-and-sandbox") {
+			t.Errorf("codex agentArgs must not use removed flags or bypass the sandbox: %v", args)
 		}
 		if !argsContain(args, "-m") || !argsContain(args, "gpt-5") {
 			t.Errorf("codex agentArgs missing model override: %v", args)

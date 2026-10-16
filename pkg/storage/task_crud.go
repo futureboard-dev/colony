@@ -3,6 +3,7 @@ package storage
 import (
 	"database/sql"
 	"fmt"
+	"github.com/futureboard-dev/colony/pkg/handoff"
 	"strings"
 	"time"
 
@@ -261,6 +262,14 @@ func (s *SQLiteStore) UpdateGroup(id, state, prURL string) error {
 
 // UpdateTaskState updates a task's state and optional feedback.
 func (s *SQLiteStore) UpdateTaskState(id, state, feedback string) error {
+	if len(feedback) > handoff.FeedbackLimit {
+		path, err := handoff.Save(s.logRoot, "task-feedback", feedback)
+		if err != nil {
+			return fmt.Errorf("archive task feedback: %w", err)
+		}
+		feedback = handoff.Summary(feedback, path, handoff.FeedbackLimit)
+	}
+
 	_, err := s.db.Exec(
 		`UPDATE tasks SET state=?, last_feedback=?, updated_at=? WHERE id=?`,
 		state, feedback, time.Now().UTC().Format(time.RFC3339), id,

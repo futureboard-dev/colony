@@ -686,3 +686,45 @@ func TestClarificationAllAgents(t *testing.T) {
 		t.Errorf("expected 2 analyst calls, got %d", len(node.calls))
 	}
 }
+
+func TestCombineInputsPreservesRejectionFeedback(t *testing.T) {
+	review := Output{Envelope: Envelope{Decision: REJECTED, Feedback: "Regenerate the client after the backend contract is ready.", Output: json.RawMessage(`""`)}, Raw: "large raw transcript"}
+	for _, inputs := range [][]Output{{review}, {{Envelope: Envelope{Decision: APPROVED, Output: json.RawMessage(`"original spec"`)}}, review}} {
+		got := combineInputs(inputs)
+		if !strings.Contains(got, review.Envelope.Feedback) {
+			t.Fatalf("rejection feedback lost: %q", got)
+		}
+		if strings.Contains(got, review.Raw) {
+			t.Fatalf("raw transcript leaked: %q", got)
+		}
+	}
+}
+
+func TestRepeatedRepairReplacesStaleFeedback(t *testing.T) {
+	builder := &recordingNode{script: []struct {
+		dec Decision
+		out string
+	}{
+		{APPROVED, "first"}, {APPROVED, "second"}, {APPROVED, "third"},
+	}}
+	reviewer := &recordingNode{script: []struct {
+		dec Decision
+		out string
+	}{
+		{REJECTED, "old failure"}, {REJECTED, "latest failure"}, {APPROVED, "done"},
+	}}
+	m := buildTestMission("replace-feedback", []Agent{{ID: "builder"}, {ID: "reviewer"}}, []Edge{
+		{From: "__input__", To: "builder"}, {From: "builder", To: "reviewer"}, {From: "reviewer", OnApprove: "__output__", OnReject: "builder"},
+	}, 5)
+	m.Input = "required task specification"
+	g := buildTestGraph(t, m, map[string]Node{"builder": builder, "reviewer": reviewer})
+	store := openTestStore(t)
+	seedSession(t, store, "repeated", m.Name)
+	if _, err := NewRunner().Run(context.Background(), m, g, "repeated", store); err != nil {
+		t.Fatal(err)
+	}
+	got := builder.calls[2]
+	if !strings.Contains(got, m.Input) || !strings.Contains(got, "latest failure") || strings.Contains(got, "old failure") {
+		t.Fatal(got)
+	}
+}
