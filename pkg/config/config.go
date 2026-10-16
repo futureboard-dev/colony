@@ -15,6 +15,8 @@ type LLMConfig struct {
 	// CLI pins the agent CLI: "claude", "codex" or "crush". Empty derives it
 	// from Provider (anthropic → claude, everything else → crush).
 	CLI string `json:"cli,omitempty"`
+	// Fallbacks are tried in order only after quota or rate-limit failures.
+	Fallbacks []LLMConfig `json:"fallbacks,omitempty"`
 }
 
 // KeyEnvName returns the env var name for the API key.

@@ -623,3 +623,44 @@ Restart=always
 [Install]
 WantedBy=default.target
 ```
+
+### Codex CLI and quota fallback
+
+Set `"cli": "codex"` explicitly to use Codex's own login instead of Crush:
+
+```json
+{
+  "llm": { "provider": "openai", "cli": "codex", "model": "" },
+  "commands": {
+    "loop": {
+      "roles": { "review": { "provider": "openai", "cli": "codex", "model": "" } }
+    }
+  }
+}
+```
+
+Run `codex login` first. An empty model uses the Codex CLI default. Role and
+command entries replace the entire LLM entry, so update existing overrides too.
+
+Each LLM entry can optionally declare an ordered `fallbacks` list:
+
+```json
+{
+  "provider": "anthropic",
+  "model": "claude-sonnet-5",
+  "fallbacks": [{ "provider": "openai", "cli": "codex", "model": "" }]
+}
+```
+
+Non-interactive agent and headless runs try each listed fallback once when a
+failed run reports a usage, session, quota, or rate limit. Ordinary failures and
+cancellation stop immediately. Nested fallback lists are ignored. Each role
+needs its own fallback list if it overrides the default LLM. Interactive sessions
+do not switch automatically. Fallbacks keep the working directory and partial
+edits, and receive the original prompt; CLI conversation history is not transferred.
+Headless callers receive only the successful attempt's output. Switches are
+reported on stderr. This is per run; parallel tasks may each hit the primary limit.
+
+After updating a project's config, resume blocked tasks in their existing
+worktrees with `colony loop --retry-blocked`, or target one task with
+`colony loop run <task-id>`.

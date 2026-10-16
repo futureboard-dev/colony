@@ -39,14 +39,19 @@ type toolInput struct {
 // passed through unchanged so nothing is silently swallowed (e.g. stderr text).
 func streamClaude(r io.Reader, out io.Writer) error {
 	br := bufio.NewReader(r)
+	var resultErr error
 	for {
 		line, err := br.ReadString('\n')
 		if s := strings.TrimSpace(line); s != "" {
 			renderEvent(s, out)
+			var ev streamEvent
+			if json.Unmarshal([]byte(s), &ev) == nil && ev.Type == "result" && ev.IsError {
+				resultErr = fmt.Errorf("claude returned an error result: %s", s)
+			}
 		}
 		if err != nil {
 			if err == io.EOF {
-				return nil
+				return resultErr
 			}
 			return err
 		}

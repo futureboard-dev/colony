@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -245,7 +246,7 @@ func TestInitPicksCLIFromPath(t *testing.T) {
 			if !cfg.HasCommandRole("loop", "review") {
 				t.Error("expected loop review role so the review gate stays on")
 			}
-			if got := cfg.CommandRole("loop", "review"); got != cfg.LLM {
+			if got := cfg.CommandRole("loop", "review"); !reflect.DeepEqual(got, cfg.LLM) {
 				t.Errorf("loop review role should match default llm, got %+v", got)
 			}
 		})

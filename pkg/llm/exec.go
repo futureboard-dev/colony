@@ -36,7 +36,7 @@ func (e *Executor) CLI() string {
 
 // RunHeadless runs a prompt non-interactively (text generation, no file tools).
 // Output is written to out. Used for coordinator, scout, reviewer roles.
-func (e *Executor) RunHeadless(ctx context.Context, workdir, prompt string, out io.Writer) error {
+func (e *Executor) runHeadless(ctx context.Context, workdir, prompt string, out io.Writer, diagnostics io.Writer) error {
 	if err := e.validateKeyIfNeeded(); err != nil {
 		return err
 	}
@@ -48,7 +48,7 @@ func (e *Executor) RunHeadless(ctx context.Context, workdir, prompt string, out 
 	cmd.Dir = workdir
 	cmd.Env = cleanEnvForClaude()
 	cmd.Stdout = out
-	cmd.Stderr = os.Stderr
+	cmd.Stderr = io.MultiWriter(os.Stderr, diagnostics)
 	return cmd.Run()
 }
 
@@ -58,7 +58,7 @@ func (e *Executor) RunHeadless(ctx context.Context, workdir, prompt string, out 
 // For claude, stdout is the stream-json event feed and is rendered through
 // streamClaude into a compact one-line-per-action view. For crush (which has
 // no structured stream format) and codex, output is passed through raw.
-func (e *Executor) RunAgent(ctx context.Context, workdir, prompt string, out io.Writer) error {
+func (e *Executor) runAgent(ctx context.Context, workdir, prompt string, out io.Writer, diagnostics io.Writer) error {
 	if err := e.validateKeyIfNeeded(); err != nil {
 		return err
 	}
@@ -75,6 +75,9 @@ func (e *Executor) RunAgent(ctx context.Context, workdir, prompt string, out io.
 		stdoutW, stderrW = os.Stdout, os.Stderr
 	}
 
+	stdoutW = io.MultiWriter(stdoutW, diagnostics)
+	stderrW = io.MultiWriter(stderrW, diagnostics)
+
 	if cli == "claude" {
 		stdout, err := cmd.StdoutPipe()
 		if err != nil {
@@ -84,7 +87,7 @@ func (e *Executor) RunAgent(ctx context.Context, workdir, prompt string, out io.
 		if err := cmd.Start(); err != nil {
 			return err
 		}
-		streamErr := streamClaude(stdout, stdoutW)
+		streamErr := streamClaude(io.TeeReader(stdout, diagnostics), stdoutW)
 		if waitErr := cmd.Wait(); waitErr != nil {
 			return waitErr
 		}

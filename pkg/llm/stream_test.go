@@ -19,8 +19,8 @@ func TestStreamClaude(t *testing.T) {
 	}, "\n")
 
 	var buf bytes.Buffer
-	if err := streamClaude(strings.NewReader(input), &buf); err != nil {
-		t.Fatalf("streamClaude: %v", err)
+	if err := streamClaude(strings.NewReader(input), &buf); err == nil {
+		t.Fatal("expected error for is_error result")
 	}
 
 	want := strings.Join([]string{
