@@ -17,7 +17,8 @@ var taskCmd = &cobra.Command{
 	Use:   "task [description]",
 	Short: "Create an isolated worktree and open an interactive agent session",
 	Long: `Creates a git worktree on a fresh agent branch, writes TASK.md, then launches
-an interactive agent session (claude for anthropic, crush for all others).
+an interactive agent session (claude for anthropic, codex when "cli" is
+"codex", crush for all others).
 
 Subcommands:
   colony task done <branch>   clean up after review

@@ -85,6 +85,23 @@ func TestRunnerSignalTerminatesProcess(t *testing.T) {
 	}
 }
 
+func TestRunnerDetachesFromTerminal(t *testing.T) {
+	r := NewRunner()
+	if err := r.Start("/bin/sh", t.TempDir(), "sleep", []string{"-c", "sleep 30"}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Signal(syscall.SIGKILL); _ = r.Wait() })
+
+	pid := r.cmd.Process.Pid
+	sid, err := syscall.Getsid(pid)
+	if err != nil {
+		t.Fatalf("getsid: %v", err)
+	}
+	if sid != pid {
+		t.Errorf("session id = %d, want %d (child must lead its own session)", sid, pid)
+	}
+}
+
 func TestRunnerSignalWithoutProcess(t *testing.T) {
 	if err := NewRunner().Signal(syscall.SIGTERM); err == nil {
 		t.Error("expected an error when signalling an idle runner")

@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"github.com/futureboard-dev/colony/pkg/mission/graph"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -158,6 +160,85 @@ func TestLoopOnce_EscalationCeiling(t *testing.T) {
 	}
 }
 
+func TestTaskInput_SplitPart(t *testing.T) {
+	dir := t.TempDir()
+	partsDir := filepath.Join(dir, "parts")
+	if err := os.MkdirAll(partsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	partPath := filepath.Join(partsDir, "01-signin.md")
+	part := formatPartFile(specPart{ID: "01-signin", Source: "../SOURCE.md", Body: "Implement §5.3."})
+	if err := os.WriteFile(partPath, []byte(part), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("brief plus source", func(t *testing.T) {
+		if err := os.WriteFile(filepath.Join(dir, "SOURCE.md"), []byte("## 5.3 Customer sign-in\nfull detail"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		got, err := taskInput(&storage.Task{SpecPath: partPath})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(got, "# Your part: 01-signin\n\nImplement §5.3.") || !strings.Contains(got, "full detail") {
+			t.Errorf("expected brief then source, got:\n%s", got)
+		}
+		if strings.Contains(got, "source: ../SOURCE.md") {
+			t.Errorf("frontmatter should not reach the agent, got:\n%s", got)
+		}
+	})
+
+	t.Run("plan, dependency notes and handoff instruction", func(t *testing.T) {
+		if err := os.WriteFile(filepath.Join(dir, "PLAN.md"), []byte("Wave 1: 00-contracts"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(dir, "notes"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "notes", "00-contracts.md"), []byte("IMitIdIntentHandler lives in Hub/Ports"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		dependent := filepath.Join(partsDir, "03-bind.md")
+		content := formatPartFile(specPart{ID: "03-bind", DependsOn: []string{"00-contracts", "02-missing-notes"}, Source: "../SOURCE.md", Body: "Implement §5.7."})
+		if err := os.WriteFile(dependent, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+		got, err := taskInput(&storage.Task{SpecPath: dependent})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{"Wave 1: 00-contracts", "# Notes from 00-contracts", "IMitIdIntentHandler lives in Hub/Ports", "write " + partNotesFile} {
+			if !strings.Contains(got, want) {
+				t.Errorf("input missing %q:\n%s", want, got)
+			}
+		}
+		if strings.Contains(got, "Notes from 02-missing-notes") {
+			t.Error("a dependency without notes should be skipped")
+		}
+	})
+
+	t.Run("missing source errors", func(t *testing.T) {
+		if err := os.Remove(filepath.Join(dir, "SOURCE.md")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := taskInput(&storage.Task{SpecPath: partPath}); err == nil || !strings.Contains(err.Error(), "source spec") {
+			t.Errorf("expected a source spec read error, got %v", err)
+		}
+	})
+
+	t.Run("part without source unchanged", func(t *testing.T) {
+		plain := filepath.Join(partsDir, "02-docs.md")
+		content := formatPartFile(specPart{ID: "02-docs", Body: "Write docs."})
+		if err := os.WriteFile(plain, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+		got, err := taskInput(&storage.Task{SpecPath: plain})
+		if err != nil || got != content {
+			t.Errorf("expected the file as-is, got %q err=%v", got, err)
+		}
+	})
+}
+
 func TestWithPriorFeedback(t *testing.T) {
 	t.Run("needs-fix with feedback appends it", func(t *testing.T) {
 		got := withPriorFeedback("spec", &storage.Task{State: "needs-fix", LastFeedback: "review: missing tests"})
@@ -173,6 +254,23 @@ func TestWithPriorFeedback(t *testing.T) {
 	t.Run("needs-fix without feedback unchanged", func(t *testing.T) {
 		if got := withPriorFeedback("spec", &storage.Task{State: "needs-fix"}); got != "spec" {
 			t.Errorf("got %q", got)
+		}
+	})
+	t.Run("claimed needs-fix task still gets feedback", func(t *testing.T) {
+		store, err := storage.Open(filepath.Join(t.TempDir(), "missions.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer store.Close()
+		if err := store.InsertTask(storage.Task{ID: "r1", Description: "d", State: "needs-fix", LastFeedback: "gate failed: lint", CreatedAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+		task, err := pickNextTask(context.Background(), store)
+		if err != nil || task == nil {
+			t.Fatalf("pickNextTask: task=%v err=%v", task, err)
+		}
+		if got := withPriorFeedback("spec", task); !strings.Contains(got, "gate failed: lint") {
+			t.Errorf("claimed retry lost its feedback: %q", got)
 		}
 	})
 }
@@ -926,7 +1024,7 @@ func TestFinishTask_SquashCommit(t *testing.T) {
 	// Run finishTask which should squash. Note: gh/pr step may fail if gh is
 	// not installed; that is a delivery failure, not a squash failure — the
 	// commit is still made locally.
-	prURL, finishErr := finishTask(workdir, "feature/test", base, "test-label")
+	prURL, finishErr := finishTask(workdir, "feature/test", base, "test-label", os.Stderr)
 	if finishErr != nil && !strings.Contains(finishErr.Error(), "gh pr create") {
 		t.Fatalf("finishTask unexpected error: %v", finishErr)
 	}
@@ -1028,5 +1126,16 @@ func TestParseGateOverrides(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestExtractFeedbackPrefersCurrentFailure(t *testing.T) {
+	out := &graph.Output{Envelope: graph.Envelope{Feedback: "actionable rejection", Output: json.RawMessage(`"transcript"`)}, Raw: "raw transcript"}
+	if got := extractFeedback(out, nil); got != "actionable rejection" {
+		t.Fatal(got)
+	}
+	out.Envelope.Feedback = ""
+	if got := extractFeedback(out, fmt.Errorf("execution failed; full log: /log")); got != "execution failed; full log: /log" {
+		t.Fatal(got)
 	}
 }

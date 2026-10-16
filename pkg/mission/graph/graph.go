@@ -104,6 +104,7 @@ func BuildGraph(m *Mission, reg *Registry, roleCfg func(role string) config.LLMC
 
 	// Detect back-edges via DFS from __input__.
 	backEdges := detectBackEdges(outEdges, inputID)
+	markRejectLoops(outEdges, backEdges)
 
 	// Compute static in-degree (excluding back-edges) for fan-in tracking.
 	staticInDegree := make(map[string]int, len(agents))
@@ -148,6 +149,41 @@ func detectBackEdges(outEdges map[string][]GraphEdge, startID string) map[string
 	}
 	dfs(startID)
 	return backEdges
+}
+
+// markRejectLoops marks every on_reject edge whose target can route back to
+// its source as a back-edge. DFS classifies edges by visit order, so when two
+// nodes reject into the same fixer, only one of those edges may come out as a
+// back-edge; the other counts as fan-in, and the fixer then waits forever for a
+// second input that a reject route never sends.
+func markRejectLoops(outEdges map[string][]GraphEdge, backEdges map[string]bool) {
+	for from, edges := range outEdges {
+		for _, e := range edges {
+			if e.Condition == EdgeReject && reaches(outEdges, e.To, from) {
+				backEdges[from+":"+e.To] = true
+			}
+		}
+	}
+}
+
+// reaches reports whether target is reachable from start.
+func reaches(outEdges map[string][]GraphEdge, start, target string) bool {
+	seen := map[string]bool{start: true}
+	stack := []string{start}
+	for len(stack) > 0 {
+		id := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if id == target {
+			return true
+		}
+		for _, e := range outEdges[id] {
+			if !seen[e.To] {
+				seen[e.To] = true
+				stack = append(stack, e.To)
+			}
+		}
+	}
+	return false
 }
 
 // MatchesDecision returns true if the edge should fire for the given decision.

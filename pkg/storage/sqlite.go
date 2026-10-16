@@ -88,7 +88,7 @@ type SessionFilter struct {
 type Task struct {
 	ID            string
 	Description   string
-	State         string // "open", "needs-fix", "done", "blocked"
+	State         string // "open", "needs-fix", "running", "done", "blocked"
 	SpecPath      string // path to the spec file (--file)
 	BaseBranch    string // base branch (--base)
 	GateOverrides string // comma-joined gate names to skip, e.g. "format,lint"
@@ -97,14 +97,36 @@ type Task struct {
 	LastFeedback  string
 	Branch        string // worktree branch created for this task (for continue/reuse)
 	PRURL         string // PR URL linked to this task (for OBSERVE CI/PR polling)
+	GroupID       string // task_groups.id this task belongs to, empty for standalone tasks
+	DependsOn     string // comma-joined task IDs this task depends on, same style as GateOverrides
 	CreatedAt     time.Time
 	UpdatedAt     *time.Time
 }
 
 // TaskFilter controls which tasks to return from QueryTasks.
 type TaskFilter struct {
-	ID     string   // optional — filter by exact task ID
-	States []string // optional — filter by one or more states
+	ID      string   // optional — filter by exact task ID
+	States  []string // optional — filter by one or more states
+	GroupID string   // optional — filter by task_groups.id
+}
+
+// TaskGroup represents a set of dependent tasks split from one feature spec
+// and landed together on a shared epic branch.
+type TaskGroup struct {
+	ID         string
+	Name       string
+	EpicBranch string
+	BaseBranch string
+	Lang       string
+	State      string // "open", "done", "blocked"
+	PRURL      string
+	CreatedAt  time.Time
+	UpdatedAt  *time.Time
+}
+
+// GroupFilter controls which groups to return from QueryGroups.
+type GroupFilter struct {
+	ID string // optional — filter by exact group ID
 }
 
 // Store is the persistence interface for mission runs.
@@ -127,11 +149,18 @@ type Store interface {
 	UpdateTaskBranch(id, branch string) error
 	IncrementCycle(id string) error
 	PickNextOpenTask() (*Task, error)
+	ClaimNextTask() (*Task, error)
+
+	// Group CRUD
+	InsertGroup(g TaskGroup) error
+	QueryGroups(f GroupFilter) ([]TaskGroup, error)
+	UpdateGroup(id, state, prURL string) error
 }
 
 // SQLiteStore implements Store using modernc.org/sqlite.
 type SQLiteStore struct {
-	db *sql.DB
+	db      *sql.DB
+	logRoot string
 }
 
 // DefaultDBPath returns the default path for missions.db.
@@ -153,6 +182,17 @@ func Open(dbPath string) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 	db.SetMaxOpenConns(1)
+	// WAL mode lets readers and a writer proceed concurrently, and busy_timeout
+	// makes a writer wait for a lock instead of failing immediately — both
+	// needed once parallel loop workers share this one *sql.DB.
+	if _, err := db.Exec(`PRAGMA journal_mode=WAL`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("enable WAL mode: %w", err)
+	}
+	if _, err := db.Exec(`PRAGMA busy_timeout=5000`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("set busy_timeout: %w", err)
+	}
 	if _, err := db.Exec(schemaDDL); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate schema: %w", err)
@@ -166,6 +206,8 @@ func Open(dbPath string) (*SQLiteStore, error) {
 		`ALTER TABLE steps ADD COLUMN output TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE sessions ADD COLUMN task_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE sessions ADD COLUMN pid INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE tasks ADD COLUMN group_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE tasks ADD COLUMN depends_on TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := db.Exec(alter); err != nil &&
 			!strings.Contains(err.Error(), "duplicate column") {
@@ -173,7 +215,7 @@ func Open(dbPath string) (*SQLiteStore, error) {
 			return nil, fmt.Errorf("migrate tasks columns: %w", err)
 		}
 	}
-	return &SQLiteStore{db: db}, nil
+	return &SQLiteStore{db: db, logRoot: filepath.Dir(dbPath)}, nil
 }
 
 func (s *SQLiteStore) Close() error {

@@ -41,6 +41,18 @@ CREATE TABLE IF NOT EXISTS tasks (
     updated_at    DATETIME
 );
 
+CREATE TABLE IF NOT EXISTS task_groups (
+    id           TEXT    PRIMARY KEY,
+    name         TEXT    NOT NULL,
+    epic_branch  TEXT    NOT NULL,
+    base_branch  TEXT    NOT NULL DEFAULT '',
+    lang         TEXT    NOT NULL DEFAULT '',
+    state        TEXT    NOT NULL DEFAULT 'open',
+    pr_url       TEXT    NOT NULL DEFAULT '',
+    created_at   DATETIME NOT NULL,
+    updated_at   DATETIME
+);
+
 CREATE TABLE IF NOT EXISTS runs (
     id          TEXT     PRIMARY KEY,
     kind        TEXT     NOT NULL,

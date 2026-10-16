@@ -1,6 +1,8 @@
 package storage
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
@@ -239,6 +241,239 @@ func TestPickNextOpenTaskPrioritizesNeedsFix(t *testing.T) {
 	}
 	if picked.ID != "needs-fix-old" {
 		t.Errorf("expected needs-fix-old (prioritized), got %s", picked.ID)
+	}
+}
+
+func TestGroupCRUD(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().Truncate(time.Second).UTC()
+
+	g := TaskGroup{
+		ID: "g1", Name: "payments", EpicBranch: "feature/payments",
+		BaseBranch: "main", Lang: "go", State: "open", CreatedAt: now,
+	}
+	if err := db.InsertGroup(g); err != nil {
+		t.Fatalf("InsertGroup: %v", err)
+	}
+
+	groups, err := db.QueryGroups(GroupFilter{ID: "g1"})
+	if err != nil {
+		t.Fatalf("QueryGroups: %v", err)
+	}
+	if len(groups) != 1 {
+		t.Fatalf("expected 1 group, got %d", len(groups))
+	}
+	got := groups[0]
+	if got.Name != "payments" || got.EpicBranch != "feature/payments" ||
+		got.BaseBranch != "main" || got.Lang != "go" || got.State != "open" {
+		t.Errorf("group fields mismatch: %+v", got)
+	}
+
+	if err := db.UpdateGroup("g1", "done", "https://github.com/o/r/pull/1"); err != nil {
+		t.Fatalf("UpdateGroup: %v", err)
+	}
+	groups, err = db.QueryGroups(GroupFilter{ID: "g1"})
+	if err != nil {
+		t.Fatalf("QueryGroups: %v", err)
+	}
+	if len(groups) != 1 {
+		t.Fatalf("expected 1 group, got %d", len(groups))
+	}
+	if groups[0].State != "done" || groups[0].PRURL != "https://github.com/o/r/pull/1" {
+		t.Errorf("update not applied: %+v", groups[0])
+	}
+	if groups[0].UpdatedAt == nil {
+		t.Error("expected UpdatedAt to be set")
+	}
+
+	// Filter tasks by GroupID.
+	if err := db.InsertTask(Task{ID: "gt1", Description: "d", State: "open", GroupID: "g1", CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.InsertTask(Task{ID: "gt2", Description: "d2", State: "open", GroupID: "other", CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := db.QueryTasks(TaskFilter{GroupID: "g1"})
+	if err != nil {
+		t.Fatalf("QueryTasks: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].ID != "gt1" {
+		t.Errorf("expected only gt1 for group g1, got %v", tasks)
+	}
+}
+
+func TestClaimNextTask(t *testing.T) {
+	now := time.Now().Truncate(time.Second).UTC()
+
+	t.Run("returns oldest open", func(t *testing.T) {
+		db := openTestDB(t)
+		if err := db.InsertTask(Task{ID: "a", Description: "a", State: "open", CreatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.InsertTask(Task{ID: "b", Description: "b", State: "open", CreatedAt: now.Add(time.Minute)}); err != nil {
+			t.Fatal(err)
+		}
+		got, err := db.ClaimNextTask()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got == nil || got.ID != "a" {
+			t.Fatalf("expected task a, got %+v", got)
+		}
+	})
+
+	t.Run("includes needs-fix", func(t *testing.T) {
+		db := openTestDB(t)
+		if err := db.InsertTask(Task{ID: "nf", Description: "nf", State: "needs-fix", CreatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+		got, err := db.ClaimNextTask()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got == nil || got.ID != "nf" {
+			t.Fatalf("expected task nf, got %+v", got)
+		}
+	})
+
+	t.Run("skips task with unmet deps", func(t *testing.T) {
+		db := openTestDB(t)
+		if err := db.InsertTask(Task{ID: "dep", Description: "dep", State: "open", CreatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.InsertTask(Task{ID: "child", Description: "child", State: "open", DependsOn: "dep", CreatedAt: now.Add(time.Minute)}); err != nil {
+			t.Fatal(err)
+		}
+		got, err := db.ClaimNextTask()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got == nil || got.ID != "dep" {
+			t.Fatalf("expected dep claimed first, got %+v", got)
+		}
+	})
+
+	t.Run("claims dependent after dep done", func(t *testing.T) {
+		db := openTestDB(t)
+		if err := db.InsertTask(Task{ID: "dep2", Description: "dep2", State: "done", CreatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.InsertTask(Task{ID: "child2", Description: "child2", State: "open", DependsOn: "dep2", CreatedAt: now.Add(time.Minute)}); err != nil {
+			t.Fatal(err)
+		}
+		got, err := db.ClaimNextTask()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got == nil || got.ID != "child2" {
+			t.Fatalf("expected child2, got %+v", got)
+		}
+	})
+
+	t.Run("blocked dep keeps dependent unclaimable", func(t *testing.T) {
+		db := openTestDB(t)
+		if err := db.InsertTask(Task{ID: "dep3", Description: "dep3", State: "blocked", CreatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.InsertTask(Task{ID: "child3", Description: "child3", State: "open", DependsOn: "dep3", CreatedAt: now.Add(time.Minute)}); err != nil {
+			t.Fatal(err)
+		}
+		got, err := db.ClaimNextTask()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != nil {
+			t.Fatalf("expected nil (child3 unclaimable, dep3 not open/needs-fix), got %+v", got)
+		}
+	})
+
+	t.Run("returns nil when none claimable", func(t *testing.T) {
+		db := openTestDB(t)
+		if err := db.InsertTask(Task{ID: "done1", Description: "d", State: "done", CreatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+		got, err := db.ClaimNextTask()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != nil {
+			t.Fatalf("expected nil, got %+v", got)
+		}
+	})
+
+	t.Run("sets state running", func(t *testing.T) {
+		db := openTestDB(t)
+		if err := db.InsertTask(Task{ID: "run1", Description: "d", State: "needs-fix", LastFeedback: "fb", CreatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+		got, err := db.ClaimNextTask()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got == nil || got.State != "needs-fix" {
+			t.Fatalf("expected returned task to keep its claimed-from state needs-fix, got %+v", got)
+		}
+		tasks, err := db.QueryTasks(TaskFilter{ID: "run1"})
+		if err != nil || len(tasks) != 1 {
+			t.Fatalf("query: %v tasks=%d", err, len(tasks))
+		}
+		if tasks[0].State != "running" {
+			t.Errorf("expected persisted state 'running', got %q", tasks[0].State)
+		}
+	})
+}
+
+func TestClaimNextTask_Concurrent(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().Truncate(time.Second).UTC()
+	for i := range 5 {
+		if err := db.InsertTask(Task{
+			ID: fmt.Sprintf("c%d", i), Description: "d", State: "open",
+			CreatedAt: now.Add(time.Duration(i) * time.Second),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var wg sync.WaitGroup
+	results := make(chan *Task, 10)
+	errs := make(chan error, 10)
+	for range 10 {
+		wg.Go(func() {
+			task, err := db.ClaimNextTask()
+			if err != nil {
+				errs <- err
+				return
+			}
+			results <- task
+		})
+	}
+	wg.Wait()
+	close(results)
+	close(errs)
+
+	for err := range errs {
+		t.Fatalf("ClaimNextTask error: %v", err)
+	}
+
+	seen := map[string]bool{}
+	claimed, nilCount := 0, 0
+	for task := range results {
+		if task == nil {
+			nilCount++
+			continue
+		}
+		claimed++
+		if seen[task.ID] {
+			t.Fatalf("task %s claimed twice", task.ID)
+		}
+		seen[task.ID] = true
+	}
+	if claimed != 5 {
+		t.Errorf("expected 5 claimed tasks, got %d", claimed)
+	}
+	if nilCount != 5 {
+		t.Errorf("expected 5 nil results, got %d", nilCount)
 	}
 }
 

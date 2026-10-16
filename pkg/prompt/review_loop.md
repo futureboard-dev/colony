@@ -35,7 +35,7 @@ Return ONLY a JSON object, no prose around it:
 
 {
   "decision": "APPROVED" | "REJECTED",
-  "feedback": "If REJECTED: a precise, actionable list of what is missing or stubbed and where, so the fixer can address it. If APPROVED: a one-line reason.",
+  "feedback": "If REJECTED: a precise, actionable list of what is missing or stubbed and where (file:line), most important first, under 3000 characters, so the fixer can address it. If APPROVED: a one-line reason.",
   "output": ""
 }
 

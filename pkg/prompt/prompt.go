@@ -28,11 +28,20 @@ var reviewTmpl string
 //go:embed review_loop.md
 var reviewLoopTmpl string
 
+//go:embed review_batch.md
+var reviewBatchTmpl string
+
+//go:embed review_synthesize.md
+var reviewSynthesizeTmpl string
+
 //go:embed spec_feature.md
 var specFeatureTmpl string
 
 //go:embed spec_feature_revise.md
 var specFeatureReviseTmpl string
+
+//go:embed spec_split.md
+var specSplitTmpl string
 
 // ModulePrompts exposes the module-prompts directory as an embedded filesystem.
 //
@@ -109,6 +118,16 @@ func ReviewLoop() string {
 	return reviewLoopTmpl
 }
 
+// ReviewBatch returns the prompt for reviewing one batch of an oversized diff.
+func ReviewBatch() string {
+	return reviewBatchTmpl
+}
+
+// ReviewSynthesize returns the prompt that combines all-approved batch verdicts.
+func ReviewSynthesize() string {
+	return reviewSynthesizeTmpl
+}
+
 func SpecFeature(input string) (string, error) {
 	t, err := template.New("").Delims("[[", "]]").Parse(specFeatureTmpl)
 	if err != nil {
@@ -130,6 +149,24 @@ func SpecFeatureRevise(existingSpec string) (string, error) {
 	}
 	var buf bytes.Buffer
 	if err := t.Execute(&buf, map[string]any{"Spec": existingSpec}); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
+}
+
+// SpecSplit builds a prompt that asks the LLM to split a large spec into a
+// plan plus short per-part briefs that reference the spec rather than restate it.
+// files is the repo's file list (one path per line, may be empty); the split
+// has no file tools, so this is how it names real paths and free numbers.
+// conventions is the repo's CLAUDE.md (may be empty), so new code is placed
+// where the repo's rules say it goes.
+func SpecSplit(spec, files, conventions string) (string, error) {
+	t, err := template.New("").Delims("[[", "]]").Parse(specSplitTmpl)
+	if err != nil {
+		return "", err
+	}
+	var buf bytes.Buffer
+	if err := t.Execute(&buf, map[string]any{"Spec": spec, "Files": files, "Conventions": conventions}); err != nil {
 		return "", err
 	}
 	return buf.String(), nil

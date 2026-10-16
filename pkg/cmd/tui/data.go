@@ -132,7 +132,7 @@ func cycle(values []string, cur string) string {
 // CountByState tallies tasks per state for the dashboard queue summary.
 func CountByState(tasks []storage.Task) map[string]int {
 	counts := map[string]int{
-		"open": 0, "needs-fix": 0, "blocked": 0, "done": 0, "in-progress": 0,
+		"open": 0, "needs-fix": 0, "blocked": 0, "done": 0, "in-progress": 0, "running": 0,
 	}
 	for _, t := range tasks {
 		counts[t.State]++
@@ -154,7 +154,7 @@ func stateOrder(state string) int {
 	switch state {
 	case "open":
 		return 0
-	case "in-progress", "building":
+	case "in-progress", "building", "running":
 		return 1
 	case "needs-fix":
 		return 2

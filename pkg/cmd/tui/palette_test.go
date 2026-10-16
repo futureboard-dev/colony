@@ -251,9 +251,9 @@ func TestPaletteFlagsMatchCobraDefinitions(t *testing.T) {
 	// Guards against the palette drifting from pkg/cmd. Each entry is the flag
 	// set declared by the corresponding cobra command's init().
 	want := map[string][]string{
-		"loop":              {"once", "watch", "lang", "max-passes", "max-cycles", "idle", "escalate-to", "retry-blocked", "review"},
+		"loop":              {"once", "watch", "lang", "max-passes", "max-cycles", "idle", "escalate-to", "retry-blocked", "review", "parallel"},
 		"swarm":             {"spec", "lang", "mode", "review-depth", "no-format", "no-pr"},
-		"spec-feature":      {"file", "provider", "interactive", "continue"},
+		"spec-feature":      {"file", "provider", "interactive", "continue", "split", "force"},
 		"loop status":       {"state", "json"},
 		"loop run":          {"lang"},
 		"loop retry-review": {},
@@ -278,6 +278,37 @@ func TestPaletteFlagsMatchCobraDefinitions(t *testing.T) {
 				t.Errorf("%s flag %d = %q, want %q", name, i, f.Name, flags[i])
 			}
 		}
+	}
+}
+
+// TestPaletteHasTaskAddGroupEntry pins that the palette exposes the group
+// workflow next to spec-feature, since it's a separate entry point users
+// reach for after `spec-feature --split`.
+func TestPaletteHasTaskAddGroupEntry(t *testing.T) {
+	specIdx, spec := specByName(t, "task add --group")
+	if spec.Argv[0] != "task" || spec.Argv[1] != "add" {
+		t.Errorf("expected Argv {task, add}, got %v", spec.Argv)
+	}
+
+	specFeatureIdx, _ := specByName(t, "spec-feature")
+	if specIdx <= specFeatureIdx {
+		t.Errorf("expected task add --group to sit after spec-feature in the picker, got indices %d, %d", specFeatureIdx, specIdx)
+	}
+
+	var hasGroup, hasLang bool
+	for _, f := range spec.Flags {
+		switch f.Name {
+		case "group":
+			hasGroup = f.Required
+		case "lang":
+			hasLang = f.Required
+		}
+	}
+	if !hasGroup {
+		t.Error("expected a required --group flag")
+	}
+	if !hasLang {
+		t.Error("expected a required --lang flag")
 	}
 }
 

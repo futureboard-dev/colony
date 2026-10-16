@@ -23,6 +23,10 @@ type BuildGateFixOpts struct {
 	// (REJECTED → fixer). It catches stubs/unimplemented spec items the
 	// deterministic gate cannot, before a task is committed.
 	ReviewRole string
+	// PriorFeedback is the task's last recorded rejection. The review node asks
+	// the reviewer to verify each item, so a targeted retry cannot approve while
+	// an earlier review's findings are still open.
+	PriorFeedback string
 }
 
 // BuildGateFix returns a populated Mission configured for the build→gate→fix
@@ -87,10 +91,11 @@ func BuildGateFix(opts BuildGateFixOpts) *graph.Mission {
 		Agents:    agents,
 		Flow:      flow,
 		Params: map[string]any{
-			"lang":       opts.Lang,
-			"base":       opts.Base,
-			"skip_gates": opts.SkipGates,
-			"workdir":    opts.Workdir,
+			"lang":           opts.Lang,
+			"base":           opts.Base,
+			"skip_gates":     opts.SkipGates,
+			"workdir":        opts.Workdir,
+			"prior_feedback": opts.PriorFeedback,
 		},
 	}
 }

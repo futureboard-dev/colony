@@ -71,9 +71,11 @@ func (r *Runner) Start(bin, dir, label string, args []string) error {
 
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = dir
-	// A dedicated process group lets kill reach the agent subprocesses the loop
-	// spawns, not just the loop itself.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// A new session gives the loop its own process group, so kill reaches the
+	// agent subprocesses too, and detaches it from the TUI's terminal: a
+	// background group that touches the tty (e.g. a login shell the agent
+	// spawns) gets SIGTTOU/SIGTTIN and the whole loop freezes.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

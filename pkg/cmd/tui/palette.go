@@ -67,6 +67,7 @@ var paletteCommands = []cmdSpec{
 			{Name: "escalate-to", Kind: flagString, Placeholder: "model", Help: "escalation model"},
 			{Name: "retry-blocked", Kind: flagBool, Help: "re-queue blocked tasks"},
 			{Name: "review", Kind: flagBool, Help: "LLM review gate before done"},
+			{Name: "parallel", Kind: flagString, Default: "1", Placeholder: "1", Help: "parts built at once (deps respected)"},
 		},
 	},
 	{
@@ -103,7 +104,7 @@ var paletteCommands = []cmdSpec{
 	{
 		Name:        "spec-feature",
 		Argv:        []string{"spec-feature"},
-		Summary:     "Generate a TASK.md spec",
+		Summary:     "Generate a TASK.md spec, or split a spec into parts",
 		Positional:  "feature-name",
 		PosRequired: true,
 		Flags: []cmdFlag{
@@ -111,6 +112,18 @@ var paletteCommands = []cmdSpec{
 			{Name: "provider", Kind: flagString, Default: "deepseek", Placeholder: "deepseek", Help: "deepseek or anthropic"},
 			{Name: "interactive", Kind: flagBool, Help: "collaborate in a live session"},
 			{Name: "continue", Kind: flagBool, Help: "revise existing TASK.md"},
+			{Name: "split", Kind: flagBool, Help: "split into parts + PLAN.md (--file: split that spec as-is)"},
+			{Name: "force", Kind: flagBool, Help: "overwrite an existing parts/ directory"},
+		},
+	},
+	{
+		Name:    "task add --group",
+		Argv:    []string{"task", "add"},
+		Summary: "Enqueue a split spec directory as a dependency-ordered group",
+		Flags: []cmdFlag{
+			{Name: "group", Kind: flagString, Required: true, Placeholder: "path/to/.colony/specs/<name>", Help: "spec directory with parts/ (from spec-feature --split)"},
+			{Name: "lang", Kind: flagString, Required: true, Placeholder: "go", Help: "typescript, python, go, none"},
+			{Name: "base", Kind: flagString, Placeholder: "branch", Help: "epic branch base (default: repo default branch)"},
 		},
 	},
 	{
@@ -284,6 +297,27 @@ func (m *Model) selectPaletteCommand(idx int) {
 		p.values[i] = f.Default
 	}
 	m.palette = p
+}
+
+// openPaletteAt opens the palette straight on the named command's form with
+// the cursor on one of its flags, for shortcuts like Loop Control's parallel run.
+func (m *Model) openPaletteAt(name, flag string) {
+	for i, spec := range paletteCommands {
+		if spec.Name != name {
+			continue
+		}
+		m.modal = ModalPalette
+		m.selectPaletteCommand(i)
+		for j, f := range spec.Flags {
+			if f.Name == flag {
+				m.palette.focus = j
+				if spec.Positional != "" {
+					m.palette.focus++
+				}
+			}
+		}
+		return
+	}
 }
 
 // paletteFieldCount counts the focusable rows in the form: the optional

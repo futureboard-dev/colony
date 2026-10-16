@@ -3,6 +3,7 @@ package tui
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -46,6 +47,75 @@ func TestLoopControlOpensPalette(t *testing.T) {
 	}
 	if !m.palette.picking {
 		t.Error("palette should open on the command picker")
+	}
+}
+
+func TestLoopControlParallelOpensLoopForm(t *testing.T) {
+	m := newTestModel(t, ViewDashboard, sampleStore())
+	m.modal = ModalLoopControl
+
+	m.Update(key("p"))
+
+	if m.modal != ModalPalette || m.palette.picking {
+		t.Fatalf("expected the loop form to open, got modal %d picking=%v", m.modal, m.palette.picking)
+	}
+	spec := paletteCommands[m.palette.spec]
+	if spec.Name != "loop" {
+		t.Fatalf("expected the loop command, got %q", spec.Name)
+	}
+	if f := spec.Flags[m.palette.focus]; f.Name != "parallel" {
+		t.Errorf("expected focus on --parallel, got --%s", f.Name)
+	}
+
+	m.palette.values[m.palette.focus] = "3"
+	argv, err := m.palette.buildArgv(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(argv, " "); got != "loop --parallel 3" {
+		t.Errorf("argv = %q, want %q", got, "loop --parallel 3")
+	}
+}
+
+func TestRememberLoopArgs(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"parallel run is remembered", []string{"loop", "--parallel", "3"}, "loop --parallel 3"},
+		{"plain run is remembered", []string{"loop"}, "loop"},
+		{"retry-blocked is dropped", []string{"loop", "--retry-blocked", "--parallel", "2"}, "loop --parallel 2"},
+		{"once is not remembered", []string{"loop", "--once"}, "loop --parallel 4"},
+		{"subcommand is not remembered", []string{"loop", "status"}, "loop --parallel 4"},
+		{"other command is not remembered", []string{"craft", "--spec", "x"}, "loop --parallel 4"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			rememberLoopArgs(dir, []string{"loop", "--parallel", "4"})
+			rememberLoopArgs(dir, tc.args)
+			if got := strings.Join(lastLoopArgs(dir), " "); got != tc.want {
+				t.Errorf("lastLoopArgs = %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	t.Run("nothing recorded falls back to plain loop", func(t *testing.T) {
+		if got := lastLoopArgs(t.TempDir()); len(got) != 1 || got[0] != "loop" {
+			t.Errorf("lastLoopArgs = %v", got)
+		}
+	})
+}
+
+func TestLoopControlShowsRestartArgs(t *testing.T) {
+	dir := t.TempDir()
+	rememberLoopArgs(dir, []string{"loop", "--parallel", "3"})
+	m := newTestModel(t, ViewDashboard, sampleStore())
+	m.opts.ColonyDir = dir
+
+	if out := m.renderLoopControlModal(120, 40); !strings.Contains(out, "restarts as: colony loop --parallel 3") {
+		t.Errorf("expected the restart args in the modal, got:\n%s", out)
 	}
 }
 
