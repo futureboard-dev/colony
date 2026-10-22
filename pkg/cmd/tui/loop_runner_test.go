@@ -6,6 +6,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // collect drains n lines from the runner or fails after a timeout.
@@ -93,7 +95,7 @@ func TestRunnerDetachesFromTerminal(t *testing.T) {
 	t.Cleanup(func() { _ = r.Signal(syscall.SIGKILL); _ = r.Wait() })
 
 	pid := r.cmd.Process.Pid
-	sid, err := syscall.Getsid(pid)
+	sid, err := unix.Getsid(pid)
 	if err != nil {
 		t.Fatalf("getsid: %v", err)
 	}
