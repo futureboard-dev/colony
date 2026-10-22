@@ -728,3 +728,42 @@ func TestRepeatedRepairReplacesStaleFeedback(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+// feedbackNode rejects with feedback reworded on each run, as a reviewer
+// does (identical feedback would trip stuck-detection instead).
+type feedbackNode struct{ runs int }
+
+func (n *feedbackNode) Run(context.Context, Input) (Output, error) {
+	n.runs++
+	return Output{Envelope: Envelope{Decision: REJECTED, Feedback: fmt.Sprintf("%d. seed files not checked", n.runs)}}, nil
+}
+
+// In the gate→review→fixer loop the cycle limit trips on the fixer→gate edge,
+// and the fixer's output has no feedback. The error must still carry the
+// review's findings, or the blocked task records only "max_cycles exceeded".
+func TestErrMaxCyclesKeepsReviewFindings(t *testing.T) {
+	m := buildTestMission("review-loop", []Agent{
+		{ID: "gate"}, {ID: "review"}, {ID: "fixer"},
+	}, []Edge{
+		{From: "__input__", To: "gate"},
+		{From: "gate", OnApprove: "review"},
+		{From: "review", OnApprove: "__output__", OnReject: "fixer"},
+		{From: "fixer", To: "gate"},
+	}, 2)
+	g := buildTestGraph(t, m, map[string]Node{
+		"gate":   &fakeNode{decision: APPROVED, output: "gates passed"},
+		"review": &feedbackNode{},
+		"fixer":  &fakeNode{decision: APPROVED, output: "made changes"},
+	})
+	store := openTestStore(t)
+	seedSession(t, store, "review-loop-test", m.Name)
+
+	_, err := NewRunner().Run(context.Background(), m, g, "review-loop-test", store)
+	var maxErr *ErrMaxCycles
+	if !As(err, &maxErr) {
+		t.Fatalf("expected *ErrMaxCycles, got %T: %v", err, err)
+	}
+	if got := maxErr.LastOutput.Envelope.Feedback; got != "2. seed files not checked" {
+		t.Errorf("LastOutput feedback = %q, want the review's findings", got)
+	}
+}

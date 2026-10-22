@@ -129,6 +129,10 @@ func (r *defaultRunner) Run(ctx context.Context, m *Mission, g *Graph, sessionID
 	// we can bail early when a fix cycle produces the identical failure (the
 	// fixer is stuck and burning tokens to no effect).
 	prevReject := make(map[string]string)
+	// lastRejected is the most recent rejection. A cycle limit is usually hit
+	// on the fixer→gate edge, whose own output carries no feedback; reporting
+	// the rejection that drove the cycle keeps e.g. a review's findings.
+	var lastRejected *Output
 	stepNum := 0
 	active := 0
 	var finalOutput *Output
@@ -212,6 +216,10 @@ func (r *defaultRunner) Run(ctx context.Context, m *Mission, g *Graph, sessionID
 			}
 
 			decision := nr.output.Envelope.Decision
+			if decision == REJECTED {
+				rejected := nr.output
+				lastRejected = &rejected
+			}
 
 			for _, e := range g.OutEdges[nr.nodeID] {
 				if !MatchesDecision(decision, e) {
@@ -228,7 +236,11 @@ func (r *defaultRunner) Run(ctx context.Context, m *Mission, g *Graph, sessionID
 				if g.IsBackEdge(nr.nodeID, nextID) {
 					// Cycle: check max_cycles before re-dispatching.
 					if m.MaxCycles > 0 && runCount[nextID] >= m.MaxCycles {
-						cycErr := &ErrMaxCycles{NodeID: nextID, LastOutput: &nr.output}
+						last := &nr.output
+						if decision != REJECTED && lastRejected != nil {
+							last = lastRejected
+						}
+						cycErr := &ErrMaxCycles{NodeID: nextID, LastOutput: last}
 						cancel()
 						for active > 0 {
 							<-resultCh
