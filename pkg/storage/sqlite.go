@@ -95,12 +95,15 @@ type Task struct {
 	Lang          string
 	CycleCount    int
 	LastFeedback  string
-	Branch        string // worktree branch created for this task (for continue/reuse)
-	PRURL         string // PR URL linked to this task (for OBSERVE CI/PR polling)
-	GroupID       string // task_groups.id this task belongs to, empty for standalone tasks
-	DependsOn     string // comma-joined task IDs this task depends on, same style as GateOverrides
-	CreatedAt     time.Time
-	UpdatedAt     *time.Time
+	// ReviewFeedback is the last review rejection still open. It is kept apart
+	// from LastFeedback so a later gate failure cannot erase the checklist.
+	ReviewFeedback string
+	Branch         string // worktree branch created for this task (for continue/reuse)
+	PRURL          string // PR URL linked to this task (for OBSERVE CI/PR polling)
+	GroupID        string // task_groups.id this task belongs to, empty for standalone tasks
+	DependsOn      string // comma-joined task IDs this task depends on, same style as GateOverrides
+	CreatedAt      time.Time
+	UpdatedAt      *time.Time
 }
 
 // TaskFilter controls which tasks to return from QueryTasks.
@@ -208,6 +211,7 @@ func Open(dbPath string) (*SQLiteStore, error) {
 		`ALTER TABLE sessions ADD COLUMN pid INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE tasks ADD COLUMN group_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE tasks ADD COLUMN depends_on TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE tasks ADD COLUMN review_feedback TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := db.Exec(alter); err != nil &&
 			!strings.Contains(err.Error(), "duplicate column") {

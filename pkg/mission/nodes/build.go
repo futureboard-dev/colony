@@ -10,6 +10,7 @@ import (
 	"github.com/futureboard-dev/colony/pkg/handoff"
 	"github.com/futureboard-dev/colony/pkg/llm"
 	"github.com/futureboard-dev/colony/pkg/mission/graph"
+	"github.com/futureboard-dev/colony/pkg/module"
 	"github.com/futureboard-dev/colony/pkg/prompt"
 )
 
@@ -76,7 +77,7 @@ func (n *FixerNode) Run(ctx context.Context, in graph.Input) (graph.Output, erro
 	// Build the fix prompt by extracting error text from the incoming text.
 	// The incoming text is the REJECTED output from the gate node.
 	errText := in.Text
-	promptText, err := prompt.Fix(gateName, errText)
+	promptText, err := prompt.Fix(gateName, errText, module.CheckList(gateName))
 	if err != nil {
 		return graph.Output{}, fmt.Errorf("agent %q: fix prompt: %w", n.agentID, err)
 	}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"embed"
 	"fmt"
+	"strings"
 	"text/template"
 )
 
@@ -95,8 +96,10 @@ func BuildContinue(lang string) (string, error) {
 	return render(buildContinueTmpl, map[string]any{"Lang": lang})
 }
 
-func Fix(gate, errors string) (string, error) {
-	return render(fixTmpl, map[string]any{"Gate": gate, "Errors": errors})
+// Fix renders the fixer prompt. checks lists the commands the fixer may run
+// to verify its change (see module.CheckList); "" omits the section.
+func Fix(gate, errors, checks string) (string, error) {
+	return render(fixTmpl, map[string]any{"Gate": gate, "Errors": errors, "Checks": strings.TrimRight(checks, "\n")})
 }
 
 func Coordinator(spec string) (string, error) {

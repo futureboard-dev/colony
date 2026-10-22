@@ -30,7 +30,7 @@ func (s *SQLiteStore) InsertTask(t Task) error {
 	return err
 }
 
-const taskColumns = `id, description, spec_path, base_branch, gate_overrides, lang, state, cycle_count, last_feedback, branch, pr_url, group_id, depends_on, created_at, updated_at`
+const taskColumns = `id, description, spec_path, base_branch, gate_overrides, lang, state, cycle_count, last_feedback, review_feedback, branch, pr_url, group_id, depends_on, created_at, updated_at`
 
 // scanTask reads one task row from a rows-like cursor whose columns match taskColumns.
 func scanTask(scan func(dest ...any) error) (Task, error) {
@@ -39,7 +39,7 @@ func scanTask(scan func(dest ...any) error) (Task, error) {
 	var updatedStr *string
 	err := scan(
 		&t.ID, &t.Description, &t.SpecPath, &t.BaseBranch, &t.GateOverrides,
-		&t.Lang, &t.State, &t.CycleCount, &t.LastFeedback, &t.Branch, &t.PRURL,
+		&t.Lang, &t.State, &t.CycleCount, &t.LastFeedback, &t.ReviewFeedback, &t.Branch, &t.PRURL,
 		&t.GroupID, &t.DependsOn, &startedStr, &updatedStr,
 	)
 	if err != nil {
@@ -273,6 +273,23 @@ func (s *SQLiteStore) UpdateTaskState(id, state, feedback string) error {
 	_, err := s.db.Exec(
 		`UPDATE tasks SET state=?, last_feedback=?, updated_at=? WHERE id=?`,
 		state, feedback, time.Now().UTC().Format(time.RFC3339), id,
+	)
+	return err
+}
+
+// UpdateTaskReviewFeedback records the open review checklist for a task, or
+// clears it with "" once a review approves.
+func (s *SQLiteStore) UpdateTaskReviewFeedback(id, feedback string) error {
+	if len(feedback) > handoff.FeedbackLimit {
+		path, err := handoff.Save(s.logRoot, "review-feedback", feedback)
+		if err != nil {
+			return fmt.Errorf("archive review feedback: %w", err)
+		}
+		feedback = handoff.Summary(feedback, path, handoff.FeedbackLimit)
+	}
+	_, err := s.db.Exec(
+		`UPDATE tasks SET review_feedback=?, updated_at=? WHERE id=?`,
+		feedback, time.Now().UTC().Format(time.RFC3339), id,
 	)
 	return err
 }

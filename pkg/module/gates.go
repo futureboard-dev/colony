@@ -419,11 +419,47 @@ func runGates(lang string, workdir string, files []string, skip map[string]bool)
 		if err != nil {
 			// Include err: a command that can't start (e.g. not installed)
 			// produces no output, which would leave the section empty.
-			fmt.Fprintf(&combined, "--- %s ---\n%s%v\n", s.name, out, err)
+			fmt.Fprintf(&combined, "--- %s ---\n%s\n%s%v\n", s.name, describeCommand(s.cmd, argv[0], workdir), out, err)
 			return combined.String(), fmt.Errorf("%s failed: %w", s.name, err)
 		}
 	}
 	return "", nil
+}
+
+// CheckList formats lang's gate commands as a Markdown list for agent
+// prompts, so a fixer can verify its change with the exact commands the gate
+// runs. It returns "" when lang has no gates.
+func CheckList(lang string) string {
+	cmds, err := CommandsFor(lang)
+	if err != nil {
+		return ""
+	}
+	var b strings.Builder
+	seen := map[string]bool{}
+	for _, c := range []struct{ name, cmd string }{
+		{"format", cmds.Format}, {"vet", cmds.Vet}, {"lint", cmds.Lint},
+		{"typecheck", cmds.TypeCheck}, {"test", cmds.Test}, {"build", cmds.Build},
+	} {
+		if c.cmd == "" || seen[c.cmd] {
+			continue
+		}
+		seen[c.cmd] = true
+		fmt.Fprintf(&b, "  - %s: `%s`\n", c.name, c.cmd)
+	}
+	return b.String()
+}
+
+// describeCommand names the configured command and the binary that ran it.
+// A gate that fails before its tool starts (an option the installed version
+// rejects, the wrong tool first on PATH) is a setup problem, not a code one;
+// the resolved path makes that visible to whoever reads the failure.
+func describeCommand(command, name, workdir string) string {
+	bin := venvBin(workdir, name)
+	path, err := exec.LookPath(bin)
+	if err != nil {
+		return fmt.Sprintf("command: %s (%s not found on PATH)", command, name)
+	}
+	return fmt.Sprintf("command: %s (%s = %s)", command, name, path)
 }
 
 // GateFiles selects paths supported by each language's format/lint tools.

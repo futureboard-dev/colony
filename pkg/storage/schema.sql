@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     state         TEXT    NOT NULL DEFAULT 'open',
     cycle_count   INTEGER NOT NULL DEFAULT 0,
     last_feedback TEXT    NOT NULL DEFAULT '',
+    review_feedback TEXT  NOT NULL DEFAULT '',
     branch        TEXT    NOT NULL DEFAULT '',
     pr_url        TEXT    NOT NULL DEFAULT '',
     created_at    DATETIME NOT NULL,

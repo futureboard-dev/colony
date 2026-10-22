@@ -461,6 +461,30 @@ func TestRunGatesReportsMissingCommand(t *testing.T) {
 	if !strings.Contains(out, "--- format ---") || !strings.Contains(out, "executable file not found") {
 		t.Errorf("expected missing-command error in output, got %q", out)
 	}
+	if !strings.Contains(out, "command: go fmt ./... (go not found on PATH)") {
+		t.Errorf("expected the unresolved binary to be named, got %q", out)
+	}
+}
+
+// A tool that rejects the gate command itself (pnpm 9 refusing
+// `pnpm test --runInBand`) must say which binary ran, so the failure reads as
+// a setup problem rather than something to fix in the code.
+func TestRunGatesNamesResolvedBinary(t *testing.T) {
+	bin := t.TempDir()
+	writeExec(t, bin, "pnpm", "#!/bin/sh\necho \" ERROR  Unknown option: 'runInBand'\"\nexit 1\n")
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Cleanup(func() { SetGateOverrides(LangCommands{}) })
+	SetGateOverrides(LangCommands{Test: "pnpm test --runInBand"})
+
+	skip := map[string]bool{"format": true, "vet": true, "lint": true, "typecheck": true, "build": true}
+	out, err := RunGateCaptureAll("typescript", t.TempDir(), skip)
+	if err == nil {
+		t.Fatal("expected the test gate to fail")
+	}
+	want := "--- test ---\ncommand: pnpm test --runInBand (pnpm = " + filepath.Join(bin, "pnpm") + ")\n"
+	if !strings.HasPrefix(out, want) || !strings.Contains(out, "Unknown option: 'runInBand'") {
+		t.Errorf("output = %q, want prefix %q and the tool's error", out, want)
+	}
 }
 
 // Helpers

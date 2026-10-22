@@ -74,7 +74,7 @@ func TestSpecSplitPrompt(t *testing.T) {
 }
 
 func TestFixContainsGateAndErrors(t *testing.T) {
-	p, err := Fix("Type check", "cannot use string as int")
+	p, err := Fix("Type check", "cannot use string as int", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,10 +86,27 @@ func TestFixContainsGateAndErrors(t *testing.T) {
 	}
 }
 
+// A fixer that cannot run the failing check edits blind; it must get the
+// gate's exact commands and be told setup failures are not code to change.
+func TestFixListsChecksTheFixerMayRun(t *testing.T) {
+	p, err := Fix("typescript", "Unknown option: 'runInBand'", "  - test: `pnpm run test --runInBand`\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"- test: `pnpm run test --runInBand`", "Do NOT run git.", "Do not edit\n  package.json"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("Fix prompt missing %q", want)
+		}
+	}
+	if strings.Contains(p, "or tests") {
+		t.Error("Fix prompt should no longer forbid running tests")
+	}
+}
+
 // The fixer also receives review rejections and runs headless; it must treat
 // missing spec items as in scope and never stall asking for confirmation.
 func TestFixHandlesReviewFeedbackNonInteractively(t *testing.T) {
-	p, err := Fix("typescript", "Spec item 'Proposal Studio' is unimplemented")
+	p, err := Fix("typescript", "Spec item 'Proposal Studio' is unimplemented", "")
 	if err != nil {
 		t.Fatal(err)
 	}

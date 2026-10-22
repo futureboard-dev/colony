@@ -379,7 +379,7 @@ func gateWithFix(ctx context.Context, name, gateCmd, workdir string, maxAttempts
 		fmt.Fprintf(out, "%s✗ %s failed%s\n", ansiRed, name, ansiReset)
 		fmt.Fprintf(out, "%s\n", errOut)
 		if attempt < maxAttempts {
-			fixP, ferr := prompt.Fix(name, errOut)
+			fixP, ferr := prompt.Fix(name, errOut, fmt.Sprintf("  - %s: `%s`", name, gateCmd))
 			if ferr != nil {
 				return ferr
 			}

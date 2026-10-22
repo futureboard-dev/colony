@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/futureboard-dev/colony/pkg/mission/nodes"
+	"github.com/futureboard-dev/colony/pkg/module"
 	"github.com/futureboard-dev/colony/pkg/storage"
 	"github.com/spf13/cobra"
 )
@@ -273,6 +275,60 @@ func TestWithPriorFeedback(t *testing.T) {
 			t.Errorf("claimed retry lost its feedback: %q", got)
 		}
 	})
+}
+
+// A review rejection followed by a gate failure is the path that used to lose
+// the review's findings. The retry must resume at the gate (no rebuild), still
+// hand the findings to the next review and the builder, and drop them only
+// once a review approves.
+func TestRetryKeepsReviewFindingsAcrossGateFailure(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "missions.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	const findings = "1. ai-apply.service.ts:213: target without id replaces every row."
+	if err := store.InsertTask(storage.Task{ID: "t1", Description: "d", State: "running", Branch: "agent/t1", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	recordReview(store, "t1", graph.Output{Envelope: graph.Envelope{Decision: graph.REJECTED, Feedback: findings}})
+
+	t.Cleanup(func() { module.SetGateOverrides(module.LangCommands{}) })
+	module.SetGateOverrides(module.LangCommands{Test: "false"})
+	skip := map[string]bool{"format": true, "vet": true, "lint": true, "typecheck": true, "build": true}
+	gate, err := nodes.NewGateNode("gate", "typescript", skip).Run(context.Background(), graph.Input{Params: map[string]any{"workdir": t.TempDir()}})
+	if err != nil || gate.Envelope.Decision != graph.REJECTED {
+		t.Fatalf("expected a red gate, got %+v err=%v", gate.Envelope, err)
+	}
+	if err := store.UpdateTaskState("t1", "blocked", gate.Envelope.Feedback); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := requeueBlocked(store); err != nil {
+		t.Fatal(err)
+	}
+	task, err := pickNextTask(context.Background(), store)
+	if err != nil || task == nil {
+		t.Fatalf("pickNextTask: task=%v err=%v", task, err)
+	}
+	if !resumeAtGate(task, "agent/t1") {
+		t.Error("a task stopped by a gate should resume at the gate, not the builder")
+	}
+	if got := reviewChecklist(task); got != findings {
+		t.Errorf("review checklist = %q, want the open findings", got)
+	}
+	if got := withPriorFeedback("spec", task); !strings.Contains(got, "failed: exit status 1") || !strings.Contains(got, findings) {
+		t.Errorf("builder input must carry the gate failure and the open findings, got %q", got)
+	}
+
+	recordReview(store, "t1", graph.Output{Envelope: graph.Envelope{Decision: graph.APPROVED}})
+	tasks, err := store.QueryTasks(storage.TaskFilter{ID: "t1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reviewChecklist(&tasks[0]); got != "" {
+		t.Errorf("after approval the checklist should be empty, not the gate failure; got %q", got)
+	}
 }
 
 // TestPickNextTask_ReturnsOldestOpen verifies ordering by created_at.

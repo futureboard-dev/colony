@@ -155,13 +155,14 @@ func runLoopRetryReview(cmd *cobra.Command, args []string) error {
 
 	node := nodes.NewReviewNode("review", reviewCfg)
 	out, runErr := node.Run(cmd.Context(), graph.Input{
-		Params: map[string]any{"workdir": workdir, "base": baseBranch, "prior_feedback": task.LastFeedback},
+		Params: map[string]any{"workdir": workdir, "base": baseBranch, "prior_feedback": reviewChecklist(task)},
 	})
 
 	if runErr != nil {
 		_ = store.UpdateTaskState(task.ID, "blocked", runErr.Error())
 		return fmt.Errorf("review failed: %w", runErr)
 	}
+	recordReview(store, task.ID, out)
 
 	if out.Envelope.Decision != graph.APPROVED {
 		feedback := out.Envelope.Feedback
@@ -242,7 +243,7 @@ func runLoopRetryGate(cmd *cobra.Command, args []string) error {
 		Workdir:       workdir,
 		MaxCycles:     loopMaxCycles,
 		SkipBuilder:   true,
-		PriorFeedback: task.LastFeedback,
+		PriorFeedback: reviewChecklist(task),
 	}
 	if loopReview || cfg.HasCommandRole("loop", graph.RoleReview) {
 		opts.ReviewRole = graph.RoleReview
@@ -252,6 +253,7 @@ func runLoopRetryGate(cmd *cobra.Command, args []string) error {
 
 	reg := graph.NewRegistry()
 	nodes.Register(reg)
+	registerReviewRecorder(reg, store, task.ID)
 	g, buildErr := graph.BuildGraph(m, reg, func(role string) config.LLMConfig {
 		return cfg.CommandRole("loop", role)
 	})
@@ -716,6 +718,13 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 		Workdir:   workdir,
 		MaxCycles: loopMaxCycles,
 		SkipGates: parseGateOverrides(task.GateOverrides),
+		// Code that only failed a gate needs re-gating, not rebuilding: the
+		// fixer still runs if the gate is red, and a green gate goes to review.
+		SkipBuilder:   resumeAtGate(task, branch),
+		PriorFeedback: reviewChecklist(task),
+	}
+	if opts.SkipBuilder {
+		fmt.Fprintf(logw, "%sloop: task %q last failed a gate — resuming at the gate, not the builder%s\n", ansiBlue, task.ID, ansiReset)
 	}
 	if loopEscalateTo != "" {
 		opts.EscalationRole = graph.RoleEscalation
@@ -728,6 +737,7 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 
 	reg := graph.NewRegistry()
 	nodes.Register(reg)
+	registerReviewRecorder(reg, store, task.ID)
 	g, err := graph.BuildGraph(m, reg, func(role string) config.LLMConfig {
 		return cfg.CommandRole("loop", role)
 	})
@@ -762,6 +772,9 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 			feedback := extractFeedback(out, runErr)
 			_ = store.UpdateTaskState(task.ID, "blocked", feedback)
 			fmt.Fprintf(logw, "%sloop: task %q stuck (identical failure repeated), blocked%s\n", ansiRed, task.ID, ansiReset)
+			if nodes.IsGateFailure(feedback) {
+				fmt.Fprintf(logw, "%sloop: the fixer could not change this gate failure — check the gate's command and environment (shown under \"command:\" in the feedback)%s\n", ansiYellow, ansiReset)
+			}
 			return nil
 		}
 
@@ -892,7 +905,7 @@ func integrateTask(ctx context.Context, cfg *config.Config, workdir, branch, bas
 		fmt.Fprintf(out, "%sloop: integration gate failed — asking fixer agent to repair%s\n", ansiYellow, ansiReset)
 		fixerCfg := cfg.CommandRole("loop", graph.RoleFixer)
 		ex := llm.New(fixerCfg)
-		fixPrompt, ferr := prompt.Fix("integration gate", capGateOutput(gateOutput))
+		fixPrompt, ferr := prompt.Fix("integration gate", capGateOutput(gateOutput), module.CheckList(lang))
 		if ferr == nil {
 			if aerr := ex.RunAgent(ctx, workdir, fixPrompt, out); aerr != nil {
 				fmt.Fprintf(out, "%sloop: fixer agent error: %v%s\n", ansiYellow, aerr, ansiReset)
@@ -1427,7 +1440,72 @@ func withPriorFeedback(input string, task *storage.Task) string {
 	if task.State != "needs-fix" || task.LastFeedback == "" {
 		return input
 	}
-	return input + "\n\n## Previous attempt was rejected\n\nAddress this feedback from the last attempt:\n\n" + handoff.Bound(task.LastFeedback, handoff.FeedbackLimit)
+	input += "\n\n## Previous attempt was rejected\n\nAddress this feedback from the last attempt:\n\n" + handoff.Bound(task.LastFeedback, handoff.FeedbackLimit)
+	// A gate failure after a review rejection must not hide the review's
+	// findings: they are still open and the next review re-checks them.
+	if task.ReviewFeedback != "" && task.ReviewFeedback != task.LastFeedback {
+		input += "\n\nThese review findings are also still open:\n\n" + handoff.Bound(task.ReviewFeedback, handoff.FeedbackLimit)
+	}
+	return input
+}
+
+// reviewChecklist is the open review rejection the next reviewer must
+// re-verify. Tasks blocked before review_feedback existed kept it only in
+// LastFeedback, so fall back to that unless it is a gate failure, which says
+// nothing about the review.
+func reviewChecklist(task *storage.Task) string {
+	if task.ReviewFeedback != "" {
+		return task.ReviewFeedback
+	}
+	if nodes.IsGateFailure(task.LastFeedback) {
+		return ""
+	}
+	return task.LastFeedback
+}
+
+// resumeAtGate reports whether a retried task can skip the builder: it already
+// has its worktree and was last stopped by a gate, not by review or an error.
+func resumeAtGate(task *storage.Task, branch string) bool {
+	return task.State == "needs-fix" && task.Branch != "" && task.Branch == branch &&
+		nodes.IsGateFailure(task.LastFeedback)
+}
+
+// recordReview keeps the latest review outcome apart from LastFeedback: a
+// rejection's findings stay open until a review approves, whatever fails later.
+func recordReview(store *storage.SQLiteStore, taskID string, out graph.Output) {
+	switch out.Envelope.Decision {
+	case graph.REJECTED:
+		_ = store.UpdateTaskReviewFeedback(taskID, out.Envelope.Feedback)
+	case graph.APPROVED:
+		_ = store.UpdateTaskReviewFeedback(taskID, "")
+	}
+}
+
+// registerReviewRecorder wraps the review role so every review inside a
+// mission records its outcome as it happens. The mission's final output only
+// carries the last node's result, which is often a later gate failure.
+func registerReviewRecorder(reg *graph.Registry, store *storage.SQLiteStore, taskID string) {
+	reg.Register(graph.RoleReview, func(agentID string, cfg config.LLMConfig) (graph.Node, error) {
+		node, err := nodes.ReviewNodeFactory(agentID, cfg)
+		if err != nil {
+			return nil, err
+		}
+		return reviewRecorder{node: node, store: store, taskID: taskID}, nil
+	})
+}
+
+type reviewRecorder struct {
+	node   graph.Node
+	store  *storage.SQLiteStore
+	taskID string
+}
+
+func (r reviewRecorder) Run(ctx context.Context, in graph.Input) (graph.Output, error) {
+	out, err := r.node.Run(ctx, in)
+	if err == nil {
+		recordReview(r.store, r.taskID, out)
+	}
+	return out, err
 }
 
 func extractFeedback(out *graph.Output, runErr error) string {

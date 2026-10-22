@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"strings"
 
 	"github.com/futureboard-dev/colony/pkg/config"
 	"github.com/futureboard-dev/colony/pkg/handoff"
@@ -86,10 +87,21 @@ func (n *GateNode) Run(ctx context.Context, in graph.Input) (graph.Output, error
 		AgentID: n.agentID,
 		Envelope: graph.Envelope{
 			Decision: graph.REJECTED,
-			Feedback: handoff.Summary(fmt.Sprintf("Gate %q failed: %v.\n\n%s", lang, err, handoff.Distill(output)), logPath, handoff.FeedbackLimit),
+			Feedback: handoff.Summary(fmt.Sprintf(gateFailureFormat+"\n\n%s", lang, err, handoff.Distill(output)), logPath, handoff.FeedbackLimit),
 			Output:   mustMarshal(""),
 		},
 	}, nil
+}
+
+// gateFailureFormat opens every gate rejection; IsGateFailure recognises it.
+const gateFailureFormat = "Gate %q failed: %v."
+
+// IsGateFailure reports whether feedback is a gate rejection rather than a
+// review or agent error. Such a failure needs no rebuild: the existing code is
+// re-gated and only a red gate reaches the fixer.
+func IsGateFailure(feedback string) bool {
+	first, _, _ := strings.Cut(feedback, "\n")
+	return strings.HasPrefix(first, `Gate "`) && strings.Contains(first, `" failed: `)
 }
 
 // GateNodeFactory returns a NodeFactory that creates GateNode instances.
