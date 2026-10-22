@@ -355,6 +355,7 @@ func TestValidateKeyUnknownProvider(t *testing.T) {
 // --- Init generates correct model and no api_key_env ---
 
 func TestInitGeneratesCorrectDefaults(t *testing.T) {
+	fakePath(t, "claude")
 	tmp := t.TempDir()
 	if err := Init(tmp); err != nil {
 		t.Fatal(err)
