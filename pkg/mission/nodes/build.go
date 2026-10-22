@@ -1,16 +1,16 @@
 package nodes
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 
 	"github.com/futureboard-dev/colony/pkg/config"
+	"github.com/futureboard-dev/colony/pkg/handoff"
 	"github.com/futureboard-dev/colony/pkg/llm"
 	"github.com/futureboard-dev/colony/pkg/mission/graph"
+	"github.com/futureboard-dev/colony/pkg/module"
 	"github.com/futureboard-dev/colony/pkg/prompt"
 )
 
@@ -77,7 +77,7 @@ func (n *FixerNode) Run(ctx context.Context, in graph.Input) (graph.Output, erro
 	// Build the fix prompt by extracting error text from the incoming text.
 	// The incoming text is the REJECTED output from the gate node.
 	errText := in.Text
-	promptText, err := prompt.Fix(gateName, errText)
+	promptText, err := prompt.Fix(gateName, errText, module.CheckList(gateName))
 	if err != nil {
 		return graph.Output{}, fmt.Errorf("agent %q: fix prompt: %w", n.agentID, err)
 	}
@@ -107,21 +107,12 @@ func workdirFrom(in graph.Input) string {
 // gate." We return an APPROVED envelope carrying the agent's output as context.
 func runLLMAndParse(ctx context.Context, agentID string, cfg config.LLMConfig, workdir, promptText string) (graph.Output, error) {
 	exec := llm.New(cfg)
-	var buf bytes.Buffer
-	stream := io.MultiWriter(&buf, prefixedWriter(os.Stderr, "    "+agentID+" │ "))
-	fmt.Fprintf(os.Stderr, "    %s │ <streaming…> [%s %s]\n", agentID, cfg.Provider, cfg.Model)
-	if err := exec.RunAgent(ctx, workdir, promptText, stream); err != nil {
-		raw := buf.String()
-		return graph.Output{AgentID: agentID, Raw: raw},
-			fmt.Errorf("agent %q: llm call failed: %w\n--- agent output ---\n%s---", agentID, err, raw)
+	result, err := exec.RunAgentResult(ctx, workdir, promptText, prefixedWriter(os.Stderr, "    "+agentID+" │ "))
+	raw := handoff.Summary(result.Text, result.LogPath, handoff.FeedbackLimit)
+	if err != nil {
+		return graph.Output{AgentID: agentID, Raw: raw}, fmt.Errorf("agent %q: llm call failed: %w", agentID, err)
 	}
-
-	raw := buf.String()
-	return graph.Output{
-		AgentID:  agentID,
-		Envelope: graph.Envelope{Decision: graph.APPROVED, Output: mustMarshal(raw)},
-		Raw:      raw,
-	}, nil
+	return graph.Output{AgentID: agentID, Envelope: graph.Envelope{Decision: graph.APPROVED, Output: mustMarshal(raw)}, Raw: raw}, nil
 }
 
 // BuilderNodeFactory returns a NodeFactory for builder roles.

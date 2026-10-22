@@ -51,7 +51,42 @@ type LangCommands struct {
 	Build     string
 }
 
+// gateOverrides is set once per process from .colony/config.json by
+// SetGateOverrides, so the gate helpers can stay config-free.
+var gateOverrides LangCommands
+
+// SetGateOverrides records the project's gate commands from config. Call it
+// once after loading config; empty fields keep the language's built-ins.
+func SetGateOverrides(o LangCommands) {
+	gateOverrides = o
+}
+
+// CommandsFor returns the gate commands for lang, with any configured
+// overrides applied on top of the built-ins.
 func CommandsFor(lang string) (LangCommands, error) {
+	cmds, err := builtinCommands(lang)
+	if err != nil {
+		return cmds, err
+	}
+	for _, f := range []struct {
+		dst *string
+		src string
+	}{
+		{&cmds.Format, gateOverrides.Format},
+		{&cmds.Vet, gateOverrides.Vet},
+		{&cmds.Lint, gateOverrides.Lint},
+		{&cmds.TypeCheck, gateOverrides.TypeCheck},
+		{&cmds.Test, gateOverrides.Test},
+		{&cmds.Build, gateOverrides.Build},
+	} {
+		if f.src != "" {
+			*f.dst = f.src
+		}
+	}
+	return cmds, nil
+}
+
+func builtinCommands(lang string) (LangCommands, error) {
 	switch strings.ToLower(lang) {
 	case "typescript", "ts":
 		return LangCommands{
@@ -258,7 +293,7 @@ func ChangedFiles(workdir, base string) []string {
 				continue
 			}
 			switch strings.ToLower(filepath.Ext(line)) {
-			case ".ts", ".tsx", ".js", ".jsx", ".cjs", ".mjs", ".json", ".css", ".scss":
+			case ".ts", ".tsx", ".js", ".jsx", ".cjs", ".mjs", ".json", ".css", ".scss", ".py", ".pyi":
 			default:
 				continue
 			}
@@ -283,9 +318,13 @@ func AutoFix(lang, workdir string, files []string, skipFormat bool, out io.Write
 	}
 	switch strings.ToLower(lang) {
 	case "typescript", "ts":
-		runFix(append([]string{"pnpm", "eslint", "--fix"}, files...), workdir, out)
+		if lintFiles := GateFiles(lang, "lint", files); len(lintFiles) > 0 {
+			runFix(append([]string{"pnpm", "eslint", "--fix"}, lintFiles...), workdir, out)
+		}
 		if !skipFormat {
-			runFix(append([]string{"pnpm", "prettier", "--write"}, files...), workdir, out)
+			if formatFiles := GateFiles(lang, "format", files); len(formatFiles) > 0 {
+				runFix(append([]string{"pnpm", "prettier", "--write"}, formatFiles...), workdir, out)
+			}
 		}
 	}
 }
@@ -339,6 +378,9 @@ func RunGateCaptureAll(lang string, workdir string, skip map[string]bool) (strin
 // keeps the gate — and its output — about the task's own changes. vet, typecheck,
 // test, and build stay whole-project because they can't be scoped to a subset.
 func RunGateCaptureScoped(lang string, workdir string, files []string, skip map[string]bool) (string, error) {
+	if files == nil {
+		files = []string{}
+	}
 	return runGates(lang, workdir, files, skip)
 }
 
@@ -366,18 +408,81 @@ func runGates(lang string, workdir string, files []string, skip map[string]bool)
 			continue
 		}
 		argv := strings.Fields(s.cmd)
-		if s.scoped && len(files) > 0 {
-			argv = scopeArgv(argv, files)
+		if s.scoped && files != nil {
+			selected := GateFiles(lang, s.name, files)
+			if len(selected) == 0 {
+				continue // Never fall back to whole-repo checks for an empty scope.
+			}
+			argv = scopeArgv(argv, selected)
 		}
 		out, err := runGateArgv(argv, workdir)
 		if err != nil {
 			// Include err: a command that can't start (e.g. not installed)
 			// produces no output, which would leave the section empty.
-			fmt.Fprintf(&combined, "--- %s ---\n%s%v\n", s.name, out, err)
+			fmt.Fprintf(&combined, "--- %s ---\n%s\n%s%v\n", s.name, describeCommand(s.cmd, argv[0], workdir), out, err)
 			return combined.String(), fmt.Errorf("%s failed: %w", s.name, err)
 		}
 	}
 	return "", nil
+}
+
+// CheckList formats lang's gate commands as a Markdown list for agent
+// prompts, so a fixer can verify its change with the exact commands the gate
+// runs. It returns "" when lang has no gates.
+func CheckList(lang string) string {
+	cmds, err := CommandsFor(lang)
+	if err != nil {
+		return ""
+	}
+	var b strings.Builder
+	seen := map[string]bool{}
+	for _, c := range []struct{ name, cmd string }{
+		{"format", cmds.Format}, {"vet", cmds.Vet}, {"lint", cmds.Lint},
+		{"typecheck", cmds.TypeCheck}, {"test", cmds.Test}, {"build", cmds.Build},
+	} {
+		if c.cmd == "" || seen[c.cmd] {
+			continue
+		}
+		seen[c.cmd] = true
+		fmt.Fprintf(&b, "  - %s: `%s`\n", c.name, c.cmd)
+	}
+	return b.String()
+}
+
+// describeCommand names the configured command and the binary that ran it.
+// A gate that fails before its tool starts (an option the installed version
+// rejects, the wrong tool first on PATH) is a setup problem, not a code one;
+// the resolved path makes that visible to whoever reads the failure.
+func describeCommand(command, name, workdir string) string {
+	bin := venvBin(workdir, name)
+	path, err := exec.LookPath(bin)
+	if err != nil {
+		return fmt.Sprintf("command: %s (%s not found on PATH)", command, name)
+	}
+	return fmt.Sprintf("command: %s (%s = %s)", command, name, path)
+}
+
+// GateFiles selects paths supported by each language's format/lint tools.
+// Prettier accepts JSON/styles; ESLint's TypeScript parser does not.
+func GateFiles(lang, gate string, files []string) []string {
+	var selected []string
+	for _, file := range files {
+		ext := strings.ToLower(filepath.Ext(file))
+		keep := true
+		switch strings.ToLower(lang) {
+		case "python", "py":
+			keep = ext == ".py" || ext == ".pyi"
+		case "typescript", "ts":
+			keep = ext == ".ts" || ext == ".tsx" || ext == ".js" || ext == ".jsx" || ext == ".cjs" || ext == ".mjs"
+			if gate == "format" {
+				keep = keep || ext == ".json" || ext == ".css" || ext == ".scss"
+			}
+		}
+		if keep {
+			selected = append(selected, file)
+		}
+	}
+	return selected
 }
 
 // scopeArgv replaces a trailing whole-repo target (e.g. the "." in `eslint .`)

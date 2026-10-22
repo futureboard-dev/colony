@@ -1,7 +1,9 @@
 package tui
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -33,6 +35,7 @@ func (m *Model) startLoop(label string, args []string) tea.Cmd {
 		return nil
 	}
 
+	rememberLoopArgs(m.opts.ColonyDir, args)
 	m.appendOutput(m.theme.icon("▶") + " colony " + strings.Join(args, " "))
 	m.view = ViewLiveOutput
 	m.modal = ModalNone
@@ -90,7 +93,8 @@ func (m *Model) killLoop() {
 	m.notifier.Push("SIGTERM sent to loop", ToastOK)
 }
 
-// restartLoop kills any running loop and starts a fresh continuous run.
+// restartLoop kills any running loop and starts it again with the args it was
+// last started with (see rememberLoopArgs).
 func (m *Model) restartLoop() tea.Cmd {
 	if m.runner != nil && m.runner.Running() {
 		_ = m.runner.Signal(syscall.SIGTERM)
@@ -101,7 +105,49 @@ func (m *Model) restartLoop() tea.Cmd {
 			return nil
 		}
 	}
-	return m.startLoop("loop", []string{"loop"})
+	return m.startLoop("loop", lastLoopArgs(m.opts.ColonyDir))
+}
+
+// loopArgsFile records how the loop was last started continuously from the
+// TUI, so Restart brings it back the same way: with --parallel N for split
+// specs, or as a single-task loop.
+const loopArgsFile = "loop.args"
+
+// rememberLoopArgs saves args when they start a continuous loop. One-off runs
+// (--once) and other commands (loop status, craft, ...) are not recorded, and
+// --retry-blocked is dropped because it is a one-time action.
+func rememberLoopArgs(colonyDir string, args []string) {
+	if colonyDir == "" || len(args) == 0 || args[0] != "loop" {
+		return
+	}
+	keep := []string{"loop"}
+	for i, a := range args[1:] {
+		if i == 0 && !strings.HasPrefix(a, "-") {
+			return // a subcommand such as `loop status`
+		}
+		switch a {
+		case "--once":
+			return
+		case "--retry-blocked":
+			continue
+		}
+		keep = append(keep, a)
+	}
+	_ = os.WriteFile(filepath.Join(colonyDir, loopArgsFile), []byte(strings.Join(keep, "\n")+"\n"), 0644)
+}
+
+// lastLoopArgs returns the args recorded by rememberLoopArgs, or a plain
+// `loop` when nothing usable was recorded.
+func lastLoopArgs(colonyDir string) []string {
+	data, err := os.ReadFile(filepath.Join(colonyDir, loopArgsFile))
+	if colonyDir == "" || err != nil {
+		return []string{"loop"}
+	}
+	args := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	if args[0] != "loop" {
+		return []string{"loop"}
+	}
+	return args
 }
 
 // runInteractiveLoop suspends the TUI and hands the terminal to a single

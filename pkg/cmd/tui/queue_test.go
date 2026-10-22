@@ -47,6 +47,22 @@ func TestQueueStateFilter(t *testing.T) {
 			t.Errorf("unexpected counts: %v", counts)
 		}
 	})
+
+	t.Run("counts running", func(t *testing.T) {
+		withRunning := append(baseTasks(), storage.Task{ID: "t-5", Description: "running task", State: "running", CreatedAt: time.Now()})
+		counts := CountByState(withRunning)
+		if counts["running"] != 1 {
+			t.Errorf("expected 1 running task, got %d", counts["running"])
+		}
+	})
+
+	t.Run("filter running", func(t *testing.T) {
+		withRunning := append(baseTasks(), storage.Task{ID: "t-5", Description: "running task", State: "running", CreatedAt: time.Now()})
+		got := Apply(withRunning, QueueFilter{State: "running"})
+		if len(got) != 1 || got[0].ID != "t-5" {
+			t.Errorf("expected only the running task, got %v", ids(got))
+		}
+	})
 }
 
 func TestQueueSort(t *testing.T) {
@@ -102,6 +118,67 @@ func TestQueueFuzzySearch(t *testing.T) {
 		got := Apply(tasks, QueueFilter{Search: "FIX LOGIN"})
 		if len(got) != 1 || got[0].ID != "t-1" {
 			t.Errorf("expected case-insensitive match, got %v", ids(got))
+		}
+	})
+}
+
+func TestQueueDetail_GroupInfo(t *testing.T) {
+	base := time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC)
+	st := &stubStore{tasks: []storage.Task{
+		{
+			ID: "t-models", Description: "models", State: "done", GroupID: "g1",
+			SpecPath:   "/repo/.colony/specs/payments/parts/01-models.md",
+			BaseBranch: "feature/payments", CreatedAt: base,
+		},
+		{
+			ID: "t-api", Description: "api", State: "open", GroupID: "g1", DependsOn: "t-models",
+			SpecPath:   "/repo/.colony/specs/payments/parts/02-api.md",
+			BaseBranch: "feature/payments", CreatedAt: base.Add(time.Minute),
+		},
+		{
+			ID: "t-ui", Description: "ui", State: "open", GroupID: "g1", DependsOn: "t-models,t-cli",
+			SpecPath:   "/repo/.colony/specs/payments/parts/03-ui.md",
+			BaseBranch: "feature/payments", CreatedAt: base.Add(2 * time.Minute),
+		},
+		{
+			ID: "t-cli", Description: "cli", State: "blocked", GroupID: "g1",
+			SpecPath:   "/repo/.colony/specs/payments/parts/04-cli.md",
+			BaseBranch: "feature/payments", CreatedAt: base.Add(3 * time.Minute),
+		},
+		{ID: "t-solo", Description: "solo task", State: "open", CreatedAt: base.Add(4 * time.Minute)},
+	}}
+	m := newTestModel(t, ViewQueue, st)
+
+	t.Run("group task shows group, epic, and unmet deps", func(t *testing.T) {
+		m.cursor = 1 // t-api, depends on t-models (already done)
+		out := m.queueDetail(m.tasks, 118, 20)
+		if !strings.Contains(out, "payments") {
+			t.Errorf("expected the group name, got:\n%s", out)
+		}
+		if !strings.Contains(out, "feature/payments") {
+			t.Errorf("expected the epic branch, got:\n%s", out)
+		}
+		if strings.Contains(out, "Waiting on:") {
+			t.Errorf("expected no unmet deps for t-api (its only dep is done), got:\n%s", out)
+		}
+	})
+
+	t.Run("group task with an unmet dependency shows it", func(t *testing.T) {
+		m.cursor = 2 // t-ui, depends on t-models (done) and t-cli (blocked)
+		out := m.queueDetail(m.tasks, 118, 20)
+		if !strings.Contains(out, "Waiting on:") || !strings.Contains(out, "04-cli") {
+			t.Errorf("expected the unmet blocked dependency, got:\n%s", out)
+		}
+		if strings.Contains(out, "01-models") {
+			t.Errorf("did not expect the already-done dependency listed, got:\n%s", out)
+		}
+	})
+
+	t.Run("non-group task shows none of it", func(t *testing.T) {
+		m.cursor = 4 // t-solo
+		out := m.queueDetail(m.tasks, 118, 20)
+		if strings.Contains(out, "Group:") || strings.Contains(out, "Epic:") || strings.Contains(out, "Waiting on:") {
+			t.Errorf("expected no group/epic/waiting info for a non-group task, got:\n%s", out)
 		}
 	})
 }

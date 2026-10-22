@@ -418,6 +418,55 @@ func (n *recordingNode) Run(_ context.Context, in Input) (Output, error) {
 	}, nil
 }
 
+// TestReviewRejectReachesFixer: in the gate-fix-review topology, a review
+// REJECTED must dispatch the fixer. DFS reaches fixer through review first,
+// so review→fixer looks like a forward edge; counting it as fan-in left fixer
+// waiting on a second input forever and the mission "completed" unreviewed.
+func TestReviewRejectReachesFixer(t *testing.T) {
+	m := buildTestMission("gatefix-review", []Agent{
+		{ID: "builder"}, {ID: "gate"}, {ID: "fixer"}, {ID: "review"},
+	}, []Edge{
+		{From: "__input__", To: "builder"},
+		{From: "builder", To: "gate"},
+		{From: "gate", OnApprove: "review"},
+		{From: "gate", OnReject: "fixer"},
+		{From: "fixer", To: "gate"},
+		{From: "review", OnApprove: "__output__"},
+		{From: "review", OnReject: "fixer"},
+	}, 3)
+
+	var fixerRuns int64
+	review := &recordingNode{script: []struct {
+		dec Decision
+		out string
+	}{{REJECTED, "slices B-G missing"}, {APPROVED, "lgtm"}}}
+	nodes := map[string]Node{
+		"builder": &fakeNode{decision: APPROVED, output: "built"},
+		"gate":    &fakeNode{decision: APPROVED, output: "green"},
+		"fixer":   &countingNode{count: &fixerRuns, inner: &fakeNode{decision: APPROVED, output: "fixed"}},
+		"review":  review,
+	}
+	g := buildTestGraph(t, m, nodes)
+
+	store := openTestStore(t)
+	sessID := "gatefix-review-test"
+	seedSession(t, store, sessID, m.Name)
+
+	out, err := NewRunner().Run(context.Background(), m, g, sessID, store)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := atomic.LoadInt64(&fixerRuns); got != 1 {
+		t.Errorf("fixer runs = %d, want 1", got)
+	}
+	if len(review.calls) != 2 {
+		t.Errorf("review runs = %d, want 2", len(review.calls))
+	}
+	if out == nil || out.Envelope.OutputText() != "lgtm" {
+		t.Errorf("expected final output from approving review, got %+v", out)
+	}
+}
+
 // TestBackEdgeMergesPriorContext: when a reviewer rejects back to an earlier
 // node, that node should see its prior input merged with the reviewer's
 // feedback — not just the feedback alone. This prevents context loss in
@@ -635,5 +684,86 @@ func TestClarificationAllAgents(t *testing.T) {
 	}
 	if len(node.calls) != 2 {
 		t.Errorf("expected 2 analyst calls, got %d", len(node.calls))
+	}
+}
+
+func TestCombineInputsPreservesRejectionFeedback(t *testing.T) {
+	review := Output{Envelope: Envelope{Decision: REJECTED, Feedback: "Regenerate the client after the backend contract is ready.", Output: json.RawMessage(`""`)}, Raw: "large raw transcript"}
+	for _, inputs := range [][]Output{{review}, {{Envelope: Envelope{Decision: APPROVED, Output: json.RawMessage(`"original spec"`)}}, review}} {
+		got := combineInputs(inputs)
+		if !strings.Contains(got, review.Envelope.Feedback) {
+			t.Fatalf("rejection feedback lost: %q", got)
+		}
+		if strings.Contains(got, review.Raw) {
+			t.Fatalf("raw transcript leaked: %q", got)
+		}
+	}
+}
+
+func TestRepeatedRepairReplacesStaleFeedback(t *testing.T) {
+	builder := &recordingNode{script: []struct {
+		dec Decision
+		out string
+	}{
+		{APPROVED, "first"}, {APPROVED, "second"}, {APPROVED, "third"},
+	}}
+	reviewer := &recordingNode{script: []struct {
+		dec Decision
+		out string
+	}{
+		{REJECTED, "old failure"}, {REJECTED, "latest failure"}, {APPROVED, "done"},
+	}}
+	m := buildTestMission("replace-feedback", []Agent{{ID: "builder"}, {ID: "reviewer"}}, []Edge{
+		{From: "__input__", To: "builder"}, {From: "builder", To: "reviewer"}, {From: "reviewer", OnApprove: "__output__", OnReject: "builder"},
+	}, 5)
+	m.Input = "required task specification"
+	g := buildTestGraph(t, m, map[string]Node{"builder": builder, "reviewer": reviewer})
+	store := openTestStore(t)
+	seedSession(t, store, "repeated", m.Name)
+	if _, err := NewRunner().Run(context.Background(), m, g, "repeated", store); err != nil {
+		t.Fatal(err)
+	}
+	got := builder.calls[2]
+	if !strings.Contains(got, m.Input) || !strings.Contains(got, "latest failure") || strings.Contains(got, "old failure") {
+		t.Fatal(got)
+	}
+}
+
+// feedbackNode rejects with feedback reworded on each run, as a reviewer
+// does (identical feedback would trip stuck-detection instead).
+type feedbackNode struct{ runs int }
+
+func (n *feedbackNode) Run(context.Context, Input) (Output, error) {
+	n.runs++
+	return Output{Envelope: Envelope{Decision: REJECTED, Feedback: fmt.Sprintf("%d. seed files not checked", n.runs)}}, nil
+}
+
+// In the gate→review→fixer loop the cycle limit trips on the fixer→gate edge,
+// and the fixer's output has no feedback. The error must still carry the
+// review's findings, or the blocked task records only "max_cycles exceeded".
+func TestErrMaxCyclesKeepsReviewFindings(t *testing.T) {
+	m := buildTestMission("review-loop", []Agent{
+		{ID: "gate"}, {ID: "review"}, {ID: "fixer"},
+	}, []Edge{
+		{From: "__input__", To: "gate"},
+		{From: "gate", OnApprove: "review"},
+		{From: "review", OnApprove: "__output__", OnReject: "fixer"},
+		{From: "fixer", To: "gate"},
+	}, 2)
+	g := buildTestGraph(t, m, map[string]Node{
+		"gate":   &fakeNode{decision: APPROVED, output: "gates passed"},
+		"review": &feedbackNode{},
+		"fixer":  &fakeNode{decision: APPROVED, output: "made changes"},
+	})
+	store := openTestStore(t)
+	seedSession(t, store, "review-loop-test", m.Name)
+
+	_, err := NewRunner().Run(context.Background(), m, g, "review-loop-test", store)
+	var maxErr *ErrMaxCycles
+	if !As(err, &maxErr) {
+		t.Fatalf("expected *ErrMaxCycles, got %T: %v", err, err)
+	}
+	if got := maxErr.LastOutput.Envelope.Feedback; got != "2. seed files not checked" {
+		t.Errorf("LastOutput feedback = %q, want the review's findings", got)
 	}
 }

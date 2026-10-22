@@ -6,6 +6,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // collect drains n lines from the runner or fails after a timeout.
@@ -82,6 +84,23 @@ func TestRunnerSignalTerminatesProcess(t *testing.T) {
 	}
 	if r.Running() {
 		t.Error("runner should be idle after the process exits")
+	}
+}
+
+func TestRunnerDetachesFromTerminal(t *testing.T) {
+	r := NewRunner()
+	if err := r.Start("/bin/sh", t.TempDir(), "sleep", []string{"-c", "sleep 30"}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Signal(syscall.SIGKILL); _ = r.Wait() })
+
+	pid := r.cmd.Process.Pid
+	sid, err := unix.Getsid(pid)
+	if err != nil {
+		t.Fatalf("getsid: %v", err)
+	}
+	if sid != pid {
+		t.Errorf("session id = %d, want %d (child must lead its own session)", sid, pid)
 	}
 }
 

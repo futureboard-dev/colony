@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/futureboard-dev/colony/pkg/handoff"
 	"github.com/futureboard-dev/colony/pkg/storage"
 )
 
@@ -128,6 +129,10 @@ func (r *defaultRunner) Run(ctx context.Context, m *Mission, g *Graph, sessionID
 	// we can bail early when a fix cycle produces the identical failure (the
 	// fixer is stuck and burning tokens to no effect).
 	prevReject := make(map[string]string)
+	// lastRejected is the most recent rejection. A cycle limit is usually hit
+	// on the fixer→gate edge, whose own output carries no feedback; reporting
+	// the rejection that drove the cycle keeps e.g. a review's findings.
+	var lastRejected *Output
 	stepNum := 0
 	active := 0
 	var finalOutput *Output
@@ -211,6 +216,10 @@ func (r *defaultRunner) Run(ctx context.Context, m *Mission, g *Graph, sessionID
 			}
 
 			decision := nr.output.Envelope.Decision
+			if decision == REJECTED {
+				rejected := nr.output
+				lastRejected = &rejected
+			}
 
 			for _, e := range g.OutEdges[nr.nodeID] {
 				if !MatchesDecision(decision, e) {
@@ -227,7 +236,11 @@ func (r *defaultRunner) Run(ctx context.Context, m *Mission, g *Graph, sessionID
 				if g.IsBackEdge(nr.nodeID, nextID) {
 					// Cycle: check max_cycles before re-dispatching.
 					if m.MaxCycles > 0 && runCount[nextID] >= m.MaxCycles {
-						cycErr := &ErrMaxCycles{NodeID: nextID, LastOutput: &nr.output}
+						last := &nr.output
+						if decision != REJECTED && lastRejected != nil {
+							last = lastRejected
+						}
+						cycErr := &ErrMaxCycles{NodeID: nextID, LastOutput: last}
 						cancel()
 						for active > 0 {
 							<-resultCh
@@ -238,7 +251,7 @@ func (r *defaultRunner) Run(ctx context.Context, m *Mission, g *Graph, sessionID
 					// Stuck-detection: if this back-edge fired before with the
 					// identical rejecting feedback, the fixer is making no
 					// progress — bail rather than burn another full cycle.
-					fb := nr.output.Envelope.Feedback
+					fb, _, _ := strings.Cut(nr.output.Envelope.Feedback, "\nFull log:")
 					if prev, seen := prevReject[nextID]; seen && fb != "" && fb == prev {
 						stuckErr := &ErrStuck{NodeID: nextID, LastOutput: &nr.output}
 						cancel()
@@ -254,7 +267,15 @@ func (r *defaultRunner) Run(ctx context.Context, m *Mission, g *Graph, sessionID
 					// context (e.g. the original spec) plus the new feedback.
 					prior := lastInputs[nextID]
 					merged := make([]Output, 0, len(prior)+1)
-					merged = append(merged, prior...)
+					for _, previous := range prior {
+						if previous.Envelope.Decision != REJECTED && previous.Envelope.Decision != REPROCESS {
+							merged = append(merged, previous)
+						}
+					}
+					// Always retain the task/spec on a repair edge, including skip-builder missions.
+					if len(merged) == 0 {
+						merged = append(merged, inputOut)
+					}
 					merged = append(merged, nr.output)
 					dispatchNode(nextID, merged)
 				} else {
@@ -296,12 +317,19 @@ func (r *defaultRunner) executeNode(
 	agent := g.Agents[nodeID]
 
 	currentInput := combineInputs(inputs)
+	if agent.Role == RoleFixer {
+		// Latest failure supersedes the previous attempt's repair instructions.
+		taskContext, _, _ := strings.Cut(m.Input, "\n\n## Previous attempt was rejected")
+		currentInput = taskContext + "\n\n## Current repair feedback\n\n" + currentInput
+	}
 	startedAt := time.Now()
 
 	var out Output
 	var execErr error
 
-	out, execErr = node.Run(ctx, Input{Text: currentInput, Params: m.Params})
+	if execErr = handoff.CheckPrompt(currentInput, handoff.PromptLimit); execErr == nil {
+		out, execErr = node.Run(ctx, Input{Text: currentInput, Params: m.Params})
+	}
 
 	// Clarification loop: any agent returning CLARIFICATION prompts the user.
 	for execErr == nil && out.Envelope.Decision == CLARIFICATION {
@@ -390,12 +418,13 @@ func stepFeedback(role string, out Output, execErr error) string {
 
 // combineInputs merges multiple upstream outputs into a single input text.
 func combineInputs(inputs []Output) string {
-	if len(inputs) == 1 {
-		return inputs[0].Envelope.OutputText()
-	}
 	parts := make([]string, 0, len(inputs))
 	for _, inp := range inputs {
-		if text := inp.Envelope.OutputText(); text != "" {
+		// A rejection may contain actionable feedback with an empty output.
+		// Prefer that feedback to raw CLI transcripts or decision envelopes.
+		if inp.Envelope.Decision == REJECTED && inp.Envelope.Feedback != "" {
+			parts = append(parts, handoff.Bound(inp.Envelope.Feedback, handoff.FeedbackLimit))
+		} else if text := inp.Envelope.OutputText(); text != "" {
 			parts = append(parts, text)
 		} else if inp.Raw != "" {
 			parts = append(parts, inp.Raw)

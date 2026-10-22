@@ -13,7 +13,8 @@ import (
 	"github.com/futureboard-dev/colony/pkg/config"
 )
 
-// Executor delegates agent execution to claude (Anthropic) or crush (all other providers).
+// Executor delegates agent execution to claude (Anthropic), codex (when pinned
+// via LLMConfig.CLI) or crush (all other providers).
 // Colony owns orchestration; these CLIs own the agent loop, MCP, and tool ecosystems.
 type Executor struct {
 	cfg config.LLMConfig
@@ -24,6 +25,9 @@ func New(cfg config.LLMConfig) *Executor {
 }
 
 func (e *Executor) CLI() string {
+	if e.cfg.CLI != "" {
+		return e.cfg.CLI
+	}
 	if e.cfg.Provider == "anthropic" {
 		return "claude"
 	}
@@ -32,7 +36,7 @@ func (e *Executor) CLI() string {
 
 // RunHeadless runs a prompt non-interactively (text generation, no file tools).
 // Output is written to out. Used for coordinator, scout, reviewer roles.
-func (e *Executor) RunHeadless(ctx context.Context, workdir, prompt string, out io.Writer) error {
+func (e *Executor) runHeadless(ctx context.Context, workdir, prompt string, out io.Writer, diagnostics io.Writer) error {
 	if err := e.validateKeyIfNeeded(); err != nil {
 		return err
 	}
@@ -44,7 +48,7 @@ func (e *Executor) RunHeadless(ctx context.Context, workdir, prompt string, out 
 	cmd.Dir = workdir
 	cmd.Env = cleanEnvForClaude()
 	cmd.Stdout = out
-	cmd.Stderr = os.Stderr
+	cmd.Stderr = io.MultiWriter(os.Stderr, diagnostics)
 	return cmd.Run()
 }
 
@@ -53,8 +57,8 @@ func (e *Executor) RunHeadless(ctx context.Context, workdir, prompt string, out 
 //
 // For claude, stdout is the stream-json event feed and is rendered through
 // streamClaude into a compact one-line-per-action view. For crush (which has
-// no structured stream format) output is passed through raw with --verbose.
-func (e *Executor) RunAgent(ctx context.Context, workdir, prompt string, out io.Writer) error {
+// no structured stream format) and codex, output is passed through raw.
+func (e *Executor) runAgent(ctx context.Context, workdir, prompt string, out io.Writer, diagnostics io.Writer, final io.Writer) error {
 	if err := e.validateKeyIfNeeded(); err != nil {
 		return err
 	}
@@ -62,7 +66,19 @@ func (e *Executor) RunAgent(ctx context.Context, workdir, prompt string, out io.
 	if err := checkInstalled(cli); err != nil {
 		return err
 	}
-	cmd := exec.CommandContext(ctx, cli, e.agentArgs(prompt)...)
+	args := e.agentArgs(prompt)
+	var responsePath string
+	if cli == "codex" && final != nil {
+		response, err := os.CreateTemp(workdir, ".colony-response-*")
+		if err != nil {
+			return err
+		}
+		responsePath = response.Name()
+		response.Close()
+		defer os.Remove(responsePath)
+		args = append(args[:len(args)-1], "--output-last-message", responsePath, prompt)
+	}
+	cmd := exec.CommandContext(ctx, cli, args...)
 	cmd.Dir = workdir
 	cmd.Env = cleanEnvForClaude()
 
@@ -70,6 +86,9 @@ func (e *Executor) RunAgent(ctx context.Context, workdir, prompt string, out io.
 	if out == nil {
 		stdoutW, stderrW = os.Stdout, os.Stderr
 	}
+
+	stdoutW = io.MultiWriter(stdoutW, diagnostics)
+	stderrW = io.MultiWriter(stderrW, diagnostics)
 
 	if cli == "claude" {
 		stdout, err := cmd.StdoutPipe()
@@ -80,7 +99,7 @@ func (e *Executor) RunAgent(ctx context.Context, workdir, prompt string, out io.
 		if err := cmd.Start(); err != nil {
 			return err
 		}
-		streamErr := streamClaude(stdout, stdoutW)
+		streamErr := streamClaudeResult(io.TeeReader(stdout, diagnostics), stdoutW, final)
 		if waitErr := cmd.Wait(); waitErr != nil {
 			return waitErr
 		}
@@ -89,7 +108,20 @@ func (e *Executor) RunAgent(ctx context.Context, workdir, prompt string, out io.
 
 	cmd.Stdout = stdoutW
 	cmd.Stderr = stderrW
-	return cmd.Run()
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+	if responsePath != "" {
+		f, err := os.Open(responsePath)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		_, err = io.Copy(final, f)
+		return err
+	}
+	// Crush has no separate final-response protocol; never label its transcript a response.
+	return nil
 }
 
 // RunInteractive opens an interactive agent session. Blocks until user exits.
@@ -118,9 +150,9 @@ func (e *Executor) RunInteractive(workdir, initialPrompt string) error {
 }
 
 // Preflight verifies that crush run can execute tool calls (known flaky issue).
-// Skipped for anthropic — claude is reliable.
+// Skipped for claude and codex — the bug is crush-specific.
 func (e *Executor) Preflight() error {
-	if e.cfg.Provider == "anthropic" {
+	if e.CLI() != "crush" {
 		return nil
 	}
 	if err := checkInstalled("crush"); err != nil {
@@ -169,6 +201,15 @@ func (e *Executor) headlessArgs(prompt string) []string {
 			args = append(args, "--model", e.cfg.Model)
 		}
 		return args
+	case "codex":
+		// read-only sandbox keeps headless runs to text generation: the model
+		// can't edit files, though it may still run read-only shell commands.
+		args := []string{"exec", "--sandbox", "read-only"}
+		if e.cfg.Model != "" {
+			args = append(args, "-m", e.cfg.Model)
+		}
+		args = append(args, prompt)
+		return args
 	default:
 		args := []string{"run", "-q"}
 		if e.cfg.Model != "" {
@@ -193,6 +234,15 @@ func (e *Executor) agentArgs(prompt string) []string {
 		if e.cfg.Model != "" {
 			args = append(args, "--model", e.cfg.Model)
 		}
+		return args
+	case "codex":
+		// exec runs non-interactively; grant writes within the worktree using
+		// the explicit sandbox option (--full-auto was removed in newer CLIs).
+		args := []string{"exec", "--sandbox", "workspace-write"}
+		if e.cfg.Model != "" {
+			args = append(args, "-m", e.cfg.Model)
+		}
+		args = append(args, prompt)
 		return args
 	default:
 		// crush has no structured stream format; --verbose surfaces its
@@ -245,6 +295,8 @@ func checkInstalled(cli string) error {
 		switch cli {
 		case "claude":
 			return fmt.Errorf("claude not installed\n  Install: https://claude.ai/code")
+		case "codex":
+			return fmt.Errorf("codex not installed\n  Install: npm install -g @openai/codex")
 		case "crush":
 			return fmt.Errorf("crush not installed\n  Install: brew install charmbracelet/tap/crush\n  Or: https://github.com/charmbracelet/crush")
 		}

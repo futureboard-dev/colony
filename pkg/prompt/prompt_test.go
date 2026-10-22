@@ -31,8 +31,50 @@ func TestBuildContinueContainsLang(t *testing.T) {
 	}
 }
 
+func TestSpecSplitPrompt(t *testing.T) {
+	spec := "# Agent Task Spec\n\n## 1. Foo\n\nDo something unique-marker-xyz."
+	p, err := SpecSplit(spec, "src/Db/Scripts/Script0039_Board.sql", "Ports live in Domain/Ports.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(p, "Repository files") || !strings.Contains(p, "Script0039_Board.sql") {
+		t.Error("SpecSplit prompt should embed the repository file list")
+	}
+	if !strings.Contains(p, "Never write a placeholder") {
+		t.Error("SpecSplit prompt should forbid placeholder reservations")
+	}
+	if !strings.Contains(p, "Repository conventions") || !strings.Contains(p, "Ports live in Domain/Ports.") {
+		t.Error("SpecSplit prompt should embed the repository conventions")
+	}
+	noFiles, err := SpecSplit(spec, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(noFiles, "Repository files") {
+		t.Error("SpecSplit prompt should omit the file list section when there are no files")
+	}
+	if strings.Contains(noFiles, "Repository conventions") {
+		t.Error("SpecSplit prompt should omit the conventions section when there is no CLAUDE.md")
+	}
+	if !strings.Contains(p, "unique-marker-xyz") {
+		t.Error("SpecSplit prompt should embed the spec content")
+	}
+	if !strings.Contains(p, "exactly one owner") {
+		t.Error("SpecSplit prompt should state that every file has exactly one owner")
+	}
+	if !strings.Contains(p, "PART 00: contracts") {
+		t.Error("SpecSplit prompt should ask for a contracts part when interfaces are shared")
+	}
+	if !strings.Contains(p, "## PLAN") {
+		t.Error("SpecSplit prompt should ask for a PLAN section")
+	}
+	if !strings.Contains(p, "only earlier") {
+		t.Error("SpecSplit prompt should state that dependencies point only to earlier parts")
+	}
+}
+
 func TestFixContainsGateAndErrors(t *testing.T) {
-	p, err := Fix("Type check", "cannot use string as int")
+	p, err := Fix("Type check", "cannot use string as int", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,6 +83,40 @@ func TestFixContainsGateAndErrors(t *testing.T) {
 	}
 	if !strings.Contains(p, "cannot use string as int") {
 		t.Error("Fix prompt should contain error output")
+	}
+}
+
+// A fixer that cannot run the failing check edits blind; it must get the
+// gate's exact commands and be told setup failures are not code to change.
+func TestFixListsChecksTheFixerMayRun(t *testing.T) {
+	p, err := Fix("typescript", "Unknown option: 'runInBand'", "  - test: `pnpm run test --runInBand`\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"- test: `pnpm run test --runInBand`", "Do NOT run git.", "Do not edit\n  package.json"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("Fix prompt missing %q", want)
+		}
+	}
+	if strings.Contains(p, "or tests") {
+		t.Error("Fix prompt should no longer forbid running tests")
+	}
+}
+
+// The fixer also receives review rejections and runs headless; it must treat
+// missing spec items as in scope and never stall asking for confirmation.
+func TestFixHandlesReviewFeedbackNonInteractively(t *testing.T) {
+	p, err := Fix("typescript", "Spec item 'Proposal Studio' is unimplemented", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Spec item 'Proposal Studio' is unimplemented", "SPEC.md", "non-interactively", "Never ask"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("Fix prompt missing %q", want)
+		}
+	}
+	if strings.Contains(p, "Fix ONLY these errors") {
+		t.Error("Fix prompt should not restrict the fixer to gate errors only")
 	}
 }
 

@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"strings"
 
 	"github.com/futureboard-dev/colony/pkg/config"
+	"github.com/futureboard-dev/colony/pkg/handoff"
 	"github.com/futureboard-dev/colony/pkg/mission/graph"
 	"github.com/futureboard-dev/colony/pkg/module"
 )
@@ -56,9 +58,7 @@ func (n *GateNode) Run(ctx context.Context, in graph.Input) (graph.Output, error
 		if len(changed) > 0 {
 			module.AutoFix(lang, workdir, changed, skip["format"], io.Discard)
 		} else {
-			// No lintable files changed vs base. RunGateCaptureScoped would run
-			// format/lint whole-repo (it only scopes when the file list is
-			// non-empty), re-introducing pre-existing base violations; skip them.
+			// No lintable files changed vs base; skip format/lint explicitly.
 			// Copy first — skip may alias the shared factory/param map.
 			merged := map[string]bool{"format": true, "lint": true}
 			maps.Copy(merged, skip)
@@ -68,13 +68,17 @@ func (n *GateNode) Run(ctx context.Context, in graph.Input) (graph.Output, error
 	} else {
 		output, err = module.RunGateCaptureAll(lang, workdir, skip)
 	}
+	logPath, logErr := handoff.Save(workdir, "gate", output)
+	if logErr != nil {
+		return graph.Output{}, fmt.Errorf("archive gate output: %w", logErr)
+	}
 	if err == nil {
 		return graph.Output{
 			AgentID: n.agentID,
 			Envelope: graph.Envelope{
 				Decision: graph.APPROVED,
 				Feedback: "",
-				Output:   mustMarshal("all gates passed"),
+				Output:   mustMarshal("all gates passed; full log: " + logPath),
 			},
 		}, nil
 	}
@@ -83,10 +87,21 @@ func (n *GateNode) Run(ctx context.Context, in graph.Input) (graph.Output, error
 		AgentID: n.agentID,
 		Envelope: graph.Envelope{
 			Decision: graph.REJECTED,
-			Feedback: fmt.Sprintf("Gate %q failed.\n\n%s", lang, output),
-			Output:   mustMarshal(output),
+			Feedback: handoff.Summary(fmt.Sprintf(gateFailureFormat+"\n\n%s", lang, err, handoff.Distill(output)), logPath, handoff.FeedbackLimit),
+			Output:   mustMarshal(""),
 		},
 	}, nil
+}
+
+// gateFailureFormat opens every gate rejection; IsGateFailure recognises it.
+const gateFailureFormat = "Gate %q failed: %v."
+
+// IsGateFailure reports whether feedback is a gate rejection rather than a
+// review or agent error. Such a failure needs no rebuild: the existing code is
+// re-gated and only a red gate reaches the fixer.
+func IsGateFailure(feedback string) bool {
+	first, _, _ := strings.Cut(feedback, "\n")
+	return strings.HasPrefix(first, `Gate "`) && strings.Contains(first, `" failed: `)
 }
 
 // GateNodeFactory returns a NodeFactory that creates GateNode instances.

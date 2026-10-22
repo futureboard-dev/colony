@@ -99,6 +99,40 @@ func TestRunGateCaptureAll_None(t *testing.T) {
 	})
 }
 
+func TestGateOverrides(t *testing.T) {
+	t.Cleanup(func() { SetGateOverrides(LangCommands{}) })
+	SetGateOverrides(LangCommands{Test: "false", Build: "true"})
+
+	t.Run("none gains the configured commands", func(t *testing.T) {
+		cmds, err := CommandsFor("none")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cmds != (LangCommands{Test: "false", Build: "true"}) {
+			t.Errorf("got %+v", cmds)
+		}
+	})
+	t.Run("override replaces only the fields it sets", func(t *testing.T) {
+		cmds, err := CommandsFor("go")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cmds.Test != "false" || cmds.Vet != "go vet ./..." {
+			t.Errorf("got %+v", cmds)
+		}
+	})
+	t.Run("unknown lang still errors", func(t *testing.T) {
+		if _, err := CommandsFor("cobol"); err == nil {
+			t.Error("expected error")
+		}
+	})
+	t.Run("none fails when the configured test fails", func(t *testing.T) {
+		if _, err := RunGateCaptureAll("none", t.TempDir(), nil); err == nil {
+			t.Error("expected the failing test command to fail the gate")
+		}
+	})
+}
+
 func TestCommandAvailable(t *testing.T) {
 	if !CommandAvailable("go build ./...") {
 		t.Error("expected 'go' to be available on PATH")
@@ -427,6 +461,30 @@ func TestRunGatesReportsMissingCommand(t *testing.T) {
 	if !strings.Contains(out, "--- format ---") || !strings.Contains(out, "executable file not found") {
 		t.Errorf("expected missing-command error in output, got %q", out)
 	}
+	if !strings.Contains(out, "command: go fmt ./... (go not found on PATH)") {
+		t.Errorf("expected the unresolved binary to be named, got %q", out)
+	}
+}
+
+// A tool that rejects the gate command itself (pnpm 9 refusing
+// `pnpm test --runInBand`) must say which binary ran, so the failure reads as
+// a setup problem rather than something to fix in the code.
+func TestRunGatesNamesResolvedBinary(t *testing.T) {
+	bin := t.TempDir()
+	writeExec(t, bin, "pnpm", "#!/bin/sh\necho \" ERROR  Unknown option: 'runInBand'\"\nexit 1\n")
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Cleanup(func() { SetGateOverrides(LangCommands{}) })
+	SetGateOverrides(LangCommands{Test: "pnpm test --runInBand"})
+
+	skip := map[string]bool{"format": true, "vet": true, "lint": true, "typecheck": true, "build": true}
+	out, err := RunGateCaptureAll("typescript", t.TempDir(), skip)
+	if err == nil {
+		t.Fatal("expected the test gate to fail")
+	}
+	want := "--- test ---\ncommand: pnpm test --runInBand (pnpm = " + filepath.Join(bin, "pnpm") + ")\n"
+	if !strings.HasPrefix(out, want) || !strings.Contains(out, "Unknown option: 'runInBand'") {
+		t.Errorf("output = %q, want prefix %q and the tool's error", out, want)
+	}
 }
 
 // Helpers
@@ -451,5 +509,98 @@ func writeFile(t *testing.T, dir, name, content string) {
 	t.Helper()
 	if err := os.WriteFile(dir+"/"+name, []byte(content), 0644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestScopedGatesSelectSupportedFiles(t *testing.T) {
+	for _, tc := range []struct {
+		lang   string
+		want   []string
+		absent []string
+	}{
+		{"python", []string{"ruff format app.py types.pyi", "ruff check app.py types.pyi"}, []string{"migration.js", "schema.json", "view.tsx"}},
+		{"typescript", []string{"pnpm prettier --write migration.js schema.json view.tsx", "pnpm eslint migration.js view.tsx"}, []string{"app.py", "types.pyi", "eslint migration.js schema.json"}},
+	} {
+		t.Run(tc.lang, func(t *testing.T) {
+			dir := t.TempDir()
+			bin := t.TempDir()
+			log := filepath.Join(bin, "calls.log")
+			for _, name := range []string{"ruff", "pnpm"} {
+				path := filepath.Join(bin, name)
+				if err := os.WriteFile(path, []byte("#!/bin/sh\necho '"+name+"' \"$@\" >> '"+log+"'\n"), 0755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+			skip := map[string]bool{"vet": true, "typecheck": true, "test": true, "build": true}
+			files := []string{"migration.js", "app.py", "schema.json", "view.tsx", "types.pyi"}
+			if out, err := RunGateCaptureScoped(tc.lang, dir, files, skip); err != nil {
+				t.Fatalf("%v: %s", err, out)
+			}
+			calls := readFileOrEmpty(t, log)
+			for _, want := range tc.want {
+				if !strings.Contains(calls, want) {
+					t.Errorf("missing %q in %s", want, calls)
+				}
+			}
+			for _, bad := range tc.absent {
+				if strings.Contains(calls, bad) {
+					t.Errorf("unexpected %q in %s", bad, calls)
+				}
+			}
+		})
+	}
+}
+
+func TestScopedPythonGatesSkipJavaScriptOnlyChanges(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	skip := map[string]bool{"vet": true, "typecheck": true, "test": true, "build": true}
+	if out, err := RunGateCaptureScoped("python", t.TempDir(), []string{"migration.js"}, skip); err != nil {
+		t.Fatalf("ran Python tools on JS-only scope: %v %s", err, out)
+	}
+}
+
+func TestAutoFixDoesNotPassJSONToESLint(t *testing.T) {
+	bin := t.TempDir()
+	log := filepath.Join(bin, "calls.log")
+	if err := os.WriteFile(filepath.Join(bin, "pnpm"), []byte("#!/bin/sh\necho \"$@\" >> '"+log+"'\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	AutoFix("typescript", t.TempDir(), []string{"schema.json"}, false, io.Discard)
+	calls := readFileOrEmpty(t, log)
+	if strings.Contains(calls, "eslint") || !strings.Contains(calls, "prettier --write schema.json") {
+		t.Fatal(calls)
+	}
+}
+
+func TestChangedFilesIncludesPythonSources(t *testing.T) {
+	dir := t.TempDir()
+	for _, args := range [][]string{{"init", "-q"}, {"-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-qm", "initial"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %s", err, out)
+		}
+	}
+	for _, name := range []string{"app.py", "types.pyi", "migration.js", "README.md"} {
+		writeFile(t, dir, name, "\n")
+	}
+	got := strings.Join(ChangedFiles(dir, "HEAD"), ",")
+	for _, name := range []string{"app.py", "types.pyi", "migration.js"} {
+		if !strings.Contains(got, name) {
+			t.Errorf("missing %s in %s", name, got)
+		}
+	}
+	if strings.Contains(got, "README.md") {
+		t.Fatal(got)
+	}
+}
+
+func TestScopedEmptyFilesDoesNotRunWholeRepo(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	skip := map[string]bool{"vet": true, "typecheck": true, "test": true, "build": true}
+	if out, err := RunGateCaptureScoped("python", t.TempDir(), nil, skip); err != nil {
+		t.Fatalf("ran tools outside empty scope: %v %s", err, out)
 	}
 }

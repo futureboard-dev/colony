@@ -342,13 +342,15 @@ func runGates(ctx context.Context, worktreePath, base, lang string, langs module
 		fmt.Fprintf(out, "%s⚠ format/lint skipped — no lintable files changed vs base%s\n", ansiYellow, ansiReset)
 		skipFormat = true
 	}
-	formatCmd := module.ScopeCommand(langs.Format, scope)
-	lintCmd := module.ScopeCommand(langs.Lint, scope)
+	formatFiles := module.GateFiles(lang, "format", scope)
+	lintFiles := module.GateFiles(lang, "lint", scope)
+	formatCmd := module.ScopeCommand(langs.Format, formatFiles)
+	lintCmd := module.ScopeCommand(langs.Lint, lintFiles)
 
-	if !skipFormat {
+	if !skipFormat && len(formatFiles) > 0 {
 		module.RunFormat(formatCmd, worktreePath, out)
 	}
-	if len(scope) > 0 && lintCmd != "" {
+	if len(lintFiles) > 0 && lintCmd != "" {
 		if module.CommandAvailable(lintCmd) {
 			if err := gateWithFix(ctx, "Lint", lintCmd, worktreePath, maxAttempts, ex, out); err != nil {
 				return err
@@ -377,7 +379,7 @@ func gateWithFix(ctx context.Context, name, gateCmd, workdir string, maxAttempts
 		fmt.Fprintf(out, "%s✗ %s failed%s\n", ansiRed, name, ansiReset)
 		fmt.Fprintf(out, "%s\n", errOut)
 		if attempt < maxAttempts {
-			fixP, ferr := prompt.Fix(name, errOut)
+			fixP, ferr := prompt.Fix(name, errOut, fmt.Sprintf("  - %s: `%s`", name, gateCmd))
 			if ferr != nil {
 				return ferr
 			}
