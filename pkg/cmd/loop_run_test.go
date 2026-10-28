@@ -516,7 +516,7 @@ func TestGroupCompletion(t *testing.T) {
 		root, epicBranch, groupID, store := setup(t)
 		defer store.Close()
 
-		err := maybeCompleteGroup(groupID, root, store, os.Stderr)
+		err := maybeCompleteGroup(groupID, root, "", store, os.Stderr)
 
 		groups, qerr := store.QueryGroups(storage.GroupFilter{ID: groupID})
 		if qerr != nil || len(groups) != 1 {
@@ -553,7 +553,7 @@ func TestGroupCompletion(t *testing.T) {
 		root, _, groupID, store := setup(t)
 		defer store.Close()
 
-		if err := maybeCompleteGroup(groupID, root, store, os.Stderr); err != nil {
+		if err := maybeCompleteGroup(groupID, root, "", store, os.Stderr); err != nil {
 			t.Fatalf("maybeCompleteGroup: %v", err)
 		}
 		groups, err := store.QueryGroups(storage.GroupFilter{ID: groupID})
@@ -570,7 +570,7 @@ func TestGroupCompletion(t *testing.T) {
 		defer store.Close()
 		runCmd(t, root, "git", "remote", "remove", "origin")
 
-		if err := maybeCompleteGroup(groupID, root, store, os.Stderr); err == nil {
+		if err := maybeCompleteGroup(groupID, root, "", store, os.Stderr); err == nil {
 			t.Fatal("expected an error when push fails")
 		}
 		groups, err := store.QueryGroups(storage.GroupFilter{ID: groupID})
@@ -603,7 +603,7 @@ func TestFinishTask_NonGroupStillPushesAndPRs(t *testing.T) {
 	runCmd(t, root, "git", "add", "change.txt")
 	runCmd(t, root, "git", "commit", "-m", "wip: standalone", "--quiet")
 
-	prURL, err := finishTask(root, branch, "main", "standalone-label", os.Stderr)
+	prURL, err := finishTask(root, branch, "main", "standalone-label", "", os.Stderr)
 	if err != nil && !strings.Contains(err.Error(), "gh pr create") {
 		t.Fatalf("finishTask: %v", err)
 	}

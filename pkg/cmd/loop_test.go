@@ -1080,7 +1080,7 @@ func TestFinishTask_SquashCommit(t *testing.T) {
 	// Run finishTask which should squash. Note: gh/pr step may fail if gh is
 	// not installed; that is a delivery failure, not a squash failure — the
 	// commit is still made locally.
-	prURL, finishErr := finishTask(workdir, "feature/test", base, "test-label", os.Stderr)
+	prURL, finishErr := finishTask(workdir, "feature/test", base, "test-label", "", os.Stderr)
 	if finishErr != nil && !strings.Contains(finishErr.Error(), "gh pr create") {
 		t.Fatalf("finishTask unexpected error: %v", finishErr)
 	}
@@ -1194,4 +1194,37 @@ func TestExtractFeedbackPrefersCurrentFailure(t *testing.T) {
 	if got := extractFeedback(out, fmt.Errorf("execution failed; full log: /log")); got != "execution failed; full log: /log" {
 		t.Fatal(got)
 	}
+}
+
+func TestGHEnv(t *testing.T) {
+	t.Run("empty user inherits environment", func(t *testing.T) {
+		env, err := ghEnv("")
+		if err != nil || env != nil {
+			t.Fatalf("ghEnv(\"\") = %v, %v; want nil, nil", env, err)
+		}
+	})
+
+	if _, err := exec.LookPath("gh"); err != nil {
+		t.Skip("gh not on PATH")
+	}
+
+	t.Run("unknown user errors", func(t *testing.T) {
+		if _, err := ghEnv("colony-no-such-user-xyz"); err == nil {
+			t.Fatal("expected error for an account gh is not logged into")
+		}
+	})
+
+	t.Run("logged-in user sets GH_TOKEN", func(t *testing.T) {
+		login, err := exec.Command("gh", "api", "user", "--jq", ".login").Output()
+		if err != nil {
+			t.Skip("gh not authenticated")
+		}
+		env, err := ghEnv(strings.TrimSpace(string(login)))
+		if err != nil {
+			t.Fatalf("ghEnv: %v", err)
+		}
+		if !strings.HasPrefix(env[len(env)-1], "GH_TOKEN=") {
+			t.Fatalf("last env entry = %q, want GH_TOKEN=...", env[len(env)-1])
+		}
+	})
 }

@@ -65,6 +65,8 @@ func (c LLMConfig) ValidateKey() error {
 // WorktreeBase overrides where agent worktrees are created; empty means the
 // built-in default (~/Projects/.worktrees). "~" is expanded.
 // Gates overrides the quality-gate commands for this project.
+// GHUser pins the gh account the loop pushes and opens PRs as; empty uses
+// gh's active account.
 type Config struct {
 	Root         string                 `json:"root"`
 	WorktreeBase string                 `json:"worktree_base,omitempty"`
@@ -72,6 +74,7 @@ type Config struct {
 	Roles        map[string]LLMConfig   `json:"roles,omitempty"`
 	Commands     map[string]ScopeConfig `json:"commands,omitempty"`
 	Gates        GateCommands           `json:"gates,omitempty"`
+	GHUser       string                 `json:"gh_user,omitempty"`
 }
 
 // GateCommands replaces individual quality-gate commands. A non-empty field

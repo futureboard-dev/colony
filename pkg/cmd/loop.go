@@ -1028,7 +1028,7 @@ func getConflictFiles(workdir string) []string {
 	return files
 }
 
-func finishTask(workdir, branch, baseBranch, label string, out io.Writer) (string, error) {
+func finishTask(workdir, branch, baseBranch, label, ghUser string, out io.Writer) (string, error) {
 	_ = os.Remove(filepath.Join(workdir, "SPEC.md"))
 
 	mergeBase := exec.Command("git", "merge-base", "HEAD", "origin/"+baseBranch)
@@ -1062,16 +1062,22 @@ func finishTask(workdir, branch, baseBranch, label string, out io.Writer) (strin
 	}
 	fmt.Fprintf(out, "%sloop: committed on branch %s%s\n", ansiBlue, branch, ansiReset)
 
-	return pushBranchAndOpenPR(workdir, branch, baseBranch, out)
+	return pushBranchAndOpenPR(workdir, branch, baseBranch, ghUser, out)
 }
 
 // pushBranchAndOpenPR pushes branch to origin and opens a PR against
 // baseBranch, returning the PR URL. Shared by finishTask (one PR per
 // standalone task) and group completion (one PR for the epic branch, opened
-// once every task in the group is done).
-func pushBranchAndOpenPR(workdir, branch, baseBranch string, out io.Writer) (string, error) {
+// once every task in the group is done). A non-empty ghUser runs push and
+// gh as that account.
+func pushBranchAndOpenPR(workdir, branch, baseBranch, ghUser string, out io.Writer) (string, error) {
+	env, err := ghEnv(ghUser)
+	if err != nil {
+		return "", err
+	}
 	push := exec.Command("git", "push", "-u", "origin", branch)
 	push.Dir = workdir
+	push.Env = env
 	push.Stdout = out
 	push.Stderr = out
 	if err := push.Run(); err != nil {
@@ -1091,6 +1097,7 @@ func pushBranchAndOpenPR(workdir, branch, baseBranch string, out io.Writer) (str
 	}
 	gh := exec.Command("gh", args...)
 	gh.Dir = workdir
+	gh.Env = env
 	var prURL strings.Builder
 	gh.Stdout = io.MultiWriter(out, &prURL)
 	gh.Stderr = out
@@ -1098,6 +1105,21 @@ func pushBranchAndOpenPR(workdir, branch, baseBranch string, out io.Writer) (str
 		return "", fmt.Errorf("gh pr create: %w", err)
 	}
 	return strings.TrimSpace(prURL.String()), nil
+}
+
+// ghEnv returns the environment for push and gh commands. For a named user
+// it injects that account's token as GH_TOKEN rather than running
+// `gh auth switch`, which would flip the machine-wide active account under
+// any other loop running against a different repo. Nil means inherit.
+func ghEnv(user string) ([]string, error) {
+	if user == "" {
+		return nil, nil
+	}
+	token, err := exec.Command("gh", "auth", "token", "--user", user).Output()
+	if err != nil {
+		return nil, fmt.Errorf("gh token for user %q (run: gh auth login, then check gh auth status): %w", user, err)
+	}
+	return append(os.Environ(), "GH_TOKEN="+strings.TrimSpace(string(token))), nil
 }
 
 func runInDir(cmd *exec.Cmd, dir string) error {
@@ -1183,7 +1205,7 @@ func landOnEpic(ctx context.Context, cfg *config.Config, workdir, branch, lang s
 // worktrees of the same project share refs, so pushing the epic branch by
 // name doesn't require it to be checked out anywhere. A push/PR failure marks
 // the group blocked; this is the only case that does.
-func maybeCompleteGroup(groupID, workdir string, store *storage.SQLiteStore, out io.Writer) error {
+func maybeCompleteGroup(groupID, workdir, ghUser string, store *storage.SQLiteStore, out io.Writer) error {
 	tasks, err := store.QueryTasks(storage.TaskFilter{GroupID: groupID})
 	if err != nil {
 		return err
@@ -1206,7 +1228,7 @@ func maybeCompleteGroup(groupID, workdir string, store *storage.SQLiteStore, out
 		return nil
 	}
 
-	prURL, err := pushBranchAndOpenPR(workdir, g.EpicBranch, g.BaseBranch, out)
+	prURL, err := pushBranchAndOpenPR(workdir, g.EpicBranch, g.BaseBranch, ghUser, out)
 	if err != nil {
 		_ = store.UpdateGroup(g.ID, "blocked", "")
 		return fmt.Errorf("push/PR for group %s: %w", g.Name, err)
@@ -1232,13 +1254,13 @@ func finishOrLand(ctx context.Context, cfg *config.Config, workdir, branch, base
 			return nil
 		}
 		fmt.Fprintf(out, "%sloop: task %q landed on %s%s\n", ansiGreen, task.ID, baseBranch, ansiReset)
-		if cerr := maybeCompleteGroup(task.GroupID, workdir, store, out); cerr != nil {
+		if cerr := maybeCompleteGroup(task.GroupID, workdir, cfg.GHUser, store, out); cerr != nil {
 			fmt.Fprintf(out, "%sloop: group completion failed: %v%s\n", ansiYellow, cerr, ansiReset)
 		}
 		return nil
 	}
 
-	prURL, finishErr := finishTask(workdir, branch, baseBranch, missionLabel(task), out)
+	prURL, finishErr := finishTask(workdir, branch, baseBranch, missionLabel(task), cfg.GHUser, out)
 	if finishErr != nil {
 		fmt.Fprintf(out, "%sloop: task %q done (gate passed) — warning: %v%s\n", ansiYellow, task.ID, finishErr, ansiReset)
 		_ = store.UpdateTaskState(task.ID, "done", "warning: "+finishErr.Error())
