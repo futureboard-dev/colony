@@ -32,7 +32,7 @@ Examples:
 }
 
 var (
-	sfFile        string
+	sfFile        []string
 	sfInteractive bool
 	sfContinue    bool
 	sfProvider    string
@@ -48,7 +48,7 @@ var specFeatureLLM = func(cmd *cobra.Command, ex *llm.Executor, root, prompt str
 }
 
 func init() {
-	specFeatureCmd.Flags().StringVar(&sfFile, "file", "", "read requirements from this file instead of inline text")
+	specFeatureCmd.Flags().StringSliceVar(&sfFile, "file", nil, "read requirements from this file instead of inline text; repeat or comma-separate to combine several files")
 	specFeatureCmd.Flags().BoolVar(&sfInteractive, "interactive", false, "collaborate on the spec in a live agent session instead of one-shot generation")
 	specFeatureCmd.Flags().BoolVar(&sfContinue, "continue", false, "revise an existing TASK.md using inline comments you added to it")
 	specFeatureCmd.Flags().StringVar(&sfProvider, "provider", "deepseek", "model provider for spec generation: deepseek (default, deepseek-reasoner) or anthropic (claude-opus-4-8)")
@@ -103,8 +103,8 @@ func runSpecFeature(cmd *cobra.Command, args []string) error {
 	}
 
 	var input string
-	if sfFile != "" {
-		data, err := os.ReadFile(sfFile)
+	if len(sfFile) > 0 {
+		data, err := readSpecFiles(sfFile)
 		if err != nil {
 			return fmt.Errorf("read requirements file: %w", err)
 		}
@@ -183,6 +183,28 @@ func runSpecFeature(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// readSpecFiles reads the --file inputs. A single file is returned unchanged
+// so a hand-written spec is split as-is; several files are joined in order,
+// each under a "## <path>" heading so the LLM can tell their sources apart.
+func readSpecFiles(paths []string) ([]byte, error) {
+	if len(paths) == 1 {
+		return os.ReadFile(paths[0])
+	}
+	var b strings.Builder
+	for i, p := range paths {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return nil, err
+		}
+		if i > 0 {
+			b.WriteString("\n\n")
+		}
+		fmt.Fprintf(&b, "## %s\n\n%s", p, strings.TrimRight(string(data), "\n"))
+	}
+	b.WriteString("\n")
+	return []byte(b.String()), nil
+}
+
 // runSpecFeatureSplit implements `spec-feature <name> --split`. With --file,
 // that spec is copied to SOURCE.md and split as-is. Otherwise an existing
 // TASK.md is split, or one is generated first from inline requirements,
@@ -191,7 +213,7 @@ func runSpecFeatureSplit(cmd *cobra.Command, args []string, cfg *config.Config, 
 	// sourceFile is the spec the parts point into. A --file spec is split as-is
 	// (copied to SOURCE.md) so a long hand-written spec is never rewritten.
 	sourceFile := taskFile
-	if sfFile != "" {
+	if len(sfFile) > 0 {
 		sourceFile = filepath.Join(featureDir, "SOURCE.md")
 	}
 
@@ -200,8 +222,8 @@ func runSpecFeatureSplit(cmd *cobra.Command, args []string, cfg *config.Config, 
 		return fmt.Errorf("parts directory already exists: %s (use --force to overwrite)", partsDir)
 	}
 
-	if sfFile != "" {
-		data, err := os.ReadFile(sfFile)
+	if len(sfFile) > 0 {
+		data, err := readSpecFiles(sfFile)
 		if err != nil {
 			return fmt.Errorf("read spec file: %w", err)
 		}

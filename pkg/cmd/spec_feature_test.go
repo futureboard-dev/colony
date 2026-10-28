@@ -497,7 +497,7 @@ func captureStdout(t *testing.T, fn func() error) (string, error) {
 }
 
 func resetSpecFeatureFlags() {
-	sfFile, sfInteractive, sfContinue, sfSplit, sfForce = "", false, false, false, false
+	sfFile, sfInteractive, sfContinue, sfSplit, sfForce = nil, false, false, false, false
 	sfProvider = "deepseek"
 }
 
@@ -754,7 +754,7 @@ func TestSpecFeatureSplit(t *testing.T) {
 		stubSpecFeatureLLM(t, "generation must not run", withPlan)
 		resetSpecFeatureFlags()
 		sfSplit = true
-		sfFile = specFile
+		sfFile = []string{specFile}
 
 		cmd := &cobra.Command{}
 		if _, err := captureStdout(t, func() error { return runSpecFeature(cmd, []string{"bridge"}) }); err != nil {
@@ -776,6 +776,79 @@ func TestSpecFeatureSplit(t *testing.T) {
 		plan, _ := os.ReadFile(filepath.Join(featureDir, "PLAN.md"))
 		if !strings.Contains(string(plan), "move the spec out of reports/") {
 			t.Errorf("expected the LLM plan in PLAN.md, got:\n%s", plan)
+		}
+	})
+
+	t.Run("multiple file specs combined into SOURCE.md", func(t *testing.T) {
+		dir := initTestRepo(t)
+		setupMinimalProject(t, dir)
+		origWd, _ := os.Getwd()
+		os.Chdir(dir)
+		defer os.Chdir(origWd)
+
+		specDir := t.TempDir()
+		api := filepath.Join(specDir, "api.md")
+		ui := filepath.Join(specDir, "ui.md")
+		if err := os.WriteFile(api, []byte("API detail.\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(ui, []byte("UI detail.\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		stubSpecFeatureLLM(t, "generation must not run", splitFixture)
+		resetSpecFeatureFlags()
+		sfSplit = true
+		sfFile = []string{api, ui}
+
+		cmd := &cobra.Command{}
+		if _, err := captureStdout(t, func() error { return runSpecFeature(cmd, []string{"bridge"}) }); err != nil {
+			t.Fatalf("runSpecFeature: %v", err)
+		}
+
+		source, err := os.ReadFile(filepath.Join(dir, ".colony", "specs", "bridge", "SOURCE.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "## " + api + "\n\nAPI detail.\n\n## " + ui + "\n\nUI detail.\n"
+		if string(source) != want {
+			t.Errorf("SOURCE.md = %q, want %q", source, want)
+		}
+	})
+}
+
+func TestReadSpecFiles(t *testing.T) {
+	dir := t.TempDir()
+	api := filepath.Join(dir, "api.md")
+	ui := filepath.Join(dir, "ui.md")
+	if err := os.WriteFile(api, []byte("API detail.\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ui, []byte("UI detail.\n\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("single file is returned unchanged", func(t *testing.T) {
+		got, err := readSpecFiles([]string{api})
+		if err != nil || string(got) != "API detail.\n" {
+			t.Fatalf("got %q err=%v", got, err)
+		}
+	})
+
+	t.Run("multiple files are joined under path headings", func(t *testing.T) {
+		got, err := readSpecFiles([]string{api, ui})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "## " + api + "\n\nAPI detail.\n\n## " + ui + "\n\nUI detail.\n"
+		if string(got) != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("missing file errors", func(t *testing.T) {
+		if _, err := readSpecFiles([]string{api, filepath.Join(dir, "nope.md")}); err == nil {
+			t.Error("expected error for missing file")
 		}
 	})
 }

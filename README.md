@@ -534,6 +534,7 @@ colony spec-feature payments --split "accept card payments with Stripe"
 | Command | What it does |
 | --- | --- |
 | `colony spec-feature <name> --split --file <spec>` | Copy `<spec>` to `SOURCE.md` and split it as-is |
+| `colony spec-feature <name> --split --file a.md --file b.md` | Join several specs (each under a `## <path>` heading) into `SOURCE.md` and split |
 | `colony spec-feature <name> --split "<requirements>"` | Generate `TASK.md` if missing, then split it |
 | `colony spec-feature <name> --split` | Split an existing `.colony/specs/<name>/TASK.md` |
 | `... --force` | Replace an existing `parts/` directory |
