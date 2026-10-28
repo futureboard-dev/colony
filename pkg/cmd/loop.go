@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/futureboard-dev/colony/pkg/handoff"
 	"io"
@@ -832,20 +833,8 @@ func integrateTask(ctx context.Context, cfg *config.Config, workdir, branch, bas
 		}
 		epicSHA = strings.TrimSpace(string(shaOut))
 
-		merge := exec.Command("git", "merge", baseBranch)
-		merge.Dir = workdir
-		merge.Stdout = out
-		merge.Stderr = out
-		if err := merge.Run(); err != nil {
-			abort := exec.Command("git", "merge", "--abort")
-			abort.Dir = workdir
-			_ = abort.Run()
-
-			conflictFiles := getConflictFiles(workdir)
-			feedback := fmt.Sprintf("merge conflict with %s. Conflicting files: %s", baseBranch, strings.Join(conflictFiles, ", "))
-			_ = store.UpdateTaskState(task.ID, "blocked", feedback)
-			fmt.Fprintf(out, "%sloop: task %q blocked — merge conflict with %s%s\n", ansiRed, task.ID, baseBranch, ansiReset)
-			return "", fmt.Errorf("merge conflict with %s", baseBranch)
+		if err := mergeAndResolve(ctx, cfg, workdir, baseBranch, baseBranch, lang, task, store, out); err != nil {
+			return "", err
 		}
 	} else {
 		fmt.Fprintf(out, "%sloop: integrating %s with origin/%s%s\n", ansiBlue, branch, baseBranch, ansiReset)
@@ -859,20 +848,8 @@ func integrateTask(ctx context.Context, cfg *config.Config, workdir, branch, bas
 			return "", fmt.Errorf("git fetch: %w", err)
 		}
 
-		merge := exec.Command("git", "merge", "FETCH_HEAD")
-		merge.Dir = workdir
-		merge.Stdout = out
-		merge.Stderr = out
-		if err := merge.Run(); err != nil {
-			abort := exec.Command("git", "merge", "--abort")
-			abort.Dir = workdir
-			_ = abort.Run()
-
-			conflictFiles := getConflictFiles(workdir)
-			feedback := fmt.Sprintf("merge conflict with origin/%s. Conflicting files: %s", baseBranch, strings.Join(conflictFiles, ", "))
-			_ = store.UpdateTaskState(task.ID, "blocked", feedback)
-			fmt.Fprintf(out, "%sloop: task %q blocked — merge conflict with origin/%s%s\n", ansiRed, task.ID, baseBranch, ansiReset)
-			return "", fmt.Errorf("merge conflict with origin/%s", baseBranch)
+		if err := mergeAndResolve(ctx, cfg, workdir, "FETCH_HEAD", "origin/"+baseBranch, lang, task, store, out); err != nil {
+			return "", err
 		}
 	}
 
@@ -925,6 +902,113 @@ func integrateTask(ctx context.Context, cfg *config.Config, workdir, branch, bas
 
 	fmt.Fprintf(out, "%sloop: integration gate passed%s\n", ansiBlue, ansiReset)
 	return epicSHA, nil
+}
+
+// mergeAndResolve merges ref (shown to people as name) into workdir. The
+// agent's work is uncommitted, and git refuses a merge that would overwrite
+// it, so it is committed first; both landing paths squash afterwards, so this
+// commit never reaches the final history. Conflicts go to the fixer agent;
+// only conflicts it leaves unresolved block the task.
+func mergeAndResolve(ctx context.Context, cfg *config.Config, workdir, ref, name, lang string, task *storage.Task, store *storage.SQLiteStore, out io.Writer) error {
+	block := func(feedback string) error {
+		_ = store.UpdateTaskState(task.ID, "blocked", feedback)
+		fmt.Fprintf(out, "%sloop: task %q blocked — %s%s\n", ansiRed, task.ID, feedback, ansiReset)
+		return errors.New(feedback)
+	}
+
+	if err := commitWork(workdir, "loop: "+missionLabel(task)+" (before merging "+name+")", out); err != nil {
+		return block(fmt.Sprintf("commit work before merging %s: %v", name, err))
+	}
+
+	merge := exec.Command("git", "merge", "--no-edit", ref)
+	merge.Dir = workdir
+	merge.Stdout = out
+	merge.Stderr = out
+	if merge.Run() == nil {
+		return nil
+	}
+	abort := func() {
+		cmd := exec.Command("git", "merge", "--abort")
+		cmd.Dir = workdir
+		_ = cmd.Run()
+	}
+	conflictFiles := getConflictFiles(workdir)
+	if len(conflictFiles) == 0 {
+		abort()
+		return block(fmt.Sprintf("git merge %s failed (see log)", name))
+	}
+
+	fmt.Fprintf(out, "%sloop: merge conflict with %s in %s — asking fixer agent to resolve%s\n", ansiYellow, name, strings.Join(conflictFiles, ", "), ansiReset)
+	if cfg != nil {
+		feedback := fmt.Sprintf("Merging %s into this branch left conflict markers (<<<<<<<, =======, >>>>>>>) in: %s.\n"+
+			"Resolve every conflict so the result keeps both this branch's changes and the ones already on %s. "+
+			"Remove all conflict markers.", name, strings.Join(conflictFiles, ", "), name)
+		fixPrompt, err := prompt.Fix("merge with "+name, feedback, module.CheckList(lang))
+		if err == nil {
+			if aerr := llm.New(cfg.CommandRole("loop", graph.RoleFixer)).RunAgent(ctx, workdir, fixPrompt, out); aerr != nil {
+				fmt.Fprintf(out, "%sloop: fixer agent error: %v%s\n", ansiYellow, aerr, ansiReset)
+			}
+		}
+	}
+
+	if unresolved := filesWithConflictMarkers(workdir, conflictFiles); len(unresolved) > 0 {
+		abort()
+		return block(fmt.Sprintf("merge conflict with %s. Conflicting files: %s", name, strings.Join(unresolved, ", ")))
+	}
+	if err := commitWork(workdir, "", out); err != nil {
+		abort()
+		return block(fmt.Sprintf("commit resolved merge with %s: %v", name, err))
+	}
+	return nil
+}
+
+// commitWork stages everything except colony's SPEC.md and commits it with
+// message, or with git's prepared message when message is "" (a merge being
+// concluded). A clean tree outside a merge commits nothing.
+func commitWork(workdir, message string, out io.Writer) error {
+	add := exec.Command("git", "add", "-A", "--", ".", ":(exclude)SPEC.md")
+	add.Dir = workdir
+	if err := add.Run(); err != nil {
+		return fmt.Errorf("git add: %w", err)
+	}
+	args := []string{"commit", "--no-edit", "--quiet"}
+	if message != "" {
+		if diff := exec.Command("git", "diff", "--cached", "--quiet"); runInDir(diff, workdir) == nil {
+			return nil
+		}
+		args = append(args, "-m", message)
+	}
+	commit := exec.Command("git", args...)
+	commit.Dir = workdir
+	commit.Stdout = out
+	commit.Stderr = out
+	if err := commit.Run(); err != nil {
+		return fmt.Errorf("git commit: %w", err)
+	}
+	return nil
+}
+
+// filesWithConflictMarkers returns the files in names that still hold a
+// conflict marker line, or can no longer be read.
+func filesWithConflictMarkers(workdir string, names []string) []string {
+	var unresolved []string
+	for _, name := range names {
+		data, err := os.ReadFile(filepath.Join(workdir, name))
+		if os.IsNotExist(err) {
+			continue // resolved by deleting the file
+		}
+		if err != nil {
+			unresolved = append(unresolved, name)
+			continue
+		}
+		for line := range strings.SplitSeq(string(data), "\n") {
+			if strings.HasPrefix(line, "<<<<<<< ") || strings.HasPrefix(line, ">>>>>>> ") {
+				unresolved = append(unresolved, name)
+				break
+			}
+		}
+	}
+	return unresolved
 }
 
 func getConflictFiles(workdir string) []string {
@@ -1362,7 +1446,7 @@ func partWithSource(partPath string, part groupPart) (string, error) {
 
 // partNotesFile is where a part's agent writes its handoff notes in its
 // worktree. It is git-excluded and moved to the spec folder when the part lands.
-const partNotesFile = "PART_NOTES.md"
+const partNotesFile = nodes.PartNotesFile
 
 // partNotesPath is where a landed part's notes live: <spec-dir>/notes/<id>.md,
 // next to the parts/ directory holding partPath.

@@ -234,8 +234,11 @@ func (r *defaultRunner) Run(ctx context.Context, m *Mission, g *Graph, sessionID
 				}
 
 				if g.IsBackEdge(nr.nodeID, nextID) {
-					// Cycle: check max_cycles before re-dispatching.
-					if m.MaxCycles > 0 && runCount[nextID] >= m.MaxCycles {
+					// Cycle: check max_cycles before re-dispatching. Also stop when
+					// nextID's output could only re-enter a node already at the
+					// limit (a fixer whose fix could never be gated), so the run
+					// isn't spent on work nobody verifies.
+					if m.MaxCycles > 0 && (runCount[nextID] >= m.MaxCycles || feedsOnlyExhausted(g, nextID, runCount, m.MaxCycles)) {
 						last := &nr.output
 						if decision != REJECTED && lastRejected != nil {
 							last = lastRejected
@@ -462,4 +465,17 @@ func fmtDuration(d time.Duration) string {
 	h := m / 60
 	m = m % 60
 	return fmt.Sprintf("%dh %dm", h, m)
+}
+
+// feedsOnlyExhausted reports whether every edge out of id is a back-edge into
+// a node that has already run maxCycles times, so running id can only end in
+// ErrMaxCycles with its output discarded.
+func feedsOnlyExhausted(g *Graph, id string, runCount map[string]int, maxCycles int) bool {
+	edges := g.OutEdges[id]
+	for _, e := range edges {
+		if !g.IsBackEdge(id, e.To) || runCount[e.To] < maxCycles {
+			return false
+		}
+	}
+	return len(edges) > 0
 }

@@ -122,8 +122,13 @@ func committedOnBranch(workdir, base string) string {
 	return "\n\n## Already committed on this branch (not in the diff below)\n\n" + handoff.Bound(string(out), handoff.FeedbackLimit)
 }
 
+// PartNotesFile is where a group part's agent writes its handoff notes in its
+// worktree. It is git-excluded and moved to the spec folder when the part lands.
+const PartNotesFile = "PART_NOTES.md"
+
 // reviewDiff returns the combined staged+unstaged diff of the worktree against
-// HEAD plus every untracked file, without altering the index.
+// HEAD plus every untracked file and the part's handoff notes, without
+// altering the index.
 // Returns "" when there are no changes.
 func reviewDiff(workdir string) (string, error) {
 	cmd := exec.Command("git", "diff", "--binary", "HEAD", "--", ".", ":(exclude)SPEC.md", ":(exclude).colony")
@@ -138,9 +143,19 @@ func reviewDiff(workdir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	files := strings.Split(string(names), "\x00")
+	// A group part's handoff notes are git-excluded so they never get
+	// committed, but they explain the part's choices and the reviewer needs them.
+	if _, err := os.Stat(filepath.Join(workdir, PartNotesFile)); err == nil {
+		ignored := exec.Command("git", "check-ignore", "-q", PartNotesFile)
+		ignored.Dir = workdir
+		if ignored.Run() == nil {
+			files = append(files, PartNotesFile)
+		}
+	}
 	var diff strings.Builder
 	diff.Write(out)
-	for _, name := range strings.Split(string(names), "\x00") {
+	for _, name := range files {
 		if name == "" || name == "SPEC.md" || strings.HasPrefix(name, ".colony/") {
 			continue
 		}

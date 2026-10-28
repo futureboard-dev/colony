@@ -112,6 +112,31 @@ func TestReviewIncludesUntrackedExcludesDuplicateSpec(t *testing.T) {
 	}
 }
 
+func TestReviewIncludesExcludedPartNotes(t *testing.T) {
+	dir := reviewFixture(t)
+	if err := os.WriteFile(filepath.Join(dir, ".git", "info", "exclude"), []byte("/"+PartNotesFile+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Run("excluded notes are reviewed", func(t *testing.T) {
+		write(t, dir, PartNotesFile, "routes already covered; no error registry")
+		diff, err := reviewDiff(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Count(diff, "routes already covered") != 1 {
+			t.Fatal(diff)
+		}
+	})
+	t.Run("missing notes are not an error", func(t *testing.T) {
+		if err := os.Remove(filepath.Join(dir, PartNotesFile)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := reviewDiff(dir); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
 func TestReviewSmallDiffIsOneCall(t *testing.T) {
 	dir := reviewFixture(t)
 	write(t, dir, "new.go", "required implementation")

@@ -340,11 +340,11 @@ func TestErrMaxCyclesLastOutput(t *testing.T) {
 		t.Fatal("expected LastOutput to be set on ErrMaxCycles")
 	}
 
-	// The last output before hitting the cycle limit should be from the reviewer
-	// since the cycle is writer→reviewer→writer and max_cycles is checked
-	// when re-dispatching the writer (the back-edge target).
-	if txt := maxErr.LastOutput.Envelope.OutputText(); txt != "needs more testing" {
-		t.Errorf("expected LastOutput output text 'needs more testing', got %q", txt)
+	// The writer's second rejection is the last output: the reviewer is not
+	// run again, because its only edge leads back to the writer, which is
+	// already at the cycle limit.
+	if txt := maxErr.LastOutput.Envelope.OutputText(); txt != "draft-v1" {
+		t.Errorf("expected LastOutput output text 'draft-v1', got %q", txt)
 	}
 	if maxErr.LastOutput.Envelope.Decision != REJECTED {
 		t.Errorf("expected REJECTED decision on LastOutput, got %s", maxErr.LastOutput.Envelope.Decision)
@@ -765,5 +765,42 @@ func TestErrMaxCyclesKeepsReviewFindings(t *testing.T) {
 	}
 	if got := maxErr.LastOutput.Envelope.Feedback; got != "2. seed files not checked" {
 		t.Errorf("LastOutput feedback = %q, want the review's findings", got)
+	}
+}
+
+// A failing gate uses one of the gate's runs, so the last review rejection can
+// leave the gate at the limit. The fixer must not run then: its fix could never
+// be gated or reviewed, and the task would block with the work uncommitted.
+func TestMaxCyclesSkipsUnverifiableFix(t *testing.T) {
+	m := buildTestMission("unverifiable-fix", []Agent{
+		{ID: "gate"}, {ID: "review"}, {ID: "fixer"},
+	}, []Edge{
+		{From: "__input__", To: "gate"},
+		{From: "gate", OnApprove: "review", OnReject: "fixer"},
+		{From: "review", OnApprove: "__output__", OnReject: "fixer"},
+		{From: "fixer", To: "gate"},
+	}, 3)
+	gate := &recordingNode{script: []struct {
+		dec Decision
+		out string
+	}{
+		{REJECTED, "tsc failed"}, {APPROVED, "gates passed"},
+	}}
+	var fixes int64
+	fixer := &countingNode{count: &fixes, inner: &fakeNode{decision: APPROVED, output: "made changes"}}
+	g := buildTestGraph(t, m, map[string]Node{"gate": gate, "review": &feedbackNode{}, "fixer": fixer})
+	store := openTestStore(t)
+	seedSession(t, store, "unverifiable-fix-test", m.Name)
+
+	_, err := NewRunner().Run(context.Background(), m, g, "unverifiable-fix-test", store)
+	var maxErr *ErrMaxCycles
+	if !As(err, &maxErr) {
+		t.Fatalf("expected *ErrMaxCycles, got %T: %v", err, err)
+	}
+	if fixes != int64(len(gate.calls))-1 {
+		t.Errorf("fixer ran %d times for %d gate runs; every fix must be gated", fixes, len(gate.calls))
+	}
+	if got := maxErr.LastOutput.Envelope.Feedback; got != "2. seed files not checked" {
+		t.Errorf("LastOutput feedback = %q, want the last review's findings", got)
 	}
 }
