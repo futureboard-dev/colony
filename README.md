@@ -160,6 +160,12 @@ var (validated before each run).
   review lenses resolve via `Config.LensRole(lens)` → `<lens>_lens` →
   `lens_reviewer` → `llm`. This is how the review engine runs cheap per-lens
   analysis on Haiku while keeping synthesis on the default model.
+- **`gh_user`** — the GitHub account `colony loop` pushes and opens PRs as,
+  for repos whose access lives on a different account than your active one.
+  Log each account in once with `gh auth login` (`gh auth status` lists them);
+  the loop passes that account's token as `GH_TOKEN` to its own `git push` and
+  `gh pr create` only, so `gh`'s machine-wide active account is untouched.
+  Empty uses the active account.
 
 To use a non-Anthropic provider (billed per-token via crush + API key):
 
