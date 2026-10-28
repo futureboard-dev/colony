@@ -584,8 +584,9 @@ check, so build the epic branch yourself after the contracts part lands.
   source spec.
 - **Handoff notes.** Each agent writes `PART_NOTES.md` in its worktree: what it
   built, the exact names of its interfaces, and anything that differs from the
-  plan. The file is in `.git/info/exclude`, so it is never committed; when the
-  part lands it moves to `notes/<id>.md` for the parts that depend on it.
+  plan. The file is in `.git/info/exclude`, so it is never committed, but the
+  reviewer still sees it; when the part lands it moves to `notes/<id>.md` for
+  the parts that depend on it.
 - **Hand edits.** Edit part files before `task add --group`: it re-reads their
   frontmatter and rejects a cycle or a missing dependency before queueing
   anything. After queueing, brief edits still reach the agent, but dependency
@@ -600,7 +601,9 @@ check, so build the epic branch yourself after the contracts part lands.
 - **Landing** squashes a part to one commit on the epic tip with an atomic
   `git update-ref` compare-and-swap. If a sibling landed first, the part merges
   the new tip, re-runs its gates and tries again (3 attempts), then is marked
-  `blocked`. A merge conflict also marks it `blocked`.
+  `blocked`. Before merging, the part's work is committed; a merge conflict
+  goes to the fixer agent, and only conflicts it leaves unresolved mark the
+  part `blocked`.
 - **Parallel workers** prefix their output with `[<part-id>]`. If the loop is
   killed, parts left `running` are reset to `needs-fix` on the next start and
   continue in their existing worktrees.

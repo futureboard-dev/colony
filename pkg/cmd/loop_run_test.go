@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/futureboard-dev/colony/pkg/config"
 	"github.com/futureboard-dev/colony/pkg/storage"
 	"github.com/spf13/cobra"
 )
@@ -140,6 +141,117 @@ func TestIntegrateTask_NonGroupUnchanged(t *testing.T) {
 	if epicSHA != "" {
 		t.Errorf("expected no epicSHA for a non-group task, got %q", epicSHA)
 	}
+}
+
+// siblingEditSetup returns a group part's worktree whose base has shared.txt,
+// after a sibling part landed a change to its first line on the epic branch.
+func siblingEditSetup(t *testing.T) (partWT, epicBranch string, task *storage.Task, store *storage.SQLiteStore) {
+	t.Helper()
+	root, epicBranch := setupEpicRoot(t, "siblings")
+	runCmd(t, root, "git", "config", "core.excludesFile", filepath.Join(root, "no-global-excludes"))
+	if err := os.WriteFile(filepath.Join(root, ".git", "info", "exclude"), []byte(".colony/\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	epicWT := filepath.Join(t.TempDir(), "epic")
+	addWorktreeAt(t, root, epicWT, epicBranch, "", false)
+	writeFileForCmd(t, epicWT, "shared.txt", "one\ntwo\nthree\n")
+	runCmd(t, epicWT, "git", "add", "shared.txt")
+	runCmd(t, epicWT, "git", "commit", "-m", "epic: shared file", "--quiet")
+
+	partWT = filepath.Join(t.TempDir(), "part")
+	addWorktreeAt(t, root, partWT, "agent/part", epicBranch, true)
+
+	writeFileForCmd(t, epicWT, "shared.txt", "ONE from sibling\ntwo\nthree\n")
+	runCmd(t, epicWT, "git", "commit", "-am", "epic: sibling part", "--quiet")
+	runCmd(t, root, "git", "worktree", "remove", epicWT, "--force")
+
+	store, err := storage.Open(filepath.Join(t.TempDir(), "missions.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	task = &storage.Task{
+		ID: "t-part", Description: "part", State: "running",
+		GroupID: "g1", BaseBranch: epicBranch, GateOverrides: allGatesSkipped,
+		CreatedAt: time.Now(),
+	}
+	if err := store.InsertTask(*task); err != nil {
+		t.Fatal(err)
+	}
+	return partWT, epicBranch, task, store
+}
+
+func taskState(t *testing.T, store *storage.SQLiteStore, id string) storage.Task {
+	t.Helper()
+	tasks, err := store.QueryTasks(storage.TaskFilter{ID: id})
+	if err != nil || len(tasks) != 1 {
+		t.Fatalf("query task %s: %v (%d found)", id, err, len(tasks))
+	}
+	return tasks[0]
+}
+
+// The agent leaves its work uncommitted. Integration must commit it before
+// merging, or git refuses a merge that touches the same files.
+func TestIntegrateTask_UncommittedWorkInSiblingFile(t *testing.T) {
+	partWT, epicBranch, task, store := siblingEditSetup(t)
+	writeFileForCmd(t, partWT, "shared.txt", "one\ntwo\nTHREE from part\n")
+	writeFileForCmd(t, partWT, "SPEC.md", "colony's task spec")
+
+	if _, err := integrateTask(context.Background(), nil, partWT, "agent/part", epicBranch, "go", task, store, io.Discard); err != nil {
+		t.Fatalf("integrateTask: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(partWT, "shared.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(data), "ONE from sibling\ntwo\nTHREE from part\n"; got != want {
+		t.Errorf("shared.txt = %q, want both parts' changes %q", got, want)
+	}
+	if tracked := runCmdOut(t, partWT, "git", "ls-files", "SPEC.md"); tracked != "" {
+		t.Errorf("SPEC.md was committed")
+	}
+}
+
+func TestIntegrateTask_MergeConflict(t *testing.T) {
+	t.Run("unresolved conflict blocks with the conflicting files", func(t *testing.T) {
+		partWT, epicBranch, task, store := siblingEditSetup(t)
+		writeFileForCmd(t, partWT, "shared.txt", "ONE from part\ntwo\nthree\n")
+
+		if _, err := integrateTask(context.Background(), nil, partWT, "agent/part", epicBranch, "go", task, store, io.Discard); err == nil {
+			t.Fatal("expected a merge conflict error")
+		}
+		got := taskState(t, store, task.ID)
+		if got.State != "blocked" || !strings.Contains(got.LastFeedback, "shared.txt") {
+			t.Errorf("task = %q %q, want blocked naming shared.txt", got.State, got.LastFeedback)
+		}
+		if out := runCmdOut(t, partWT, "git", "status", "--porcelain"); out != "" {
+			t.Errorf("worktree left mid-merge: %q", out)
+		}
+	})
+
+	t.Run("fixer agent resolves the conflict", func(t *testing.T) {
+		partWT, epicBranch, task, store := siblingEditSetup(t)
+		writeFileForCmd(t, partWT, "shared.txt", "ONE from part\ntwo\nthree\n")
+		agent := filepath.Join(t.TempDir(), "agent")
+		if err := os.WriteFile(agent, []byte("#!/bin/sh\nprintf 'ONE from both\\ntwo\\nthree\\n' > shared.txt\n"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		cfg := &config.Config{LLM: config.LLMConfig{Provider: "anthropic", CLI: agent}}
+
+		if _, err := integrateTask(context.Background(), cfg, partWT, "agent/part", epicBranch, "go", task, store, io.Discard); err != nil {
+			t.Fatalf("integrateTask: %v", err)
+		}
+		if got := runCmdOut(t, partWT, "git", "show", "HEAD:shared.txt"); got != "ONE from both\ntwo\nthree" {
+			t.Errorf("committed shared.txt = %q", got)
+		}
+		if parents := runCmdOut(t, partWT, "git", "rev-list", "--parents", "-n1", "HEAD"); len(strings.Fields(parents)) != 3 {
+			t.Errorf("HEAD is not a merge commit: %q", parents)
+		}
+		if err := exec.Command("git", "-C", partWT, "merge-base", "--is-ancestor", epicBranch, "HEAD").Run(); err != nil {
+			t.Errorf("epic branch not merged into HEAD: %v", err)
+		}
+	})
 }
 
 func TestLandOnEpic(t *testing.T) {
