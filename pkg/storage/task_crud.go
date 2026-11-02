@@ -20,17 +20,18 @@ func (s *SQLiteStore) InsertTask(t Task) error {
 	}
 	_, err := s.db.Exec(
 		`INSERT INTO tasks
-		 (id, description, spec_path, base_branch, gate_overrides, lang, state, cycle_count, last_feedback, branch, pr_url, group_id, depends_on, created_at, updated_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 (id, description, spec_path, base_branch, gate_overrides, lang, state, cycle_count, last_feedback, branch, pr_url, group_id, depends_on, block_tool, block_hint, block_attempts, created_at, updated_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		t.ID, t.Description, t.SpecPath, t.BaseBranch, t.GateOverrides, t.Lang,
 		t.State, t.CycleCount, t.LastFeedback, t.Branch, t.PRURL, t.GroupID, t.DependsOn,
+		t.BlockTool, t.BlockHint, t.BlockAttempts,
 		t.CreatedAt.UTC().Format(time.RFC3339),
 		nil,
 	)
 	return err
 }
 
-const taskColumns = `id, description, spec_path, base_branch, gate_overrides, lang, state, cycle_count, last_feedback, review_feedback, branch, pr_url, group_id, depends_on, created_at, updated_at`
+const taskColumns = `id, description, spec_path, base_branch, gate_overrides, lang, state, cycle_count, last_feedback, review_feedback, branch, pr_url, group_id, depends_on, block_tool, block_hint, block_attempts, created_at, updated_at`
 
 // scanTask reads one task row from a rows-like cursor whose columns match taskColumns.
 func scanTask(scan func(dest ...any) error) (Task, error) {
@@ -40,7 +41,7 @@ func scanTask(scan func(dest ...any) error) (Task, error) {
 	err := scan(
 		&t.ID, &t.Description, &t.SpecPath, &t.BaseBranch, &t.GateOverrides,
 		&t.Lang, &t.State, &t.CycleCount, &t.LastFeedback, &t.ReviewFeedback, &t.Branch, &t.PRURL,
-		&t.GroupID, &t.DependsOn, &startedStr, &updatedStr,
+		&t.GroupID, &t.DependsOn, &t.BlockTool, &t.BlockHint, &t.BlockAttempts, &startedStr, &updatedStr,
 	)
 	if err != nil {
 		return Task{}, err
@@ -302,6 +303,44 @@ func (s *SQLiteStore) UpdateTaskBranch(id, branch string) error {
 		branch, time.Now().UTC().Format(time.RFC3339), id,
 	)
 	return err
+}
+
+// UpdateTaskBlockTool records which agent tool (claude, codex, crush) was
+// running when the task blocked, so a fix flow can preselect it.
+func (s *SQLiteStore) UpdateTaskBlockTool(id, tool string) error {
+	_, err := s.db.Exec(
+		`UPDATE tasks SET block_tool=?, updated_at=? WHERE id=?`,
+		tool, time.Now().UTC().Format(time.RFC3339), id,
+	)
+	return err
+}
+
+// UpdateTaskBlockHint records the user's one-line hint for the task's
+// current block ("tell it what to do"), overwriting any earlier hint.
+func (s *SQLiteStore) UpdateTaskBlockHint(id, hint string) error {
+	_, err := s.db.Exec(
+		`UPDATE tasks SET block_hint=?, updated_at=? WHERE id=?`,
+		hint, time.Now().UTC().Format(time.RFC3339), id,
+	)
+	return err
+}
+
+// IncrementBlockAttempts increments the task's automatic-triage attempt
+// count for its current block and returns the new count, so a triager can
+// enforce at most one attempt per block.
+func (s *SQLiteStore) IncrementBlockAttempts(id string) (int, error) {
+	_, err := s.db.Exec(
+		`UPDATE tasks SET block_attempts=block_attempts+1, updated_at=? WHERE id=?`,
+		time.Now().UTC().Format(time.RFC3339), id,
+	)
+	if err != nil {
+		return 0, err
+	}
+	var attempts int
+	if err := s.db.QueryRow(`SELECT block_attempts FROM tasks WHERE id=?`, id).Scan(&attempts); err != nil {
+		return 0, err
+	}
+	return attempts, nil
 }
 
 // UpdateTaskLang records the language used for a task's quality gates so a
