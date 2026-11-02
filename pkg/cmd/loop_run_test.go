@@ -547,9 +547,16 @@ func TestGroupCompletion(t *testing.T) {
 	})
 
 	t.Run("group marked done with pr_url", func(t *testing.T) {
-		if exec.Command("gh", "auth", "status").Run() != nil {
-			t.Skip("gh is not authenticated in this environment; the push/PR path can't be exercised end to end")
+		// origin is a local path, which real gh rejects even when authenticated,
+		// and a real remote would open a real PR — so gh is stubbed here.
+		const wantURL = "https://github.com/example/repo/pull/1"
+		binDir := t.TempDir()
+		stub := "#!/bin/sh\necho " + wantURL + "\n"
+		if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(stub), 0o755); err != nil {
+			t.Fatal(err)
 		}
+		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
 		root, _, groupID, store := setup(t)
 		defer store.Close()
 
@@ -560,8 +567,8 @@ func TestGroupCompletion(t *testing.T) {
 		if err != nil || len(groups) != 1 {
 			t.Fatalf("query group: %v", err)
 		}
-		if groups[0].State != "done" || groups[0].PRURL == "" {
-			t.Errorf("expected group done with pr_url set, got %+v", groups[0])
+		if groups[0].State != "done" || groups[0].PRURL != wantURL {
+			t.Errorf("expected group done with pr_url %s, got %+v", wantURL, groups[0])
 		}
 	})
 
