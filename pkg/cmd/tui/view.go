@@ -131,11 +131,11 @@ var statusHints = map[View][2]string{
 	},
 	ViewQueue: {
 		"[q]uit  [Enter] detail  [r]etry  [x]delete  [b]lock  [m]ark done",
-		"[e]dit spec  [y] copy id  [a]dd  [c]ommand  [/]search  [f]ilter  [?]help",
+		"[f]ix blocked  [e]dit spec  [y] copy id  [a]dd  [c]ommand  [/]search  [?]help",
 	},
 	ViewTaskDetail: {
 		"[q]uit  [Esc] back  [r]etry  [b]lock  [m]ark done  [x]delete",
-		"[y] copy id  [c]ommand  [1-5] views  [?]help",
+		"[f]ix blocked  [y] copy id  [c]ommand  [1-5] views  [?]help",
 	},
 	ViewSessions: {
 		"[q]uit  [1-5] views  [t]ype  [S]tatus  [f]ilter sort  [T] task scope",
@@ -193,6 +193,8 @@ func (m *Model) renderModal(w, h int) string {
 		return m.renderHelp(w, h)
 	case ModalPalette:
 		return m.renderPaletteModal(w, h)
+	case ModalBlockFlow:
+		return m.renderBlockFlowModal(w, h)
 	}
 	return ""
 }
@@ -236,6 +238,8 @@ func (m *Model) toastBox(style lipgloss.Style, text string, w int) string {
 // storageTaskRef is a lightweight view-bound copy of a task.
 type storageTaskRef struct {
 	ID, Description, State, SpecPath, BaseBranch, Branch, Lang, LastFeedback string
+	BlockTool, BlockHint                                                     string
+	BlockAttempts                                                            int
 	CycleCount                                                               int
 }
 
@@ -248,7 +252,8 @@ func (m *Model) selectedTask() (storageTaskRef, bool) {
 	t := tasks[m.cursor]
 	return storageTaskRef{ID: t.ID, Description: t.Description, State: t.State,
 		SpecPath: t.SpecPath, BaseBranch: t.BaseBranch, Branch: t.Branch,
-		CycleCount: t.CycleCount, Lang: t.Lang, LastFeedback: t.LastFeedback}, true
+		CycleCount: t.CycleCount, Lang: t.Lang, LastFeedback: t.LastFeedback,
+		BlockTool: t.BlockTool, BlockHint: t.BlockHint, BlockAttempts: t.BlockAttempts}, true
 }
 
 // loopState resolves the loop label and PID, tolerating an unset colony dir.
