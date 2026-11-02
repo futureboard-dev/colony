@@ -15,10 +15,26 @@ const palettePickerRows = 14
 // renderPaletteModal renders either the command chooser or the flag form for
 // the selected command.
 func (m *Model) renderPaletteModal(frameW, frameH int) string {
+	if m.palette.fixPicker != nil {
+		return m.renderPaletteFixPicker(frameW)
+	}
 	if m.palette.picking {
 		return m.renderPalettePicker(frameW)
 	}
 	return m.renderPaletteForm(frameW)
+}
+
+// renderPaletteFixPicker renders the shared tool/model picker shown before a
+// command with a Flow actually runs.
+func (m *Model) renderPaletteFixPicker(frameW int) string {
+	w := modalWidth(frameW, 66)
+	spec := paletteCommands[m.palette.spec]
+
+	var b strings.Builder
+	b.WriteString(m.palette.fixPicker.view(m.theme))
+	b.WriteString("\n")
+	b.WriteString(m.styleHints("[Enter] confirm & run  [m] change  [Esc] use config"))
+	return m.theme.modalBox("Choose Tool: colony "+spec.Name, b.String(), w)
 }
 
 // renderPalettePicker lists the runnable commands.

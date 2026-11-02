@@ -7,6 +7,9 @@ import (
 // handlePaletteKey routes keys for both palette phases: the command chooser and
 // the flag form.
 func (m *Model) handlePaletteKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.palette.fixPicker != nil {
+		return m.handlePaletteFixPickerKey(key)
+	}
 	if m.palette.picking {
 		return m.handlePalettePickerKey(key)
 	}
@@ -50,6 +53,14 @@ func (m *Model) handlePaletteFormKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.palette = paletteState{picking: true, cursor: p.spec}
 		return m, nil
 	case "enter":
+		if spec.Flow != "" {
+			if _, err := p.buildArgv(spec); err != nil {
+				p.err = err.Error()
+				return m, nil
+			}
+			p.err = ""
+			return m, m.openFixPicker(spec.Flow)
+		}
 		return m, m.runPaletteCommand()
 	case "tab", "down":
 		if count > 0 {
