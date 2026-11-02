@@ -1,0 +1,127 @@
+package fix
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os/exec"
+	"strings"
+
+	"github.com/futureboard-dev/colony/pkg/storage"
+)
+
+// storeTriager implements Triager by giving a fresh fix.Session one attempt
+// to fix a blocked task before the user is asked (see Phase 4: Automatic
+// triage). It uses 04's block_attempts counter to hard-cap itself at one
+// attempt per block, and tells a fix apart from a real decision by checking
+// whether the session left any changes behind in the task's worktree.
+type storeTriager struct {
+	open func() (storage.Store, error)
+}
+
+func init() {
+	SetTriager(storeTriager{open: defaultOpenStore})
+}
+
+// Diagnose implements Triager.
+func (t storeTriager) Diagnose(ctx context.Context, req Request) (Diagnosis, error) {
+	store, err := t.open()
+	if err != nil {
+		return Diagnosis{}, fmt.Errorf("triage: open store: %w", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	tasks, err := store.QueryTasks(storage.TaskFilter{ID: req.TaskID})
+	if err != nil {
+		return Diagnosis{}, fmt.Errorf("triage: query task %s: %w", req.TaskID, err)
+	}
+	if len(tasks) == 0 {
+		return Diagnosis{}, fmt.Errorf("triage: task %s not found", req.TaskID)
+	}
+	task := tasks[0]
+
+	// Already had its one attempt for this block: go straight to the user
+	// with an explanation, never open a second session.
+	if task.BlockAttempts > 0 {
+		return explainOnly(ctx, req)
+	}
+
+	if _, err := store.IncrementBlockAttempts(req.TaskID); err != nil {
+		return Diagnosis{}, fmt.Errorf("triage: increment attempts: %w", err)
+	}
+
+	worktree := resolveWorktree(req.Worktree)
+	before := worktreeStatus(worktree)
+
+	if err := OpenSession(ctx, req); err != nil {
+		return Diagnosis{}, fmt.Errorf("triage: open session: %w", err)
+	}
+
+	after := worktreeStatus(worktree)
+	if after != before {
+		change := summarizeChange(after)
+		if change == "" {
+			change = "changes made in " + worktree
+		}
+		return Diagnosis{Fixed: true, Change: change}, nil
+	}
+
+	// No changes left behind: this is a real decision, not a simple fix.
+	// Return the diagnosis without retrying.
+	return explainOnly(ctx, req)
+}
+
+// explainOnly builds a Diagnosis carrying only an Explanation (Fixed left
+// false), for blocks the fresh session didn't change anything for. It uses
+// the registered Explainer (03) when one is available, but 05 doesn't
+// depend on 03 being wired up: if none is configured, it falls back to the
+// raw block reason as the cause so a diagnosis is always attached.
+func explainOnly(ctx context.Context, req Request) (Diagnosis, error) {
+	explanation, err := Explain(ctx, req)
+	if err != nil {
+		if !errors.Is(err, ErrNotConfigured) {
+			return Diagnosis{}, fmt.Errorf("triage: explain: %w", err)
+		}
+		explanation = Explanation{Cause: req.Reason}
+	}
+	return Diagnosis{Explanation: explanation}, nil
+}
+
+// worktreeStatus returns `git status --porcelain` for worktree, or "" if it
+// can't be read (e.g. not a git repo yet) so a missing worktree never looks
+// like a fix.
+func worktreeStatus(worktree string) string {
+	cmd := exec.Command("git", "status", "--porcelain")
+	cmd.Dir = worktree
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return string(out)
+}
+
+// summarizeChange turns `git status --porcelain` output into a short,
+// human-readable list of what changed, for Diagnosis.Change.
+func summarizeChange(status string) string {
+	var parts []string
+	for line := range strings.SplitSeq(strings.TrimRight(status, "\n"), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		code, path := fields[0], strings.Join(fields[1:], " ")
+		switch {
+		case strings.Contains(code, "D"):
+			parts = append(parts, "deleted "+path)
+		case strings.Contains(code, "A") || code == "??":
+			parts = append(parts, "added "+path)
+		default:
+			parts = append(parts, "modified "+path)
+		}
+	}
+	return strings.Join(parts, ", ")
+}
