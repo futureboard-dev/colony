@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/futureboard-dev/colony/pkg/config"
+	"github.com/futureboard-dev/colony/pkg/fix"
 	"github.com/futureboard-dev/colony/pkg/llm"
 	"github.com/futureboard-dev/colony/pkg/mission/blueprint"
 	"github.com/futureboard-dev/colony/pkg/mission/graph"
@@ -382,14 +383,6 @@ func runLoop(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("reset running tasks: %w", err)
 	}
 
-	if loopRetryBlock {
-		n, rqErr := requeueBlocked(store)
-		if rqErr != nil {
-			return fmt.Errorf("retry-blocked: %w", rqErr)
-		}
-		fmt.Fprintf(os.Stderr, "%sloop: re-queued %d blocked task(s)%s\n", ansiBlue, n, ansiReset)
-	}
-
 	maxPasses := loopMaxPasses
 	idleLimit := loopIdleLimit
 	if idleLimit <= 0 {
@@ -398,6 +391,14 @@ func runLoop(cmd *cobra.Command, args []string) error {
 
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	if loopRetryBlock {
+		n, rqErr := requeueBlocked(ctx, store)
+		if rqErr != nil {
+			return fmt.Errorf("retry-blocked: %w", rqErr)
+		}
+		fmt.Fprintf(os.Stderr, "%sloop: re-queued %d blocked task(s)%s\n", ansiBlue, n, ansiReset)
+	}
 
 	if resolveParallelCount(loopParallel) == 1 {
 		return runLoopSequential(ctx, cfg, root, store, maxPasses, idleLimit)
@@ -771,11 +772,11 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 
 		if _, ok := runErr.(*graph.ErrStuck); ok {
 			feedback := extractFeedback(out, runErr)
-			_ = store.UpdateTaskState(task.ID, "blocked", feedback)
-			fmt.Fprintf(logw, "%sloop: task %q stuck (identical failure repeated), blocked%s\n", ansiRed, task.ID, ansiReset)
+			fmt.Fprintf(logw, "%sloop: task %q stuck (identical failure repeated)%s\n", ansiRed, task.ID, ansiReset)
 			if nodes.IsGateFailure(feedback) {
 				fmt.Fprintf(logw, "%sloop: the fixer could not change this gate failure — check the gate's command and environment (shown under \"command:\" in the feedback)%s\n", ansiYellow, ansiReset)
 			}
+			_ = blockTask(ctx, cfg, store, task, graph.RoleFixer, feedback, workdir, logw)
 			return nil
 		}
 
@@ -788,8 +789,8 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 
 		if _, ok := runErr.(*graph.ErrMaxCycles); ok {
 			feedback := extractFeedback(out, runErr)
-			_ = store.UpdateTaskState(task.ID, "blocked", feedback)
-			fmt.Fprintf(logw, "%sloop: task %q hit max-cycles, blocked (use --retry-blocked to resume)%s\n", ansiRed, task.ID, ansiReset)
+			fmt.Fprintf(logw, "%sloop: task %q hit max-cycles (use --retry-blocked to resume)%s\n", ansiRed, task.ID, ansiReset)
+			_ = blockTask(ctx, cfg, store, task, graph.RoleFixer, feedback, workdir, logw)
 			return nil
 		}
 
@@ -895,8 +896,8 @@ func integrateTask(ctx context.Context, cfg *config.Config, workdir, branch, bas
 	}
 	if gateErr != nil {
 		feedback := fmt.Sprintf("integration gate failed after merge with %s:\n%s", baseBranch, gateOutput)
-		_ = store.UpdateTaskState(task.ID, "blocked", feedback)
-		fmt.Fprintf(out, "%sloop: task %q blocked — integration gate failed after merge%s\n", ansiRed, task.ID, ansiReset)
+		fmt.Fprintf(out, "%sloop: task %q — integration gate failed after merge%s\n", ansiRed, task.ID, ansiReset)
+		_ = blockTask(ctx, cfg, store, task, graph.RoleFixer, feedback, workdir, out)
 		return "", fmt.Errorf("integration gate after merge: %w\n%s", gateErr, gateOutput)
 	}
 
@@ -911,8 +912,8 @@ func integrateTask(ctx context.Context, cfg *config.Config, workdir, branch, bas
 // only conflicts it leaves unresolved block the task.
 func mergeAndResolve(ctx context.Context, cfg *config.Config, workdir, ref, name, lang string, task *storage.Task, store *storage.SQLiteStore, out io.Writer) error {
 	block := func(feedback string) error {
-		_ = store.UpdateTaskState(task.ID, "blocked", feedback)
 		fmt.Fprintf(out, "%sloop: task %q blocked — %s%s\n", ansiRed, task.ID, feedback, ansiReset)
+		_ = blockTask(ctx, cfg, store, task, graph.RoleFixer, feedback, workdir, out)
 		return errors.New(feedback)
 	}
 
@@ -1311,7 +1312,8 @@ func escalateTask(ctx context.Context, cfg *config.Config, root string, store *s
 
 	if runErr != nil {
 		fmt.Fprintf(os.Stderr, "%sescalation failed for task %q, marking blocked%s\n", ansiRed, task.ID, ansiReset)
-		return markTaskBlocked(store, task.ID, extractFeedback(nil, runErr))
+		workdir := module.WorktreePath(module.ProjectName(root), task.Branch)
+		return blockTask(ctx, cfg, store, task, graph.RoleEscalation, extractFeedback(nil, runErr), workdir, os.Stderr)
 	}
 
 	_ = store.UpdateTaskState(task.ID, "done", "")
@@ -1324,14 +1326,91 @@ func markTaskBlocked(store *storage.SQLiteStore, taskID, reason string) error {
 	return store.UpdateTaskState(taskID, "blocked", reason)
 }
 
-func requeueBlocked(store *storage.SQLiteStore) (int, error) {
+// toolFromLLMConfig maps a role's resolved LLM config to the agent tool that
+// runs it, mirroring config.LLMConfig.CLI's own derivation (CLI pinned, else
+// anthropic → claude, everything else → crush) so the recorded block_tool
+// matches what the fix picker would preselect.
+func toolFromLLMConfig(c config.LLMConfig) fix.Tool {
+	switch c.CLI {
+	case string(fix.ToolClaude):
+		return fix.ToolClaude
+	case string(fix.ToolCodex):
+		return fix.ToolCodex
+	case string(fix.ToolCrush):
+		return fix.ToolCrush
+	}
+	if c.Provider == "anthropic" {
+		return fix.ToolClaude
+	}
+	return fix.ToolCrush
+}
+
+// blockTask records which tool (resolved from role, the agent role that was
+// running when the task got stuck) was running, then — per Rollout Phase 4 —
+// gives any registered Triager its one allowed attempt to diagnose, and
+// possibly fix, the block before it reaches the user. The loop never prompts
+// here: with no Triager registered, fix.Diagnose returns fix.ErrNotConfigured
+// and the task is simply blocked with reason, exactly as before this part.
+// workdir may be "" when the task blocked before its worktree existed, in
+// which case a triager has no worktree to act in.
+func blockTask(ctx context.Context, cfg *config.Config, store *storage.SQLiteStore, task *storage.Task, role, reason, workdir string, logw io.Writer) error {
+	var tool fix.Tool
+	if cfg != nil {
+		tool = toolFromLLMConfig(cfg.CommandRole("loop", role))
+		if err := store.UpdateTaskBlockTool(task.ID, string(tool)); err != nil {
+			fmt.Fprintf(logw, "%sloop: record block tool: %v%s\n", ansiYellow, err, ansiReset)
+		}
+	}
+
+	req := fix.Request{
+		TaskID:      task.ID,
+		Description: task.Description,
+		Reason:      reason,
+		Worktree:    workdir,
+		Choice:      fix.Choice{Tool: tool},
+	}
+	diag, diagErr := fix.Diagnose(ctx, req)
+	switch {
+	case diagErr == nil:
+		if _, aerr := store.IncrementBlockAttempts(task.ID); aerr != nil {
+			fmt.Fprintf(logw, "%sloop: record triage attempt: %v%s\n", ansiYellow, aerr, ansiReset)
+		}
+		if diag.Fixed {
+			fmt.Fprintf(logw, "%sloop: task %q auto-triaged: %s%s\n", ansiGreen, task.ID, diag.Change, ansiReset)
+			return store.UpdateTaskState(task.ID, "needs-fix", reason)
+		}
+		if diag.Explanation.Cause != "" {
+			reason = strings.TrimSpace(reason + "\n\nLikely cause: " + diag.Explanation.Cause)
+			if diag.Explanation.NextStep != "" {
+				reason += "\nNext step: " + diag.Explanation.NextStep
+			}
+		}
+	case !errors.Is(diagErr, fix.ErrNotConfigured):
+		fmt.Fprintf(logw, "%sloop: auto-triage failed for task %q: %v%s\n", ansiYellow, task.ID, diagErr, ansiReset)
+	}
+
+	fmt.Fprintf(logw, "%sloop: task %q blocked (use --retry-blocked to resume)%s\n", ansiRed, task.ID, ansiReset)
+	return store.UpdateTaskState(task.ID, "blocked", reason)
+}
+
+// requeueBlocked re-queues every blocked task via fix.Retry, which keeps the
+// block reason (and any hint already recorded on the task, e.g. from "tell it
+// what to do") and never touches the task's branch, so the loop resumes each
+// one in its existing worktree.
+func requeueBlocked(ctx context.Context, store *storage.SQLiteStore) (int, error) {
 	blocked, err := store.QueryTasks(storage.TaskFilter{States: []string{"blocked"}})
 	if err != nil {
 		return 0, err
 	}
 	for _, t := range blocked {
-		if err := store.UpdateTaskState(t.ID, "needs-fix", t.LastFeedback); err != nil {
-			return 0, err
+		req := fix.Request{
+			TaskID:      t.ID,
+			Description: t.Description,
+			Reason:      t.LastFeedback,
+			Hint:        t.BlockHint,
+		}
+		if err := fix.Retry(ctx, req); err != nil {
+			return 0, fmt.Errorf("retry task %q: %w", t.ID, err)
 		}
 	}
 	return len(blocked), nil
