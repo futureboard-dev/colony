@@ -109,6 +109,43 @@ func (s *stubStore) UpdateTaskState(id, state, feedback string) error {
 	return nil
 }
 
+func (s *stubStore) UpdateTaskBlockTool(id, tool string) error {
+	if s.err != nil {
+		return s.err
+	}
+	for i := range s.tasks {
+		if s.tasks[i].ID == id {
+			s.tasks[i].BlockTool = tool
+		}
+	}
+	return nil
+}
+
+func (s *stubStore) UpdateTaskBlockHint(id, hint string) error {
+	if s.err != nil {
+		return s.err
+	}
+	for i := range s.tasks {
+		if s.tasks[i].ID == id {
+			s.tasks[i].BlockHint = hint
+		}
+	}
+	return nil
+}
+
+func (s *stubStore) IncrementBlockAttempts(id string) (int, error) {
+	if s.err != nil {
+		return 0, s.err
+	}
+	for i := range s.tasks {
+		if s.tasks[i].ID == id {
+			s.tasks[i].BlockAttempts++
+			return s.tasks[i].BlockAttempts, nil
+		}
+	}
+	return 0, nil
+}
+
 func (s *stubStore) DeleteTask(id string) error {
 	if s.err != nil {
 		return s.err

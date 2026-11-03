@@ -282,7 +282,9 @@ func TestWithPriorFeedback(t *testing.T) {
 // hand the findings to the next review and the builder, and drop them only
 // once a review approves.
 func TestRetryKeepsReviewFindingsAcrossGateFailure(t *testing.T) {
-	store, err := storage.Open(filepath.Join(t.TempDir(), "missions.db"))
+	dbPath := filepath.Join(t.TempDir(), "missions.db")
+	t.Setenv("COLONY_DB_PATH", dbPath) // requeueBlocked's fix.Retry opens the default DB path
+	store, err := storage.Open(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,7 +306,7 @@ func TestRetryKeepsReviewFindingsAcrossGateFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := requeueBlocked(store); err != nil {
+	if _, err := requeueBlocked(context.Background(), store); err != nil {
 		t.Fatal(err)
 	}
 	task, err := pickNextTask(context.Background(), store)

@@ -42,9 +42,12 @@ func (c LLMConfig) KeyEnvName() string {
 // ValidateKey checks that the required API key environment variable is set.
 // Anthropic is skipped — the claude CLI manages its own auth and does not need
 // ANTHROPIC_API_KEY; forwarding a key from env would be rejected by the CLI.
-// Codex is skipped for the same reason: `codex login` owns its auth.
+// Codex is skipped for the same reason: `codex login` owns its auth. CLI is
+// checked directly (not just Provider) so a config that names claude or codex
+// as the CLI but leaves Provider unset — as the fix picker's resolved Choice
+// does — still skips the key check instead of failing on an empty provider.
 func (c LLMConfig) ValidateKey() error {
-	if c.Provider == "anthropic" || c.CLI == "codex" {
+	if c.Provider == "anthropic" || c.CLI == "codex" || c.CLI == "claude" {
 		return nil
 	}
 	key := c.KeyEnvName()
@@ -75,6 +78,17 @@ type Config struct {
 	Commands     map[string]ScopeConfig `json:"commands,omitempty"`
 	Gates        GateCommands           `json:"gates,omitempty"`
 	GHUser       string                 `json:"gh_user,omitempty"`
+	Fix          FixConfig              `json:"fix,omitempty"`
+}
+
+// FixConfig holds optional model overrides for the blocked-task recovery
+// picker (see pkg/fix). Colony does not maintain its own model list, so these
+// are just names the user already uses with their own tool — Models is keyed
+// by tool name (e.g. "claude"), Flow by flow name (e.g. "loop"). A Flow entry
+// takes precedence over a Models entry for the same request.
+type FixConfig struct {
+	Models map[string]string `json:"models,omitempty"`
+	Flow   map[string]string `json:"flow,omitempty"`
 }
 
 // GateCommands replaces individual quality-gate commands. A non-empty field

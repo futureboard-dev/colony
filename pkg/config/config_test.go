@@ -344,6 +344,24 @@ func TestValidateKeyMissingEnvVar(t *testing.T) {
 	}
 }
 
+// A config that names claude as the CLI but no provider (as the fix picker's
+// resolved Choice does) must not fail the API key check.
+func TestValidateKeyCLIClaudeNoProvider(t *testing.T) {
+	c := LLMConfig{CLI: "claude"}
+	if err := c.ValidateKey(); err != nil {
+		t.Errorf("claude CLI manages its own auth, expected no error: %v", err)
+	}
+}
+
+// CLI codex with no provider set must also skip the key check, for the same
+// reason as the Provider=="openai" case already covered above.
+func TestValidateKeyCLICodexNoProvider(t *testing.T) {
+	c := LLMConfig{CLI: "codex"}
+	if err := c.ValidateKey(); err != nil {
+		t.Errorf("codex CLI manages its own auth, expected no error: %v", err)
+	}
+}
+
 func TestValidateKeyUnknownProvider(t *testing.T) {
 	c := LLMConfig{Provider: "bogus-provider"}
 	err := c.ValidateKey()
