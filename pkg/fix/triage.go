@@ -4,23 +4,45 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
 	"strings"
+	"time"
 
+	"github.com/futureboard-dev/colony/pkg/llm"
 	"github.com/futureboard-dev/colony/pkg/storage"
 )
 
-// storeTriager implements Triager by giving a fresh fix.Session one attempt
+// storeTriager implements Triager by giving a fresh headless agent one attempt
 // to fix a blocked task before the user is asked (see Phase 4: Automatic
-// triage). It uses 04's block_attempts counter to hard-cap itself at one
-// attempt per block, and tells a fix apart from a real decision by checking
-// whether the session left any changes behind in the task's worktree.
+// triage). It never takes over the terminal: the user chooses whether to open
+// an interactive session only after this attempt. It uses 04's block_attempts
+// counter to hard-cap itself at one attempt per block, and tells a fix apart
+// from a real decision by checking whether the agent changed the task's
+// worktree.
 type storeTriager struct {
 	open func() (storage.Store, error)
 }
 
 func init() {
 	SetTriager(storeTriager{open: defaultOpenStore})
+}
+
+// triageTimeout bounds the unattended attempt so a hung agent can't hold a
+// task, or the blocked prompt waiting on it, forever.
+const triageTimeout = 10 * time.Minute
+
+// triageInstructions tells the unattended agent how its result is judged: only
+// uncommitted worktree changes count as a fix.
+const triageInstructions = "\nThis is an unattended attempt and nobody can answer questions. " +
+	"If the fix is simple, make it and leave it uncommitted. " +
+	"If it needs a decision from the user, change nothing.\n"
+
+// runTriageAgent does the actual headless run. It is a package-level var so
+// tests can observe the attempt without shelling out to a real agent CLI.
+var runTriageAgent = func(ctx context.Context, ex *llm.Executor, workdir, prompt string, out io.Writer) error {
+	return ex.RunAgent(ctx, workdir, prompt, out)
 }
 
 // Diagnose implements Triager.
@@ -46,20 +68,39 @@ func (t storeTriager) Diagnose(ctx context.Context, req Request) (Diagnosis, err
 		return explainOnly(ctx, req)
 	}
 
+	// An unattended agent may edit files, so it only ever runs in the task's own
+	// worktree, never in the project root an interactive session falls back to.
+	worktree := req.Worktree
+	if info, err := os.Stat(worktree); worktree == "" || err != nil || !info.IsDir() {
+		return explainOnly(ctx, req)
+	}
+
+	choice, err := picker{}.ResolveChoice(ctx, req)
+	if err != nil {
+		return Diagnosis{}, fmt.Errorf("triage: resolve tool: %w", err)
+	}
+
 	if _, err := store.IncrementBlockAttempts(req.TaskID); err != nil {
 		return Diagnosis{}, fmt.Errorf("triage: increment attempts: %w", err)
 	}
 
-	worktree := resolveWorktree(req.Worktree)
-	before := worktreeStatus(worktree)
+	out := req.Out
+	if out == nil {
+		out = io.Discard
+	}
+	fmt.Fprintf(out, "fix: one unattended attempt with %s · %s\n", choice.Tool, modelLabel(choice.Model))
 
-	if err := OpenSession(ctx, req); err != nil {
-		return Diagnosis{}, fmt.Errorf("triage: open session: %w", err)
+	before := worktreeSnapshot(worktree)
+
+	ctx, cancel := context.WithTimeout(ctx, triageTimeout)
+	defer cancel()
+	prompt := buildFixPrompt(req, worktree) + triageInstructions
+	if err := runTriageAgent(ctx, llm.New(llmConfigForChoice(choice)), worktree, prompt, out); err != nil {
+		return Diagnosis{}, fmt.Errorf("triage: run agent: %w", err)
 	}
 
-	after := worktreeStatus(worktree)
-	if after != before {
-		change := summarizeChange(after)
+	if worktreeSnapshot(worktree) != before {
+		change := summarizeChange(worktreeStatus(worktree))
 		if change == "" {
 			change = "changes made in " + worktree
 		}
@@ -69,6 +110,16 @@ func (t storeTriager) Diagnose(ctx context.Context, req Request) (Diagnosis, err
 	// No changes left behind: this is a real decision, not a simple fix.
 	// Return the diagnosis without retrying.
 	return explainOnly(ctx, req)
+}
+
+// worktreeSnapshot captures status plus tracked content. A blocked task's
+// worktree is usually already dirty, so status alone misses a fix to a file
+// that was already modified.
+func worktreeSnapshot(worktree string) string {
+	cmd := exec.Command("git", "diff", "HEAD")
+	cmd.Dir = worktree
+	diff, _ := cmd.Output() // no HEAD yet just leaves the status to compare
+	return worktreeStatus(worktree) + string(diff)
 }
 
 // explainOnly builds a Diagnosis carrying only an Explanation (Fixed left

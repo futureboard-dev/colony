@@ -156,7 +156,9 @@ func (e *Executor) RunInteractive(workdir, initialPrompt string) error {
 func (e *Executor) interactiveArgs(workdir, initialPrompt string) []string {
 	switch e.CLI() {
 	case "claude":
-		args := []string{"--add-dir", workdir, initialPrompt}
+		// The prompt must come first: --add-dir is variadic and would swallow it
+		// as another directory, opening the session with no first message.
+		args := []string{initialPrompt, "--add-dir", workdir}
 		if e.cfg.Model != "" {
 			args = append(args, "--model", e.cfg.Model)
 		}

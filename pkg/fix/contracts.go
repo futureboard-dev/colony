@@ -4,7 +4,10 @@
 // registry.go; this file only declares the surface they implement.
 package fix
 
-import "context"
+import (
+	"context"
+	"io"
+)
 
 // Tool identifies one of the agent tools Colony can drive.
 type Tool string
@@ -32,6 +35,8 @@ type Request struct {
 	Hint        string
 	Flow        string
 	Choice      Choice
+	// Out receives the output of an unattended triage attempt. Nil discards it.
+	Out io.Writer
 }
 
 // Explanation is a human-readable account of why a task blocked and what

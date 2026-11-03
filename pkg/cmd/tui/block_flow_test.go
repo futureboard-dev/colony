@@ -66,6 +66,41 @@ func swapFix(t *testing.T) {
 	}
 }
 
+func TestBlockFlowDiagnosingEscShowsOptions(t *testing.T) {
+	swapFix(t)
+	m := newTestModel(t, ViewQueue, sampleStore())
+	focusTask(t, m, "t-2", "blocked")
+
+	var attemptCtx context.Context
+	fixDiagnose = func(ctx context.Context, _ fix.Request) (fix.Diagnosis, error) {
+		attemptCtx = ctx
+		return fix.Diagnosis{Fixed: true, Change: "edited a file"}, nil
+	}
+
+	out, cmd := m.Update(key("f"))
+	m = out.(*Model)
+	if m.blockFlow == nil || m.blockFlow.stage != blockStageDiagnosing {
+		t.Fatalf("expected the diagnosing stage, got %+v", m.blockFlow)
+	}
+
+	out, _ = m.Update(key("esc"))
+	m = out.(*Model)
+	if m.modal != ModalBlockFlow || m.blockFlow.stage != blockStageAction {
+		t.Fatalf("esc should move to the action menu, got modal %d, flow %+v", m.modal, m.blockFlow)
+	}
+
+	// The abandoned attempt sees its cancelled context, and its late result
+	// must not close the menu or retry the task.
+	out, _ = m.Update(cmd())
+	m = out.(*Model)
+	if attemptCtx.Err() == nil {
+		t.Error("esc should cancel the triage attempt")
+	}
+	if m.blockFlow == nil || m.blockFlow.stage != blockStageAction {
+		t.Fatalf("a stale triage result should leave the menu open, got %+v", m.blockFlow)
+	}
+}
+
 func TestBlockFlowActionKeys(t *testing.T) {
 	t.Run("t opens the hint stage", func(t *testing.T) {
 		swapFix(t)

@@ -125,6 +125,9 @@ func TestInteractiveArgsClaude(t *testing.T) {
 	if !argsContain(args, "--model") || !argsContain(args, "claude-sonnet-4-6") {
 		t.Errorf("claude interactiveArgs missing model override: %v", args)
 	}
+	if args[0] != "fix the thing" {
+		t.Errorf("claude interactiveArgs must lead with the prompt, or variadic --add-dir swallows it: %v", args)
+	}
 }
 
 func TestInteractiveArgsClaudeNoModel(t *testing.T) {

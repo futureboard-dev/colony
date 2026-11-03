@@ -57,6 +57,8 @@ type blockFlowState struct {
 	hint     textinput.Model
 	err      string
 	worktree string
+
+	cancelDiagnosis context.CancelFunc // stops the triage attempt behind [Esc]
 }
 
 // diagnoseMsg carries the result of one automatic-triage attempt.
@@ -116,15 +118,20 @@ func (m *Model) taskWorktreePath(sel storageTaskRef) string {
 }
 
 // runDiagnosis fires fix.Diagnose for one automatic-triage attempt (Phase 4).
-// Every default Triager returns fix.ErrNotConfigured until 05 registers one,
-// which handleDiagnoseResult treats the same as "nothing to fix automatically".
+// It runs alongside the live TUI, so it must stay headless: anything that took
+// over the terminal here would fight Bubble Tea's renderer and input reader.
+// fix.ErrNotConfigured is treated the same as "nothing to fix automatically".
 func (m *Model) runDiagnosis(sel storageTaskRef) tea.Cmd {
 	req := fix.Request{
 		TaskID: sel.ID, Description: sel.Description, Reason: sel.LastFeedback,
 		Worktree: m.taskWorktreePath(sel), Flow: "fix",
+		Choice: fix.Choice{Tool: fix.Tool(sel.BlockTool)},
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	m.blockFlow.cancelDiagnosis = cancel
 	return func() tea.Msg {
-		diag, err := fixDiagnose(context.Background(), req)
+		defer cancel()
+		diag, err := fixDiagnose(ctx, req)
 		return diagnoseMsg{taskID: sel.ID, diag: diag, err: err}
 	}
 }
@@ -161,7 +168,13 @@ func (m *Model) handleBlockFlowKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	switch bf.stage {
 	case blockStageDiagnosing:
-		return m, nil // no input while the one triage attempt is in flight
+		// The attempt can take minutes, so Esc abandons it for the action menu;
+		// its late result is dropped as stale.
+		if key.String() == "esc" {
+			bf.cancelDiagnosis()
+			bf.stage = blockStageAction
+		}
+		return m, nil
 	case blockStageAction:
 		return m.handleActionStageKey(key)
 	case blockStagePicker:
@@ -451,7 +464,8 @@ func (m *Model) renderBlockFlowModal(frameW, frameH int) string {
 
 	switch bf.stage {
 	case blockStageDiagnosing:
-		b.WriteString(" " + m.theme.Dim.Render(m.theme.icon(iconProgress)+" checking for a quick fix…") + "\n")
+		b.WriteString(" " + m.theme.Dim.Render(m.theme.icon(iconProgress)+" trying one automatic fix…") + "\n\n")
+		b.WriteString(m.styleHints("[Esc] stop and show options"))
 	case blockStageAction:
 		if bf.err != "" {
 			b.WriteString(" " + m.theme.Error.Render(m.theme.icon(iconCrashed)+" "+bf.err) + "\n\n")

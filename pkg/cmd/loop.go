@@ -351,8 +351,12 @@ func runLoopRun(cmd *cobra.Command, args []string) error {
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := processTask(ctx, cfg, root, store, task, os.Stderr); err != nil {
+	err = processTask(ctx, cfg, root, store, task, os.Stderr)
+	if err != nil {
 		_ = markTaskBlocked(store, task.ID, err.Error())
+	}
+	offerBlockRecovery(ctx, root, store, task.ID)
+	if err != nil {
 		return fmt.Errorf("task %q failed: %w", task.ID, err)
 	}
 	return nil
@@ -479,6 +483,7 @@ func runLoopSequential(ctx context.Context, cfg *config.Config, root string, sto
 			fmt.Fprintf(os.Stderr, "%sloop: task %q failed: %v%s\n", ansiRed, task.ID, err, ansiReset)
 			_ = markTaskBlocked(store, task.ID, err.Error())
 		}
+		offerBlockRecovery(ctx, root, store, task.ID)
 
 		if loopOnce {
 			break
@@ -1368,6 +1373,7 @@ func blockTask(ctx context.Context, cfg *config.Config, store *storage.SQLiteSto
 		Reason:      reason,
 		Worktree:    workdir,
 		Choice:      fix.Choice{Tool: tool},
+		Out:         logw,
 	}
 	diag, diagErr := fix.Diagnose(ctx, req)
 	switch {

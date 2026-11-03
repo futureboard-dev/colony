@@ -2,6 +2,7 @@ package fix
 
 import (
 	"context"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,18 +10,33 @@ import (
 	"testing"
 	"time"
 
+	"github.com/futureboard-dev/colony/pkg/config"
 	"github.com/futureboard-dev/colony/pkg/llm"
 	"github.com/futureboard-dev/colony/pkg/storage"
 )
 
-// fakeLaunch adapts a workdir/prompt-only fake into launchInteractive's
-// real signature, so tests never shell out to a real agent CLI.
-func fakeLaunch(fn func(workdir, prompt string) error) func(ex *llm.Executor, workdir, prompt string) error {
-	return func(ex *llm.Executor, workdir, prompt string) error { return fn(workdir, prompt) }
+// fakeTriageAgent replaces the headless run with fn, and fails the test if
+// triage ever opens an interactive session: that would take over a terminal a
+// TUI or parallel workers are still using.
+func fakeTriageAgent(t *testing.T, fn func(workdir, prompt string) error) {
+	t.Helper()
+	origRun, origLaunch, origOnPath, origLoad := runTriageAgent, launchInteractive, onPath, loadConfig
+	t.Cleanup(func() {
+		runTriageAgent, launchInteractive, onPath, loadConfig = origRun, origLaunch, origOnPath, origLoad
+	})
+	runTriageAgent = func(_ context.Context, _ *llm.Executor, workdir, prompt string, _ io.Writer) error {
+		return fn(workdir, prompt)
+	}
+	launchInteractive = func(*llm.Executor, string, string) error {
+		t.Error("triage must not open an interactive session")
+		return nil
+	}
+	onPath = func(cli string) bool { return cli == string(ToolClaude) }
+	loadConfig = func() (*config.Config, error) { return nil, errString("no config") }
 }
 
 // initTriageWorktree creates a real git repo with one committed file, so
-// `git status --porcelain` reflects real changes a fake fix session makes.
+// `git status --porcelain` reflects real changes a fake fix agent makes.
 func initTriageWorktree(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -58,12 +74,8 @@ func TestTriage_FixableBlockRetriesOnceAndReportsChange(t *testing.T) {
 	insertBlockedTask(t, db, "t1")
 	worktree := initTriageWorktree(t)
 
-	orig := launchInteractive
-	defer func() { launchInteractive = orig }()
-	SetSession(&agentSession{})
-
-	// Fake session: writes a new file into the worktree to simulate a fix.
-	launchInteractive = fakeLaunch(func(workdir, prompt string) error {
+	// Fake agent: writes a new file into the worktree to simulate a fix.
+	fakeTriageAgent(t, func(workdir, prompt string) error {
 		return os.WriteFile(filepath.Join(workdir, "fixed.txt"), []byte("fix\n"), 0o644)
 	})
 
@@ -92,12 +104,8 @@ func TestTriage_DecisionBlockReturnsDiagnosisWithoutRetrying(t *testing.T) {
 	insertBlockedTask(t, db, "t2")
 	worktree := initTriageWorktree(t)
 
-	orig := launchInteractive
-	defer func() { launchInteractive = orig }()
-	SetSession(&agentSession{})
-
 	calls := 0
-	launchInteractive = fakeLaunch(func(workdir, prompt string) error {
+	fakeTriageAgent(t, func(workdir, prompt string) error {
 		calls++
 		return nil // no changes made: a real decision, not a simple fix.
 	})
@@ -130,12 +138,8 @@ func TestTriage_SecondBlockOnSameTaskDoesNotTriageAgain(t *testing.T) {
 	insertBlockedTask(t, db, "t3")
 	worktree := initTriageWorktree(t)
 
-	orig := launchInteractive
-	defer func() { launchInteractive = orig }()
-	SetSession(&agentSession{})
-
 	calls := 0
-	launchInteractive = fakeLaunch(func(workdir, prompt string) error {
+	fakeTriageAgent(t, func(workdir, prompt string) error {
 		calls++
 		return os.WriteFile(filepath.Join(workdir, "fixed.txt"), []byte("fix\n"), 0o644)
 	})
@@ -172,6 +176,80 @@ func TestTriage_SecondBlockOnSameTaskDoesNotTriageAgain(t *testing.T) {
 	}
 }
 
+// A blocked task's worktree is usually already dirty, so a fix to an
+// already-modified file must count even though its status line doesn't change.
+func TestTriage_FixToAlreadyModifiedFileCounts(t *testing.T) {
+	db := openTestStore(t)
+	insertBlockedTask(t, db, "t6")
+	worktree := initTriageWorktree(t)
+	readme := filepath.Join(worktree, "README.md")
+	if err := os.WriteFile(readme, []byte("builder's work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	fakeTriageAgent(t, func(workdir, prompt string) error {
+		return os.WriteFile(readme, []byte("builder's work, fixed\n"), 0o644)
+	})
+
+	triager := storeTriager{open: testOpener(db)}
+	diag, err := triager.Diagnose(context.Background(), Request{TaskID: "t6", Worktree: worktree})
+	if err != nil {
+		t.Fatalf("Diagnose: %v", err)
+	}
+	if !diag.Fixed {
+		t.Errorf("Fixed = false, want true for an edit to an already-modified file")
+	}
+}
+
+// With no worktree, an unattended agent would otherwise be editing the project
+// root, so it must not run at all and the attempt stays unspent.
+func TestTriage_NoWorktreeSkipsAttempt(t *testing.T) {
+	for name, worktree := range map[string]string{"empty": "", "missing": filepath.Join(t.TempDir(), "gone")} {
+		t.Run(name, func(t *testing.T) {
+			db := openTestStore(t)
+			insertBlockedTask(t, db, "t7")
+
+			fakeTriageAgent(t, func(workdir, prompt string) error {
+				t.Errorf("agent ran in %q with no task worktree", workdir)
+				return nil
+			})
+
+			triager := storeTriager{open: testOpener(db)}
+			diag, err := triager.Diagnose(context.Background(), Request{TaskID: "t7", Reason: "stuck", Worktree: worktree})
+			if err != nil {
+				t.Fatalf("Diagnose: %v", err)
+			}
+			if diag.Fixed {
+				t.Error("Fixed = true, want false when nothing ran")
+			}
+			tasks, _ := db.QueryTasks(storage.TaskFilter{ID: "t7"})
+			if len(tasks) != 1 || tasks[0].BlockAttempts != 0 {
+				t.Fatalf("BlockAttempts = %+v, want 0", tasks)
+			}
+		})
+	}
+}
+
+func TestTriage_PromptCarriesBlockReason(t *testing.T) {
+	db := openTestStore(t)
+	insertBlockedTask(t, db, "t8")
+	worktree := initTriageWorktree(t)
+
+	var got string
+	fakeTriageAgent(t, func(workdir, prompt string) error {
+		got = prompt
+		return nil
+	})
+
+	triager := storeTriager{open: testOpener(db)}
+	if _, err := triager.Diagnose(context.Background(), Request{TaskID: "t8", Reason: "lint failed: x.go:1", Worktree: worktree}); err != nil {
+		t.Fatalf("Diagnose: %v", err)
+	}
+	if !strings.Contains(got, "lint failed: x.go:1") || !strings.Contains(got, "unattended") {
+		t.Errorf("prompt = %q, want the block reason and the unattended instructions", got)
+	}
+}
+
 func TestTriage_UnknownTaskErrors(t *testing.T) {
 	db := openTestStore(t)
 	triager := storeTriager{open: testOpener(db)}
@@ -186,12 +264,8 @@ func TestTriage_SessionErrorPropagates(t *testing.T) {
 	insertBlockedTask(t, db, "t4")
 	worktree := initTriageWorktree(t)
 
-	orig := launchInteractive
-	defer func() { launchInteractive = orig }()
-	SetSession(&agentSession{})
-
 	wantErr := strings.Repeat("boom", 1)
-	launchInteractive = fakeLaunch(func(workdir, prompt string) error {
+	fakeTriageAgent(t, func(workdir, prompt string) error {
 		return errString(wantErr)
 	})
 
@@ -217,10 +291,7 @@ func TestDiagnose_DelegatesToRegisteredTriager(t *testing.T) {
 	insertBlockedTask(t, db, "t5")
 	worktree := initTriageWorktree(t)
 
-	orig := launchInteractive
-	defer func() { launchInteractive = orig }()
-	SetSession(&agentSession{})
-	launchInteractive = fakeLaunch(func(workdir, prompt string) error { return nil })
+	fakeTriageAgent(t, func(workdir, prompt string) error { return nil })
 
 	SetTriager(storeTriager{open: testOpener(db)})
 	t.Cleanup(func() { SetTriager(storeTriager{open: defaultOpenStore}) })
