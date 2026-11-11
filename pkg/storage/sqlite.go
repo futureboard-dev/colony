@@ -285,6 +285,28 @@ func (s *SQLiteStore) ReapStaleSessions() (int, error) {
 	return len(stale), nil
 }
 
+// LiveSessionTaskIDs returns the tasks with a running session whose process is
+// still alive, so a newly started loop can leave them to their owner.
+func (s *SQLiteStore) LiveSessionTaskIDs() (map[string]bool, error) {
+	rows, err := s.db.Query(`SELECT task_id, pid FROM sessions WHERE status='running' AND pid != 0 AND task_id != ''`)
+	if err != nil {
+		return nil, fmt.Errorf("query running sessions: %w", err)
+	}
+	defer rows.Close()
+	live := map[string]bool{}
+	for rows.Next() {
+		var taskID string
+		var pid int
+		if err := rows.Scan(&taskID, &pid); err != nil {
+			return nil, fmt.Errorf("scan session: %w", err)
+		}
+		if processAlive(pid) {
+			live[taskID] = true
+		}
+	}
+	return live, rows.Err()
+}
+
 // processAlive probes pid with signal 0; EPERM means it exists but belongs to
 // another user.
 func processAlive(pid int) bool {

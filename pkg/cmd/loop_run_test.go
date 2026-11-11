@@ -847,6 +847,34 @@ func TestRunLoop_ResetsRunningOnStart(t *testing.T) {
 	}
 }
 
+func TestResetRunningTasks_LeavesLiveSessionAlone(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "missions.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	if err := store.InsertTask(storage.Task{ID: "r1", Description: "d", State: "running", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	// InsertSession records this test's pid, which is alive.
+	if err := store.InsertSession(storage.Session{ID: "s1", MissionName: "m", TaskID: "r1", StartedAt: time.Now(), Status: "running"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := resetRunningTasks(store); err != nil {
+		t.Fatalf("resetRunningTasks: %v", err)
+	}
+
+	tasks, err := store.QueryTasks(storage.TaskFilter{ID: "r1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tasks[0].State != "running" {
+		t.Errorf("expected r1 to stay running, got %q", tasks[0].State)
+	}
+}
+
 func TestRunLoop_ParallelDefaultOneUnchanged(t *testing.T) {
 	cases := []struct{ in, want int }{{0, 1}, {1, 1}, {4, 4}}
 	for _, tc := range cases {

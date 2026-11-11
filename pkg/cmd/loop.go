@@ -424,14 +424,21 @@ func resolveParallelCount(n int) int {
 
 // resetRunningTasks moves every "running" task back to "needs-fix" at loop
 // start, so a crash or kill -9 mid-build doesn't strand a task claimed but
-// never finished. This assumes one loop process per project — no locking is
-// added here for multiple concurrent loops.
+// never finished. A task whose session process is still alive belongs to
+// another loop and is left alone, or both loops would run it at once.
 func resetRunningTasks(store *storage.SQLiteStore) error {
 	running, err := store.QueryTasks(storage.TaskFilter{States: []string{"running"}})
 	if err != nil {
 		return err
 	}
+	live, err := store.LiveSessionTaskIDs()
+	if err != nil {
+		return err
+	}
 	for _, t := range running {
+		if live[t.ID] {
+			continue
+		}
 		if err := store.UpdateTaskState(t.ID, "needs-fix", t.LastFeedback); err != nil {
 			return err
 		}

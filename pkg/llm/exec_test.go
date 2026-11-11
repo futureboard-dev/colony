@@ -185,3 +185,9 @@ func TestPreflightSkipsCodex(t *testing.T) {
 		t.Errorf("preflight is crush-only, expected nil for codex: %v", err)
 	}
 }
+
+func TestArgSafeEscapesNUL(t *testing.T) {
+	if got := argSafe("a\x00b"); got != `a\x00b` {
+		t.Errorf("argSafe = %q", got)
+	}
+}

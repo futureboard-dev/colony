@@ -13,6 +13,12 @@ import (
 	"github.com/futureboard-dev/colony/pkg/config"
 )
 
+// argSafe escapes NUL bytes, which a process argument cannot hold: exec fails
+// with "invalid argument" when a prompt quotes a source file containing one.
+func argSafe(prompt string) string {
+	return strings.ReplaceAll(prompt, "\x00", `\x00`)
+}
+
 // Executor delegates agent execution to claude (Anthropic), codex (when pinned
 // via LLMConfig.CLI) or crush (all other providers).
 // Colony owns orchestration; these CLIs own the agent loop, MCP, and tool ecosystems.
@@ -49,7 +55,7 @@ func (e *Executor) runHeadless(ctx context.Context, workdir, prompt string, out 
 	if err := checkInstalled(cli); err != nil {
 		return err
 	}
-	cmd := exec.CommandContext(ctx, cli, e.headlessArgs(prompt)...)
+	cmd := exec.CommandContext(ctx, cli, e.headlessArgs(argSafe(prompt))...)
 	cmd.Dir = workdir
 	cmd.Env = cleanEnvForClaude()
 	cmd.Stdout = out
@@ -71,6 +77,7 @@ func (e *Executor) runAgent(ctx context.Context, workdir, prompt string, out io.
 	if err := checkInstalled(cli); err != nil {
 		return err
 	}
+	prompt = argSafe(prompt)
 	args := e.agentArgs(prompt)
 	var responsePath string
 	if cli == "codex" && final != nil {
