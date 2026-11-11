@@ -70,6 +70,7 @@ const (
 	ModalConfirm
 	ModalHelp
 	ModalPalette
+	ModalBlockFlow
 )
 
 // Options carries the flag-derived configuration into the model.
@@ -93,6 +94,9 @@ type Store interface {
 	QueryRuns(f storage.RunFilter) ([]storage.Run, error)
 	InsertTask(t storage.Task) error
 	UpdateTaskState(id, state, feedback string) error
+	UpdateTaskBlockTool(id, tool string) error
+	UpdateTaskBlockHint(id, hint string) error
+	IncrementBlockAttempts(id string) (int, error)
 	DeleteTask(id string) error
 	Close() error
 }
@@ -184,6 +188,9 @@ type Model struct {
 	runs      []storage.Run
 	runsErr   error
 	runCursor int
+
+	// Blocked-task recovery flow (ModalBlockFlow). Nil when not showing.
+	blockFlow *blockFlowState
 }
 
 // Add Task modal field indices. The text inputs occupy 0..addNoFormatField-1;
@@ -418,6 +425,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.notifier.Push("Editor failed: "+msg.err.Error(), ToastErr)
 		}
 		return m, m.loadOnce()
+
+	case diagnoseMsg:
+		return m, m.handleDiagnoseResult(msg)
+
+	case installedToolsMsg:
+		return m, m.handleInstalledTools(msg)
+
+	case sessionFinishedMsg:
+		return m, m.handleSessionFinished(msg)
 	}
 
 	if m.tooSmall {
@@ -670,6 +686,11 @@ func (m *Model) handleTaskActionKey(key tea.KeyMsg) (bool, tea.Cmd) {
 		return true, m.blockTask()
 	case "m":
 		return true, m.markTaskDone()
+	case "f":
+		if sel, ok := m.selectedTask(); ok && sel.State == "blocked" {
+			return true, m.openBlockFlow()
+		}
+		return false, nil
 	case "x":
 		m.confirmDeleteTask()
 		return true, nil
@@ -810,6 +831,8 @@ func (m *Model) dispatchModalMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.modal = ModalNone
 		}
 		return m, nil
+	case ModalBlockFlow:
+		return m.handleBlockFlowKey(key)
 	}
 	return m, nil
 }

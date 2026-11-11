@@ -34,6 +34,11 @@ func (e *Executor) CLI() string {
 	return "crush"
 }
 
+// Model returns the configured model override, or "" if none was set.
+func (e *Executor) Model() string {
+	return e.cfg.Model
+}
+
 // RunHeadless runs a prompt non-interactively (text generation, no file tools).
 // Output is written to out. Used for coordinator, scout, reviewer roles.
 func (e *Executor) runHeadless(ctx context.Context, workdir, prompt string, out io.Writer, diagnostics io.Writer) error {
@@ -125,6 +130,12 @@ func (e *Executor) runAgent(ctx context.Context, workdir, prompt string, out io.
 }
 
 // RunInteractive opens an interactive agent session. Blocks until user exits.
+//
+// Model and auth match the non-interactive paths: the configured model is
+// passed through (an interactive session used to silently fall back to
+// whatever the CLI already had selected), and claude's env is cleaned the
+// same way so the session authenticates with the user's subscription rather
+// than an inherited ANTHROPIC_API_KEY.
 func (e *Executor) RunInteractive(workdir, initialPrompt string) error {
 	if err := e.validateKeyIfNeeded(); err != nil {
 		return err
@@ -133,20 +144,41 @@ func (e *Executor) RunInteractive(workdir, initialPrompt string) error {
 	if err := checkInstalled(cli); err != nil {
 		return err
 	}
-	var args []string
-	switch cli {
-	case "claude":
-		args = []string{"--add-dir", workdir, initialPrompt}
-	default:
-		args = []string{initialPrompt}
-	}
-	cmd := exec.Command(cli, args...)
+	cmd := exec.Command(cli, e.interactiveArgs(workdir, initialPrompt)...)
 	cmd.Dir = workdir
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Env = os.Environ()
+	cmd.Env = cleanEnvForClaude()
 	return cmd.Run()
+}
+
+func (e *Executor) interactiveArgs(workdir, initialPrompt string) []string {
+	switch e.CLI() {
+	case "claude":
+		// The prompt must come first: --add-dir is variadic and would swallow it
+		// as another directory, opening the session with no first message.
+		args := []string{initialPrompt, "--add-dir", workdir}
+		if e.cfg.Model != "" {
+			args = append(args, "--model", e.cfg.Model)
+		}
+		return args
+	case "codex":
+		// codex takes the prompt as a bare positional argument, same as exec.
+		args := []string{initialPrompt}
+		if e.cfg.Model != "" {
+			args = append(args, "-m", e.cfg.Model)
+		}
+		return args
+	default:
+		// crush's bare interactive mode accepts neither a starting prompt nor
+		// a model flag; `run` is the closest equivalent that takes both.
+		args := []string{"run", initialPrompt}
+		if e.cfg.Model != "" {
+			args = append(args, "-m", e.cfg.Model)
+		}
+		return args
+	}
 }
 
 // Preflight verifies that crush run can execute tool calls (known flaky issue).

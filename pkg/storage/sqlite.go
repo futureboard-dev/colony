@@ -98,12 +98,21 @@ type Task struct {
 	// ReviewFeedback is the last review rejection still open. It is kept apart
 	// from LastFeedback so a later gate failure cannot erase the checklist.
 	ReviewFeedback string
-	Branch         string // worktree branch created for this task (for continue/reuse)
-	PRURL          string // PR URL linked to this task (for OBSERVE CI/PR polling)
-	GroupID        string // task_groups.id this task belongs to, empty for standalone tasks
-	DependsOn      string // comma-joined task IDs this task depends on, same style as GateOverrides
-	CreatedAt      time.Time
-	UpdatedAt      *time.Time
+	// BlockTool is the agent tool (claude, codex, crush) that was running when
+	// this task last blocked, so a fix flow can preselect it in the picker.
+	BlockTool string
+	// BlockHint is the one-line hint the user gave for the current block
+	// ("tell it what to do"), carried into the retry's feedback.
+	BlockHint string
+	// BlockAttempts counts automatic triage attempts made on the current
+	// block, capped at one per block (see Phase 4: Automatic triage).
+	BlockAttempts int
+	Branch        string // worktree branch created for this task (for continue/reuse)
+	PRURL         string // PR URL linked to this task (for OBSERVE CI/PR polling)
+	GroupID       string // task_groups.id this task belongs to, empty for standalone tasks
+	DependsOn     string // comma-joined task IDs this task depends on, same style as GateOverrides
+	CreatedAt     time.Time
+	UpdatedAt     *time.Time
 }
 
 // TaskFilter controls which tasks to return from QueryTasks.
@@ -150,6 +159,9 @@ type Store interface {
 	QueryTasks(f TaskFilter) ([]Task, error)
 	UpdateTaskState(id, state, feedback string) error
 	UpdateTaskBranch(id, branch string) error
+	UpdateTaskBlockTool(id, tool string) error
+	UpdateTaskBlockHint(id, hint string) error
+	IncrementBlockAttempts(id string) (int, error)
 	IncrementCycle(id string) error
 	PickNextOpenTask() (*Task, error)
 	ClaimNextTask() (*Task, error)
@@ -212,6 +224,9 @@ func Open(dbPath string) (*SQLiteStore, error) {
 		`ALTER TABLE tasks ADD COLUMN group_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE tasks ADD COLUMN depends_on TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE tasks ADD COLUMN review_feedback TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE tasks ADD COLUMN block_tool TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE tasks ADD COLUMN block_hint TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE tasks ADD COLUMN block_attempts INTEGER NOT NULL DEFAULT 0`,
 	} {
 		if _, err := db.Exec(alter); err != nil &&
 			!strings.Contains(err.Error(), "duplicate column") {

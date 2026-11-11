@@ -56,7 +56,7 @@ func (n *GateNode) Run(ctx context.Context, in graph.Input) (graph.Output, error
 	if base != "" {
 		changed := module.ChangedFiles(workdir, "origin/"+base)
 		if len(changed) > 0 {
-			module.AutoFix(lang, workdir, changed, skip["format"], io.Discard)
+			module.AutoFix(lang, workdir, "origin/"+base, changed, skip["format"], io.Discard)
 		} else {
 			// No lintable files changed vs base; skip format/lint explicitly.
 			// Copy first — skip may alias the shared factory/param map.
@@ -64,7 +64,7 @@ func (n *GateNode) Run(ctx context.Context, in graph.Input) (graph.Output, error
 			maps.Copy(merged, skip)
 			skip = merged
 		}
-		output, err = module.RunGateCaptureScoped(lang, workdir, changed, skip)
+		output, err = module.RunGateCaptureScoped(lang, workdir, "origin/"+base, changed, skip)
 	} else {
 		output, err = module.RunGateCaptureAll(lang, workdir, skip)
 	}

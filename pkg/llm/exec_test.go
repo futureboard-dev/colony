@@ -113,6 +113,71 @@ func TestArgsCodex(t *testing.T) {
 	})
 }
 
+func TestInteractiveArgsClaude(t *testing.T) {
+	e := New(config.LLMConfig{Provider: "anthropic", Model: "claude-sonnet-4-6"})
+	args := e.interactiveArgs("/work/dir", "fix the thing")
+
+	for _, want := range []string{"--add-dir", "/work/dir", "fix the thing"} {
+		if !argsContain(args, want) {
+			t.Errorf("claude interactiveArgs missing %q: %v", want, args)
+		}
+	}
+	if !argsContain(args, "--model") || !argsContain(args, "claude-sonnet-4-6") {
+		t.Errorf("claude interactiveArgs missing model override: %v", args)
+	}
+	if args[0] != "fix the thing" {
+		t.Errorf("claude interactiveArgs must lead with the prompt, or variadic --add-dir swallows it: %v", args)
+	}
+}
+
+func TestInteractiveArgsClaudeNoModel(t *testing.T) {
+	e := New(config.LLMConfig{Provider: "anthropic"})
+	args := e.interactiveArgs("/work/dir", "fix the thing")
+	if argsContain(args, "--model") {
+		t.Errorf("claude interactiveArgs should omit --model when unset: %v", args)
+	}
+}
+
+func TestInteractiveArgsCodex(t *testing.T) {
+	e := New(config.LLMConfig{Provider: "openai", CLI: "codex", Model: "gpt-5"})
+	args := e.interactiveArgs("/work/dir", "fix the thing")
+
+	if !argsContain(args, "fix the thing") {
+		t.Errorf("codex interactiveArgs missing prompt: %v", args)
+	}
+	if !argsContain(args, "-m") || !argsContain(args, "gpt-5") {
+		t.Errorf("codex interactiveArgs missing model override: %v", args)
+	}
+	if argsContain(args, "--add-dir") {
+		t.Errorf("codex interactiveArgs must not use claude flags: %v", args)
+	}
+}
+
+func TestInteractiveArgsCrush(t *testing.T) {
+	e := New(config.LLMConfig{CLI: "crush", Model: "deepseek/deepseek-chat"})
+	args := e.interactiveArgs("/work/dir", "fix the thing")
+
+	// Bare crush accepts no starting prompt or model flag, so the session
+	// must go through `run`, which accepts both.
+	if args[0] != "run" {
+		t.Errorf("crush interactiveArgs should start with \"run\": %v", args)
+	}
+	if !argsContain(args, "fix the thing") {
+		t.Errorf("crush interactiveArgs missing prompt: %v", args)
+	}
+	if !argsContain(args, "-m") || !argsContain(args, "deepseek/deepseek-chat") {
+		t.Errorf("crush interactiveArgs missing model override: %v", args)
+	}
+}
+
+func TestInteractiveArgsCrushNoModel(t *testing.T) {
+	e := New(config.LLMConfig{CLI: "crush"})
+	args := e.interactiveArgs("/work/dir", "x")
+	if argsContain(args, "-m") {
+		t.Errorf("crush interactiveArgs should omit -m when unset: %v", args)
+	}
+}
+
 func TestPreflightSkipsCodex(t *testing.T) {
 	// Empty PATH: if Preflight tried to run crush it would fail on lookup.
 	t.Setenv("PATH", t.TempDir())

@@ -1,6 +1,7 @@
 package module
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -209,7 +210,7 @@ func TestAutoFix_SkipFormat(t *testing.T) {
 
 	writeFile(t, dir, "a.ts", "const x = 1;")
 
-	AutoFix("typescript", dir, []string{"a.ts"}, true, os.Stdout)
+	AutoFix("typescript", dir, "", []string{"a.ts"}, true, os.Stdout)
 	calls := readFileOrEmpty(t, callLog)
 	if strings.Contains(calls, "prettier") {
 		t.Errorf("expected prettier to be skipped with skipFormat=true, calls:\n%s", calls)
@@ -219,7 +220,7 @@ func TestAutoFix_SkipFormat(t *testing.T) {
 	}
 
 	os.Remove(callLog) //nolint:errcheck
-	AutoFix("typescript", dir, []string{"a.ts"}, false, os.Stdout)
+	AutoFix("typescript", dir, "", []string{"a.ts"}, false, os.Stdout)
 	calls = readFileOrEmpty(t, callLog)
 	if !strings.Contains(calls, "prettier") {
 		t.Errorf("expected prettier to run with skipFormat=false, calls:\n%s", calls)
@@ -534,7 +535,7 @@ func TestScopedGatesSelectSupportedFiles(t *testing.T) {
 			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 			skip := map[string]bool{"vet": true, "typecheck": true, "test": true, "build": true}
 			files := []string{"migration.js", "app.py", "schema.json", "view.tsx", "types.pyi"}
-			if out, err := RunGateCaptureScoped(tc.lang, dir, files, skip); err != nil {
+			if out, err := RunGateCaptureScoped(tc.lang, dir, "", files, skip); err != nil {
 				t.Fatalf("%v: %s", err, out)
 			}
 			calls := readFileOrEmpty(t, log)
@@ -555,7 +556,7 @@ func TestScopedGatesSelectSupportedFiles(t *testing.T) {
 func TestScopedPythonGatesSkipJavaScriptOnlyChanges(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	skip := map[string]bool{"vet": true, "typecheck": true, "test": true, "build": true}
-	if out, err := RunGateCaptureScoped("python", t.TempDir(), []string{"migration.js"}, skip); err != nil {
+	if out, err := RunGateCaptureScoped("python", t.TempDir(), "", []string{"migration.js"}, skip); err != nil {
 		t.Fatalf("ran Python tools on JS-only scope: %v %s", err, out)
 	}
 }
@@ -567,7 +568,7 @@ func TestAutoFixDoesNotPassJSONToESLint(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	AutoFix("typescript", t.TempDir(), []string{"schema.json"}, false, io.Discard)
+	AutoFix("typescript", t.TempDir(), "", []string{"schema.json"}, false, io.Discard)
 	calls := readFileOrEmpty(t, log)
 	if strings.Contains(calls, "eslint") || !strings.Contains(calls, "prettier --write schema.json") {
 		t.Fatal(calls)
@@ -600,7 +601,218 @@ func TestChangedFilesIncludesPythonSources(t *testing.T) {
 func TestScopedEmptyFilesDoesNotRunWholeRepo(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	skip := map[string]bool{"vet": true, "typecheck": true, "test": true, "build": true}
-	if out, err := RunGateCaptureScoped("python", t.TempDir(), nil, skip); err != nil {
+	if out, err := RunGateCaptureScoped("python", t.TempDir(), "", nil, skip); err != nil {
 		t.Fatalf("ran tools outside empty scope: %v %s", err, out)
 	}
+}
+
+// fakePrettier installs a pnpm shim whose "prettier" rewrites every double quote
+// to a single quote, both for --stdin-filepath (stdout) and --write (in place).
+// Like real Prettier it rewrites whole files, which is the behavior under test.
+func fakePrettier(t *testing.T) {
+	t.Helper()
+	bin := t.TempDir()
+	script := `#!/bin/sh
+[ "$1" = prettier ] || exit 0
+shift
+case "$1" in
+--stdin-filepath) sed "s/\"/'/g" ;;
+--write) shift; for f; do sed "s/\"/'/g" "$f" > "$f.tmp" && mv "$f.tmp" "$f"; done ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(bin, "pnpm"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func gitT(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-c", "user.name=test", "-c", "user.email=test@example.com"}, args...)...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, out)
+	}
+	return string(out)
+}
+
+// formatRepo commits an unformatted legacy.ts and a formatted clean.ts on a
+// "base" branch, then returns the repo dir checked out on a task branch.
+func formatRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	gitT(t, dir, "init", "-q", "-b", "base")
+	var legacy strings.Builder
+	for i := 0; i < 50; i++ {
+		fmt.Fprintf(&legacy, "export const v%d = \"value %d\";\n", i, i)
+	}
+	writeFile(t, dir, "legacy.ts", legacy.String())
+	writeFile(t, dir, "clean.ts", "export const a = 'a';\n")
+	gitT(t, dir, "add", ".")
+	gitT(t, dir, "commit", "-qm", "base")
+	gitT(t, dir, "checkout", "-qb", "task")
+	return dir
+}
+
+func appendFile(t *testing.T, path, text string) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close() //nolint:errcheck
+	if _, err := f.WriteString(text); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFormatFiles(t *testing.T) {
+	fakePrettier(t)
+	dir := formatRepo(t)
+	writeFile(t, dir, "new.ts", "export const n = \"n\";\n")
+	files := []string{"legacy.ts", "clean.ts", "new.ts", "app.py"}
+
+	t.Run("typescript keeps new and base-clean files only", func(t *testing.T) {
+		got := strings.Join(FormatFiles("typescript", dir, "base", files), ",")
+		if got != "clean.ts,new.ts" {
+			t.Fatalf("got %q, want clean.ts,new.ts", got)
+		}
+	})
+	t.Run("other languages are not filtered", func(t *testing.T) {
+		got := strings.Join(FormatFiles("python", dir, "base", files), ",")
+		if got != "app.py" {
+			t.Fatalf("got %q, want app.py", got)
+		}
+	})
+	t.Run("prettier failure excludes existing file", func(t *testing.T) {
+		dir := formatRepo(t)
+		// Unique content so the clean-at-base cache from other subtests can't answer.
+		writeFile(t, dir, "broken.ts", "export const broken = 'unique-to-this-test';\n")
+		gitT(t, dir, "add", "broken.ts")
+		gitT(t, dir, "commit", "-qm", "broken")
+		bin := t.TempDir()
+		if err := os.WriteFile(filepath.Join(bin, "pnpm"), []byte("#!/bin/sh\nexit 2\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+		if got := FormatFiles("typescript", dir, "HEAD", []string{"broken.ts"}); len(got) != 0 {
+			t.Fatalf("got %v, want none", got)
+		}
+	})
+}
+
+// TestFormatGateLeavesUnformattedFileEdit is the 8b13ff88 regression: a one-line
+// edit to an existing, never-formatted file must leave the gate as a one-line diff.
+func TestFormatGateLeavesUnformattedFileEdit(t *testing.T) {
+	fakePrettier(t)
+	dir := formatRepo(t)
+	appendFile(t, filepath.Join(dir, "legacy.ts"), "export const added = \"x\";\n")
+	appendFile(t, filepath.Join(dir, "clean.ts"), "export const b = \"b\";\n")
+	writeFile(t, dir, "new.ts", "export const n = \"n\";\n")
+
+	changed := ChangedFiles(dir, "base")
+	AutoFix("typescript", dir, "base", changed, false, io.Discard)
+	skip := map[string]bool{"vet": true, "lint": true, "typecheck": true, "test": true, "build": true}
+	if out, err := RunGateCaptureScoped("typescript", dir, "base", changed, skip); err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+
+	if got := strings.TrimSpace(gitT(t, dir, "diff", "--numstat", "base", "--", "legacy.ts")); got != "1\t0\tlegacy.ts" {
+		t.Errorf("legacy.ts diff = %q, want a one-line addition", got)
+	}
+	for _, f := range []string{"clean.ts", "new.ts"} {
+		if data := readFileOrEmpty(t, filepath.Join(dir, f)); strings.Contains(data, `"`) {
+			t.Errorf("%s was not formatted: %s", f, data)
+		}
+	}
+}
+
+// gateScript writes a shell script outside the repo and returns the gate
+// command that runs it.
+func gateScript(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "gate.sh")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return "sh " + path
+}
+
+// sideEffectRepo commits spec.json, edited.txt and app/[id]/route.ts.
+func sideEffectRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	gitT(t, dir, "init", "-q", "-b", "base")
+	writeFile(t, dir, "spec.json", "committed\n")
+	writeFile(t, dir, "edited.txt", "committed\n")
+	if err := os.MkdirAll(filepath.Join(dir, "app", "[id]"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, dir, "app/[id]/route.ts", "committed\n")
+	gitT(t, dir, "add", ".")
+	gitT(t, dir, "commit", "-qm", "base")
+	return dir
+}
+
+func TestRunGatesRestoresTrackedSideEffects(t *testing.T) {
+	const rewrite = "echo regenerated > spec.json; echo regenerated > 'app/[id]/route.ts'"
+	t.Cleanup(func() { SetGateOverrides(LangCommands{}) })
+
+	assertFile := func(t *testing.T, dir, name, want string) {
+		t.Helper()
+		if got := readFileOrEmpty(t, filepath.Join(dir, name)); got != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
+		}
+	}
+
+	t.Run("build rewrite is undone on a clean tree", func(t *testing.T) {
+		SetGateOverrides(LangCommands{Build: gateScript(t, rewrite)})
+		dir := sideEffectRepo(t)
+		if out, err := RunGateCaptureAll("none", dir, nil); err != nil {
+			t.Fatalf("%v: %s", err, out)
+		}
+		if got := gitT(t, dir, "status", "--porcelain"); got != "" {
+			t.Errorf("tree dirty after gate: %q", got)
+		}
+	})
+	t.Run("format output and uncommitted edits survive", func(t *testing.T) {
+		SetGateOverrides(LangCommands{
+			Format: gateScript(t, "echo formatted > edited.txt"),
+			Build:  gateScript(t, rewrite+"; echo clobbered > edited.txt"),
+		})
+		dir := sideEffectRepo(t)
+		writeFile(t, dir, "edited.txt", "agent edit\n")
+		if out, err := RunGateCaptureAll("none", dir, nil); err != nil {
+			t.Fatalf("%v: %s", err, out)
+		}
+		assertFile(t, dir, "edited.txt", "formatted\n")
+		assertFile(t, dir, "spec.json", "committed\n")
+	})
+	t.Run("agent edit to a generated file survives", func(t *testing.T) {
+		SetGateOverrides(LangCommands{Build: gateScript(t, rewrite)})
+		dir := sideEffectRepo(t)
+		writeFile(t, dir, "spec.json", "agent edit\n")
+		if out, err := RunGateCaptureAll("none", dir, nil); err != nil {
+			t.Fatalf("%v: %s", err, out)
+		}
+		assertFile(t, dir, "spec.json", "agent edit\n")
+	})
+	t.Run("failing gate still restores", func(t *testing.T) {
+		SetGateOverrides(LangCommands{Test: gateScript(t, rewrite+"; exit 1")})
+		dir := sideEffectRepo(t)
+		if _, err := RunGateCaptureAll("none", dir, nil); err == nil {
+			t.Fatal("expected gate failure")
+		}
+		assertFile(t, dir, "spec.json", "committed\n")
+		assertFile(t, dir, "app/[id]/route.ts", "committed\n")
+	})
+	t.Run("non-git directory is left alone", func(t *testing.T) {
+		SetGateOverrides(LangCommands{Build: gateScript(t, "echo built > out.txt")})
+		dir := t.TempDir()
+		if out, err := RunGateCaptureAll("none", dir, nil); err != nil {
+			t.Fatalf("%v: %s", err, out)
+		}
+		assertFile(t, dir, "out.txt", "built\n")
+	})
 }

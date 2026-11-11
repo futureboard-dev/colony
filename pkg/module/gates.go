@@ -3,6 +3,7 @@ package module
 import (
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -311,8 +312,9 @@ func ChangedFiles(workdir, base string) []string {
 // formatting and mechanically-fixable lint never reach the (token-costing) fixer
 // agent. Best-effort and non-fatal; a no-op when files is empty. skipFormat omits
 // the prettier pass (e.g. --no-format), mirroring the format gate's own skip so
-// AutoFix can't reformat files the gate was told to leave alone.
-func AutoFix(lang, workdir string, files []string, skipFormat bool, out io.Writer) {
+// AutoFix can't reformat files the gate was told to leave alone. The prettier
+// pass is limited to FormatFiles(base), the same files the format gate rewrites.
+func AutoFix(lang, workdir, base string, files []string, skipFormat bool, out io.Writer) {
 	if len(files) == 0 {
 		return
 	}
@@ -322,7 +324,7 @@ func AutoFix(lang, workdir string, files []string, skipFormat bool, out io.Write
 			runFix(append([]string{"pnpm", "eslint", "--fix"}, lintFiles...), workdir, out)
 		}
 		if !skipFormat {
-			if formatFiles := GateFiles(lang, "format", files); len(formatFiles) > 0 {
+			if formatFiles := FormatFiles(lang, workdir, base, files); len(formatFiles) > 0 {
 				runFix(append([]string{"pnpm", "prettier", "--write"}, formatFiles...), workdir, out)
 			}
 		}
@@ -369,7 +371,7 @@ func runGateArgv(argv []string, workdir string) (string, error) {
 // those whose commands are empty. Returns on the first non-zero exit: combined
 // output + exit error. Returns empty string and nil when all gates pass.
 func RunGateCaptureAll(lang string, workdir string, skip map[string]bool) (string, error) {
-	return runGates(lang, workdir, nil, skip)
+	return runGates(lang, workdir, "", nil, skip)
 }
 
 // RunGateCaptureScoped is like RunGateCaptureAll but restricts the format and
@@ -377,14 +379,17 @@ func RunGateCaptureAll(lang string, workdir string, skip map[string]bool) (strin
 // branch that already carries violations would fail every integration; scoping
 // keeps the gate — and its output — about the task's own changes. vet, typecheck,
 // test, and build stay whole-project because they can't be scoped to a subset.
-func RunGateCaptureScoped(lang string, workdir string, files []string, skip map[string]bool) (string, error) {
+//
+// base is the ref the files changed against; the format gate only rewrites
+// files FormatFiles allows (see there).
+func RunGateCaptureScoped(lang, workdir, base string, files []string, skip map[string]bool) (string, error) {
 	if files == nil {
 		files = []string{}
 	}
-	return runGates(lang, workdir, files, skip)
+	return runGates(lang, workdir, base, files, skip)
 }
 
-func runGates(lang string, workdir string, files []string, skip map[string]bool) (string, error) {
+func runGates(lang, workdir, base string, files []string, skip map[string]bool) (string, error) {
 	cmds, err := CommandsFor(lang)
 	if err != nil {
 		return "", err
@@ -403,13 +408,21 @@ func runGates(lang string, workdir string, files []string, skip map[string]bool)
 		{"build", cmds.Build, false},
 	}
 	var combined strings.Builder
+	var snapshot string
+	defer func() { restoreTracked(workdir, snapshot) }()
 	for _, s := range steps {
 		if skip[s.name] || s.cmd == "" {
 			continue
 		}
+		if s.name != "format" && snapshot == "" {
+			snapshot = snapshotTracked(workdir)
+		}
 		argv := strings.Fields(s.cmd)
 		if s.scoped && files != nil {
 			selected := GateFiles(lang, s.name, files)
+			if s.name == "format" {
+				selected = FormatFiles(lang, workdir, base, files)
+			}
 			if len(selected) == 0 {
 				continue // Never fall back to whole-repo checks for an empty scope.
 			}
@@ -424,6 +437,51 @@ func runGates(lang string, workdir string, files []string, skip map[string]bool)
 		}
 	}
 	return "", nil
+}
+
+// snapshotTracked records the content of every tracked file and returns a
+// commit holding it, without touching the working tree. It returns "" when the
+// state can't be captured, which makes restoreTracked a no-op: falling back to
+// HEAD after a stash failure would discard the task's uncommitted edits.
+func snapshotTracked(workdir string) string {
+	// The commit is throwaway, but git still refuses to build it without an identity.
+	out, err := gitOutput(workdir, "-c", "user.name=colony", "-c", "user.email=colony@localhost", "stash", "create")
+	if err != nil {
+		return ""
+	}
+	if snapshot := strings.TrimSpace(out); snapshot != "" {
+		return snapshot
+	}
+	// stash create prints nothing when the tree matches HEAD.
+	head, err := gitOutput(workdir, "rev-parse", "--verify", "--quiet", "HEAD")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(head)
+}
+
+// restoreTracked undoes gate side effects on tracked files. A check step can
+// rewrite them (e.g. `pnpm build` regenerating a committed spec), and that
+// rewrite would otherwise land in the task's diff, where a reviewer rejects it
+// and the fixer's revert is undone by the next gate run.
+func restoreTracked(workdir, snapshot string) {
+	if snapshot == "" {
+		return
+	}
+	out, err := gitOutput(workdir, "diff", "--name-only", "--relative", "-z", snapshot, "--")
+	if err != nil {
+		slog.Warn("gate: list files changed by gate", "workdir", workdir, "err", err)
+		return
+	}
+	if out == "" {
+		return
+	}
+	files := strings.Split(strings.TrimRight(out, "\x00"), "\x00")
+	// Literal pathspecs: Next.js route paths like app/[id]/route.ts are globs otherwise.
+	args := append([]string{"--literal-pathspecs", "restore", "--source=" + snapshot, "--worktree", "--"}, files...)
+	if _, err := gitOutput(workdir, args...); err != nil {
+		slog.Warn("gate: restore files changed by gate", "workdir", workdir, "files", files, "err", err)
+	}
 }
 
 // CheckList formats lang's gate commands as a Markdown list for agent
@@ -483,6 +541,69 @@ func GateFiles(lang, gate string, files []string) []string {
 		}
 	}
 	return selected
+}
+
+// FormatFiles returns the files the format gate may rewrite. For TypeScript
+// that is files new since base plus files that were already Prettier-clean at
+// base. Prettier rewrites whole files, so running --write on a file the repo
+// never formatted turns a one-line task edit into a whole-file diff that
+// reviewers reject and the next gate run re-creates. Other languages get the
+// plain GateFiles selection.
+func FormatFiles(lang, workdir, base string, files []string) []string {
+	selected := GateFiles(lang, "format", files)
+	if l := strings.ToLower(lang); l != "typescript" && l != "ts" {
+		return selected
+	}
+	base = resolveBase(workdir, base)
+	var eligible []string
+	for _, f := range selected {
+		if prettierCleanAtBase(workdir, base, f) {
+			eligible = append(eligible, f)
+		}
+	}
+	return eligible
+}
+
+var (
+	prettierCleanMu    sync.Mutex
+	prettierCleanCache = map[string]bool{} // "<blob sha>:<path>" -> clean
+)
+
+// prettierCleanAtBase reports whether path is absent at base (new on the
+// branch) or its base content is already what Prettier would produce. Results
+// are cached by blob and path: the loop re-runs the gate every fix cycle while
+// the base blob stays the same, and each Prettier start costs ~0.5s.
+func prettierCleanAtBase(workdir, base, path string) bool {
+	blob, err := gitOutput(workdir, "rev-parse", "--verify", "--quiet", base+":"+path)
+	if err != nil {
+		return true // not in base: a new file, safe to format
+	}
+	key := strings.TrimSpace(blob) + ":" + path
+	prettierCleanMu.Lock()
+	clean, ok := prettierCleanCache[key]
+	prettierCleanMu.Unlock()
+	if ok {
+		return clean
+	}
+	original, err := gitOutput(workdir, "show", base+":"+path)
+	if err != nil {
+		return false
+	}
+	// Format from stdin and compare rather than use --check, whose stdin
+	// handling varies across Prettier versions. --stdin-filepath keeps the
+	// repo's config and ignore file in effect.
+	cmd := exec.Command(venvBin(workdir, "pnpm"), "prettier", "--stdin-filepath", path)
+	cmd.Dir = workdir
+	cmd.Env = append(os.Environ(), venvPathEnv(workdir))
+	cmd.Stdin = strings.NewReader(original)
+	formatted, err := cmd.Output()
+	clean = err == nil && string(formatted) == original
+	if err == nil { // don't cache a failed run (e.g. pnpm missing); it may succeed later
+		prettierCleanMu.Lock()
+		prettierCleanCache[key] = clean
+		prettierCleanMu.Unlock()
+	}
+	return clean
 }
 
 // scopeArgv replaces a trailing whole-repo target (e.g. the "." in `eslint .`)

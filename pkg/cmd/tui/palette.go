@@ -48,6 +48,11 @@ type cmdSpec struct {
 	// opened with a task under the cursor. Nil means no prefill.
 	PosFrom func(storageTaskRef) string
 	Flags   []cmdFlag
+	// Flow names this command for the shared tool/model picker (06's
+	// flowPicker, reused here per Rollout Phase 2). Empty means the command
+	// runs straight from the form, as before. The chosen tool/model is
+	// remembered per flow in .colony/state.json (see pkg/config/state.go).
+	Flow string
 }
 
 // paletteCommands mirrors the cobra definitions in pkg/cmd. Flag names and
@@ -74,6 +79,7 @@ var paletteCommands = []cmdSpec{
 		Name:    "craft",
 		Argv:    []string{"craft"},
 		Summary: "Build one spec end to end",
+		Flow:    "craft",
 		Flags: []cmdFlag{
 			{Name: "spec", Kind: flagString, Placeholder: "path/to/TASK.md", Help: "spec markdown file"},
 			{Name: "lang", Kind: flagString, Required: true, Placeholder: "typescript", Help: "typescript, python, go, none"},
@@ -153,6 +159,7 @@ var paletteCommands = []cmdSpec{
 		Positional:  "task-id",
 		PosRequired: true,
 		PosFrom:     func(t storageTaskRef) string { return t.ID },
+		Flow:        "review",
 	},
 	{
 		Name:        "loop retry-gate",
@@ -267,6 +274,12 @@ type paletteState struct {
 	focus    int
 	scroll   int
 	err      string
+
+	// fixPicker, when non-nil, is the shared tool/model picker shown before
+	// running a command whose cmdSpec names a Flow (Rollout Phase 2). fixFlow
+	// is that command's flow name, used to remember the choice.
+	fixPicker *flowPicker
+	fixFlow   string
 }
 
 // openPalette resets the palette to the command chooser.

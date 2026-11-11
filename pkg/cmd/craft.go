@@ -337,12 +337,12 @@ func runGates(ctx context.Context, worktreePath, base, lang string, langs module
 	// deterministic fixers first so mechanical issues never reach the fix agent.
 	scope := module.ChangedFiles(worktreePath, base)
 	if len(scope) > 0 {
-		module.AutoFix(lang, worktreePath, scope, skipFormat, out) // no-op for non-TS langs
+		module.AutoFix(lang, worktreePath, base, scope, skipFormat, out) // no-op for non-TS langs
 	} else {
 		fmt.Fprintf(out, "%s⚠ format/lint skipped — no lintable files changed vs base%s\n", ansiYellow, ansiReset)
 		skipFormat = true
 	}
-	formatFiles := module.GateFiles(lang, "format", scope)
+	formatFiles := module.FormatFiles(lang, worktreePath, base, scope)
 	lintFiles := module.GateFiles(lang, "lint", scope)
 	formatCmd := module.ScopeCommand(langs.Format, formatFiles)
 	lintCmd := module.ScopeCommand(langs.Lint, lintFiles)

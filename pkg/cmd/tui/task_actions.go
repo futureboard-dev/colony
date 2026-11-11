@@ -12,8 +12,9 @@ import (
 // editorFinishedMsg reports the result of a suspended $EDITOR session.
 type editorFinishedMsg struct{ err error }
 
-// retryTask re-queues the selected task as open and clears its stale feedback
-// so the loop treats the next pass as a fresh attempt.
+// retryTask re-queues the selected task as open, keeping its block/feedback
+// reason (as --retry-blocked does) rather than dropping it, so the agent
+// doesn't have to rediscover why the task stopped.
 func (m *Model) retryTask() tea.Cmd {
 	sel, ok := m.selectedTask()
 	if !ok {
@@ -24,7 +25,7 @@ func (m *Model) retryTask() tea.Cmd {
 		m.notifier.Push("Task "+sel.ID+" is already open", ToastErr)
 		return nil
 	}
-	return m.setTaskState(sel.ID, "open", "")
+	return m.setTaskState(sel.ID, "open", sel.LastFeedback)
 }
 
 // blockTask parks the selected task so the loop skips it.
