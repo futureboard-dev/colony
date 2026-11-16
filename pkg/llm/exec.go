@@ -71,7 +71,7 @@ func (e *Executor) runAgent(ctx context.Context, workdir, prompt string, out io.
 	if err := checkInstalled(cli); err != nil {
 		return err
 	}
-	args := e.agentArgs(prompt)
+	args := e.agentArgs(prompt, gitCommonDir(workdir))
 	var responsePath string
 	if cli == "codex" && final != nil {
 		response, err := os.CreateTemp(workdir, ".colony-response-*")
@@ -252,7 +252,21 @@ func (e *Executor) headlessArgs(prompt string) []string {
 	}
 }
 
-func (e *Executor) agentArgs(prompt string) []string {
+// gitCommonDir returns the absolute shared .git directory for workdir, or ""
+// if workdir is not a git checkout. A worktree's index, refs and objects live
+// there rather than inside the worktree itself.
+func gitCommonDir(workdir string) string {
+	out, err := exec.Command("git", "-C", workdir, "rev-parse", "--path-format=absolute", "--git-common-dir").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// agentArgs builds the CLI args for an agent run. gitDir is the shared .git
+// directory (empty if none); codex needs it writable so agents can fetch and
+// check out files from other branches.
+func (e *Executor) agentArgs(prompt, gitDir string) []string {
 	switch e.CLI() {
 	case "claude":
 		// stream-json emits an event per message/tool call as it happens;
@@ -270,7 +284,13 @@ func (e *Executor) agentArgs(prompt string) []string {
 	case "codex":
 		// exec runs non-interactively; grant writes within the worktree using
 		// the explicit sandbox option (--full-auto was removed in newer CLIs).
-		args := []string{"exec", "--sandbox", "workspace-write"}
+		// Network access lets agents git fetch other branches; --add-dir makes
+		// the shared .git writable, which lives outside a worktree.
+		args := []string{"exec", "--sandbox", "workspace-write",
+			"-c", "sandbox_workspace_write.network_access=true"}
+		if gitDir != "" {
+			args = append(args, "--add-dir", gitDir)
+		}
 		if e.cfg.Model != "" {
 			args = append(args, "-m", e.cfg.Model)
 		}

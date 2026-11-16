@@ -1,6 +1,8 @@
 package llm
 
 import (
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -14,7 +16,7 @@ func argsContain(args []string, want string) bool {
 
 func TestAgentArgsClaude(t *testing.T) {
 	e := New(config.LLMConfig{Provider: "anthropic", Model: "claude-sonnet-4-6"})
-	args := e.agentArgs("do the thing")
+	args := e.agentArgs("do the thing", "")
 
 	for _, want := range []string{"-p", "do the thing", "stream-json", "--verbose", "--allowedTools"} {
 		if !argsContain(args, want) {
@@ -28,7 +30,7 @@ func TestAgentArgsClaude(t *testing.T) {
 
 func TestAgentArgsCrush(t *testing.T) {
 	e := New(config.LLMConfig{Provider: "openai", Model: "gpt-4o"})
-	args := e.agentArgs("do the thing")
+	args := e.agentArgs("do the thing", "")
 
 	if args[0] != "run" {
 		t.Errorf("crush agentArgs should start with \"run\", got %v", args)
@@ -49,7 +51,7 @@ func TestAgentArgsCrush(t *testing.T) {
 
 func TestAgentArgsClaudeNoModel(t *testing.T) {
 	e := New(config.LLMConfig{Provider: "anthropic"})
-	args := e.agentArgs("x")
+	args := e.agentArgs("x", "")
 	if argsContain(args, "--model") {
 		t.Errorf("claude agentArgs should omit --model when unset: %v", strings.Join(args, " "))
 	}
@@ -91,7 +93,7 @@ func TestArgsCodex(t *testing.T) {
 		}
 	})
 	t.Run("agent can write", func(t *testing.T) {
-		args := e.agentArgs("do the thing")
+		args := e.agentArgs("do the thing", "")
 		if args[0] != "exec" || !argsContain(args, "--sandbox") || !argsContain(args, "workspace-write") {
 			t.Errorf("codex agentArgs should use workspace-write sandbox: %v", args)
 		}
@@ -106,9 +108,53 @@ func TestArgsCodex(t *testing.T) {
 		}
 	})
 	t.Run("no model flag when unset", func(t *testing.T) {
-		args := New(config.LLMConfig{Provider: "openai", CLI: "codex"}).agentArgs("x")
+		args := New(config.LLMConfig{Provider: "openai", CLI: "codex"}).agentArgs("x", "")
 		if argsContain(args, "-m") {
 			t.Errorf("codex agentArgs should omit -m when unset: %v", args)
+		}
+	})
+	t.Run("network on and shared git dir writable", func(t *testing.T) {
+		args := e.agentArgs("x", "/repo/.git")
+		if !argsContain(args, "sandbox_workspace_write.network_access=true") {
+			t.Errorf("codex agentArgs should enable network access: %v", args)
+		}
+		if !argsContain(args, "--add-dir") || !argsContain(args, "/repo/.git") {
+			t.Errorf("codex agentArgs should add the shared git dir: %v", args)
+		}
+		if args[len(args)-1] != "x" {
+			t.Errorf("codex agentArgs should end with the prompt: %v", args)
+		}
+	})
+	t.Run("no add-dir without git dir", func(t *testing.T) {
+		if args := e.agentArgs("x", ""); argsContain(args, "--add-dir") {
+			t.Errorf("codex agentArgs should omit --add-dir when gitDir is empty: %v", args)
+		}
+	})
+}
+
+func TestGitCommonDir(t *testing.T) {
+	t.Run("worktree resolves to main repo .git", func(t *testing.T) {
+		root, err := filepath.EvalSymlinks(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		repo, wt := filepath.Join(root, "repo"), filepath.Join(root, "wt")
+		for _, c := range [][]string{
+			{"init", "-q", repo},
+			{"-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"},
+			{"-C", repo, "worktree", "add", "-q", "-b", "agent/x", wt},
+		} {
+			if out, err := exec.Command("git", c...).CombinedOutput(); err != nil {
+				t.Fatalf("git %v: %v\n%s", c, err, out)
+			}
+		}
+		if got, want := gitCommonDir(wt), filepath.Join(repo, ".git"); got != want {
+			t.Errorf("gitCommonDir(worktree) = %q, want %q", got, want)
+		}
+	})
+	t.Run("non-repo returns empty", func(t *testing.T) {
+		if got := gitCommonDir(t.TempDir()); got != "" {
+			t.Errorf("gitCommonDir(non-repo) = %q, want empty", got)
 		}
 	})
 }
