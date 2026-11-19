@@ -166,16 +166,18 @@ func diffPath(file string) string {
 }
 
 // packUnits groups units in order into batches of at most capacity bytes.
+// Each unit also costs its line in the batch's "Units in this batch" list.
 func packUnits(units []reviewUnit, capacity int) [][]reviewUnit {
 	var batches [][]reviewUnit
 	size := 0
 	for _, u := range units {
-		if len(batches) == 0 || size+len(u.text) > capacity {
+		cost := len(u.text) + len(u.label) + len("\n- ")
+		if len(batches) == 0 || size+cost > capacity {
 			batches = append(batches, nil)
 			size = 0
 		}
 		batches[len(batches)-1] = append(batches[len(batches)-1], u)
-		size += len(u.text)
+		size += cost
 	}
 	return batches
 }

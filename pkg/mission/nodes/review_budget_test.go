@@ -321,3 +321,23 @@ func TestReviewVerifiesPriorFeedback(t *testing.T) {
 		}
 	})
 }
+
+func TestReviewManySmallFilesStayInBudget(t *testing.T) {
+	dir := reviewFixture(t)
+	// Long paths make the per-batch unit list large enough to overflow a
+	// batch whose packing ignores it.
+	long := strings.Repeat("deeply-nested-directory-", 6)
+	for i := range 900 {
+		write(t, dir, fmt.Sprintf("%sfile-%04d.ts", long, i), strings.Repeat("y\n", 250))
+	}
+	f := &fakeReviewer{}
+	out, err := runReview(t, newFakeReview(f), dir, nil)
+	if err != nil || out.Envelope.Decision != graph.APPROVED {
+		t.Fatal(out, err)
+	}
+	for i, p := range f.prompts {
+		if len(p) > handoff.ReviewLimit {
+			t.Fatalf("call %d is %d bytes, over budget", i, len(p))
+		}
+	}
+}
