@@ -816,3 +816,26 @@ func TestRunGatesRestoresTrackedSideEffects(t *testing.T) {
 		assertFile(t, dir, "out.txt", "built\n")
 	})
 }
+
+func TestPnpmCommand(t *testing.T) {
+	binDir := t.TempDir()
+	writeExec(t, binDir, "pnpm", "#!/bin/sh\necho 9.15.9\n")
+	writeExec(t, binDir, "corepack", "#!/bin/sh\nexit 0\n")
+	t.Setenv("PATH", binDir)
+
+	cases := []struct{ name, pkg, want string }{
+		{"no packageManager", `{}`, "pnpm"},
+		{"matching version", `{"packageManager":"pnpm@9.15.9"}`, "pnpm"},
+		{"other version uses corepack", `{"packageManager":"pnpm@11.0.8+sha512.abc"}`, "corepack pnpm@11.0.8"},
+		{"not pnpm", `{"packageManager":"yarn@4.0.0"}`, "pnpm"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFile(t, dir, "package.json", c.pkg)
+			if got := strings.Join(pnpmCommand(dir), " "); got != c.want {
+				t.Errorf("pnpmCommand = %q, want %q", got, c.want)
+			}
+		})
+	}
+}

@@ -1,6 +1,7 @@
 package module
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -138,17 +139,24 @@ func CommandAvailable(command string) bool {
 }
 
 // InstallDeps installs project dependencies in the worktree for the given
-// language. It is best-effort: failures are non-fatal so the agent can still
-// run, and language-specific manifests (requirements.txt, go.mod) are skipped
-// when absent.
-func InstallDeps(lang, worktree string, out io.Writer) {
+// language. A failed pnpm install is returned so a worktree without
+// node_modules never reaches the gates; Python and Go stay best-effort, and
+// their manifests (requirements.txt, go.mod) are skipped when absent.
+func InstallDeps(lang, worktree string, out io.Writer) error {
 	switch strings.ToLower(lang) {
 	case "typescript", "ts":
-		fmt.Fprintf(out, "   Installing dependencies (pnpm)...\n")
-		_ = RunShell("pnpm install --frozen-lockfile", worktree, out)
+		pnpm := pnpmCommand(worktree)
+		fmt.Fprintf(out, "   Installing dependencies (%s)...\n", strings.Join(pnpm, " "))
+		cmd := exec.Command(pnpm[0], append(pnpm[1:], "install", "--frozen-lockfile")...)
+		cmd.Dir = worktree
+		cmd.Stdout = out
+		cmd.Stderr = out
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("%s install --frozen-lockfile: %w", strings.Join(pnpm, " "), err)
+		}
 	case "python", "py":
 		if _, err := os.Stat(filepath.Join(worktree, "requirements.txt")); err != nil {
-			return
+			return nil
 		}
 		// Equivalent to `python3 -m venv .venv && source .venv/bin/activate &&
 		// pip install -r requirements.txt`, but RunShell has no shell so we
@@ -168,11 +176,40 @@ func InstallDeps(lang, worktree string, out io.Writer) {
 		}
 	case "go":
 		if _, err := os.Stat(filepath.Join(worktree, "go.mod")); err != nil {
-			return
+			return nil
 		}
 		fmt.Fprintf(out, "   Installing dependencies (go mod download)...\n")
 		RunShell("go mod download", worktree, out) //nolint:errcheck
 	}
+	return nil
+}
+
+// pnpmCommand returns the pnpm to run in worktree. When package.json pins
+// pnpm@X via packageManager and the pnpm on PATH is another version, it uses
+// corepack so the lockfile is read by the version that wrote it.
+func pnpmCommand(worktree string) []string {
+	data, err := os.ReadFile(filepath.Join(worktree, "package.json"))
+	if err != nil {
+		return []string{"pnpm"}
+	}
+	var pkg struct {
+		PackageManager string `json:"packageManager"`
+	}
+	if json.Unmarshal(data, &pkg) != nil {
+		return []string{"pnpm"}
+	}
+	want, ok := strings.CutPrefix(pkg.PackageManager, "pnpm@")
+	if !ok {
+		return []string{"pnpm"}
+	}
+	want, _, _ = strings.Cut(want, "+")
+	if got, err := exec.Command("pnpm", "-v").Output(); err == nil && strings.TrimSpace(string(got)) == want {
+		return []string{"pnpm"}
+	}
+	if _, err := exec.LookPath("corepack"); err != nil {
+		return []string{"pnpm"}
+	}
+	return []string{"corepack", "pnpm@" + want}
 }
 
 // venvUsable reports whether the worktree's .venv python starts.
