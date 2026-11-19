@@ -149,6 +149,9 @@ func InstallDeps(lang, worktree string, out io.Writer) error {
 		fmt.Fprintf(out, "   Installing dependencies (%s)...\n", strings.Join(pnpm, " "))
 		cmd := exec.Command(pnpm[0], append(pnpm[1:], "install", "--frozen-lockfile")...)
 		cmd.Dir = worktree
+		// CI=true lets pnpm purge a node_modules left by another pnpm version
+		// instead of aborting with ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY.
+		cmd.Env = append(os.Environ(), "CI=true")
 		cmd.Stdout = out
 		cmd.Stderr = out
 		if err := cmd.Run(); err != nil {
