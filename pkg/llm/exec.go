@@ -219,6 +219,7 @@ func (e *Executor) Preflight() error {
 }
 
 func (e *Executor) headlessArgs(prompt string) []string {
+	prompt = argSafe(prompt)
 	switch e.CLI() {
 	case "claude":
 		// Headless = pure text generation. Disallow every tool so the model
@@ -267,6 +268,7 @@ func gitCommonDir(workdir string) string {
 // directory (empty if none); codex needs it writable so agents can fetch and
 // check out files from other branches.
 func (e *Executor) agentArgs(prompt, gitDir string) []string {
+	prompt = argSafe(prompt)
 	switch e.CLI() {
 	case "claude":
 		// stream-json emits an event per message/tool call as it happens;
@@ -355,4 +357,10 @@ func checkInstalled(cli string) error {
 		return fmt.Errorf("%s not found in PATH", cli)
 	}
 	return nil
+}
+
+// argSafe replaces NUL bytes, which exec rejects in argv ("invalid argument"),
+// e.g. a diff of source holding a literal NUL.
+func argSafe(s string) string {
+	return strings.ReplaceAll(s, "\x00", "\u2400")
 }
