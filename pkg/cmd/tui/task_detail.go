@@ -109,7 +109,7 @@ func (m *Model) detailGateFeedback(w, rows int) string {
 		b.WriteString(m.theme.Subtitle.Render(label+" ──") + "\n")
 		used++
 
-		for _, line := range strings.Split(strings.TrimRight(RenderGateOutput(s.Output), "\n"), "\n") {
+		for _, line := range strings.Split(strings.TrimRight(RenderGateOutput(s.Output, s.OutputJSON), "\n"), "\n") {
 			if used >= rows {
 				break
 			}

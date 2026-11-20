@@ -199,15 +199,27 @@ func TestAddTaskModalFitsMinimumTerminal(t *testing.T) {
 
 func TestGateFeedbackRendering(t *testing.T) {
 	t.Run("pre-migration empty output renders graceful note", func(t *testing.T) {
-		got := RenderGateOutput("")
+		got := RenderGateOutput("", "")
 		if got != gateNotAvailable {
 			t.Errorf("expected graceful-degradation message, got %q", got)
 		}
 	})
 	t.Run("captured output passes through", func(t *testing.T) {
-		got := RenderGateOutput("FAIL: TestX")
+		got := RenderGateOutput("FAIL: TestX", `{"feedback":"other"}`)
 		if got != "FAIL: TestX" {
 			t.Errorf("expected verbatim output, got %q", got)
+		}
+	})
+	t.Run("empty output falls back to envelope feedback", func(t *testing.T) {
+		got := RenderGateOutput("", `{"decision":"REJECTED","feedback":"Gate \"go\" failed","output":""}`)
+		if got != `Gate "go" failed` {
+			t.Errorf("expected envelope feedback, got %q", got)
+		}
+	})
+	t.Run("empty output and empty envelope feedback renders graceful note", func(t *testing.T) {
+		got := RenderGateOutput("", `{"decision":"REJECTED","feedback":"","output":""}`)
+		if got != gateNotAvailable {
+			t.Errorf("expected graceful-degradation message, got %q", got)
 		}
 	})
 }

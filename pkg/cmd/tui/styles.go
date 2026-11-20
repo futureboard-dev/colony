@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"os"
 	"strings"
 
@@ -286,11 +287,18 @@ func (t *Theme) LoopStatusStyle(label string) lipgloss.Style {
 // pre-migration rows whose steps.output is empty.
 const gateNotAvailable = "(gate output not available — recorded before per-step feedback was added)"
 
-// RenderGateOutput renders a step's stored output; empty output (pre-migration
-// or never captured) is replaced with the graceful-degradation note.
-func RenderGateOutput(output string) string {
-	if strings.TrimSpace(output) == "" {
-		return gateNotAvailable
+// RenderGateOutput renders a step's stored output. Rows written before gate
+// feedback was persisted to steps.output still carry it in the envelope's
+// feedback field, so fall back to that before the graceful-degradation note.
+func RenderGateOutput(output, outputJSON string) string {
+	if strings.TrimSpace(output) != "" {
+		return output
 	}
-	return output
+	var env struct {
+		Feedback string `json:"feedback"`
+	}
+	if json.Unmarshal([]byte(outputJSON), &env) == nil && strings.TrimSpace(env.Feedback) != "" {
+		return env.Feedback
+	}
+	return gateNotAvailable
 }

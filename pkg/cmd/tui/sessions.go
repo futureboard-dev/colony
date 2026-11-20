@@ -178,7 +178,7 @@ func (m *Model) stepTimeline(sessionID string, w, rows int) string {
 		used++
 
 		if s.Decision == "REJECTED" && used < rows {
-			first := firstLine(RenderGateOutput(s.Output))
+			first := firstLine(RenderGateOutput(s.Output, s.OutputJSON))
 			b.WriteString("     " + m.theme.Dim.Render("└─ ") +
 				m.theme.StateBlocked.Render(truncate(first, maxInt(10, w-10))) + "\n")
 			used++
