@@ -693,7 +693,9 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 	if err != nil {
 		return fmt.Errorf("setup worktree: %w", err)
 	}
-	module.InstallDeps(lang, workdir, logw)
+	if err := module.InstallDeps(lang, workdir, logw); err != nil {
+		return fmt.Errorf("install deps: %w", err)
+	}
 	if task.Branch != branch {
 		if err := store.UpdateTaskBranch(task.ID, branch); err != nil {
 			return fmt.Errorf("record task branch: %w", err)
@@ -863,7 +865,9 @@ func integrateTask(ctx context.Context, cfg *config.Config, workdir, branch, bas
 	isTS := false
 	if l := strings.ToLower(lang); l == "typescript" || l == "ts" {
 		isTS = true
-		module.InstallDeps(lang, workdir, out)
+		if err := module.InstallDeps(lang, workdir, out); err != nil {
+			return "", fmt.Errorf("install deps: %w", err)
+		}
 	}
 
 	// Before gating, auto-fix deterministically and scope format/lint to the

@@ -251,7 +251,9 @@ func runCraft(cmd *cobra.Command, args []string) error {
 	if err := module.CopyFile(craftSpec, filepath.Join(worktreePath, "SPEC.md")); err != nil {
 		return err
 	}
-	module.InstallDeps(craftLang, worktreePath, out)
+	if err := module.InstallDeps(craftLang, worktreePath, out); err != nil {
+		return err
+	}
 	fmt.Fprintf(out, "%s✓ Worktree ready: %s%s\n", ansiGreen, worktreePath, ansiReset)
 
 	// Step 2: Agent writes code

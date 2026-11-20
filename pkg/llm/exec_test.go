@@ -231,3 +231,14 @@ func TestPreflightSkipsCodex(t *testing.T) {
 		t.Errorf("preflight is crush-only, expected nil for codex: %v", err)
 	}
 }
+
+// A NUL in the prompt (e.g. a diff of source with a literal NUL) made exec
+// fail with "invalid argument" before claude even started.
+func TestArgsSurviveNULInPrompt(t *testing.T) {
+	e := New(config.LLMConfig{Provider: "anthropic"})
+	for _, args := range [][]string{e.headlessArgs("a\x00b"), e.agentArgs("a\x00b", "")} {
+		if err := exec.Command("/bin/echo", args...).Run(); err != nil {
+			t.Fatalf("exec with prompt args: %v", err)
+		}
+	}
+}
