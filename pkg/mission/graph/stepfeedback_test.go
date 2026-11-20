@@ -21,6 +21,22 @@ func TestStepFeedback(t *testing.T) {
 		}
 	})
 
+	t.Run("gate REJECTED with feedback and empty output stores feedback", func(t *testing.T) {
+		// Shape produced by nodes.GateNode: failure text lives in Feedback.
+		out := Output{
+			AgentID: "gate",
+			Envelope: Envelope{
+				Decision: REJECTED,
+				Feedback: "Gate \"go\" failed: exit status 1.\n\nFAIL: TestX",
+				Output:   json.RawMessage(`""`),
+			},
+		}
+		got := stepFeedback(RoleGate, out, nil)
+		if got != out.Envelope.Feedback {
+			t.Errorf("expected feedback to be stored, got %q", got)
+		}
+	})
+
 	t.Run("gate APPROVED stores empty", func(t *testing.T) {
 		out := Output{Envelope: Envelope{Decision: APPROVED, Output: json.RawMessage(`"all gates passed"`)}}
 		if got := stepFeedback(RoleGate, out, nil); got != "" {

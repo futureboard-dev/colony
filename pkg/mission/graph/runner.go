@@ -416,6 +416,10 @@ func stepFeedback(role string, out Output, execErr error) string {
 	if execErr != nil || out.Envelope.Decision != REJECTED {
 		return ""
 	}
+	// The gate node carries its failure text in Feedback and leaves Output empty.
+	if out.Envelope.Feedback != "" {
+		return out.Envelope.Feedback
+	}
 	return out.Envelope.OutputText()
 }
 
