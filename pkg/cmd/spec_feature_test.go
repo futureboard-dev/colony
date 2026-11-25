@@ -501,6 +501,49 @@ func resetSpecFeatureFlags() {
 	sfProvider = "deepseek"
 }
 
+func TestSpecFeatureInteractiveWithoutRequirements(t *testing.T) {
+	dir := t.TempDir()
+	setupMinimalProject(t, dir)
+	origWd, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(origWd)
+
+	fakeBin := t.TempDir()
+	promptFile := filepath.Join(t.TempDir(), "prompt.txt")
+	taskFile := filepath.Join(dir, ".colony", "specs", "ai-model-litellm-sync", "TASK.md")
+	fakeClaude := "#!/bin/sh\n" +
+		"printf '%s' \"$1\" > \"$PROMPT_FILE\"\n" +
+		"printf '# Feature: ai-model-litellm-sync\\n\\n# Agent Task Spec\\n' > \"$TASK_FILE\"\n"
+	if err := os.WriteFile(filepath.Join(fakeBin, "claude"), []byte(fakeClaude), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("PROMPT_FILE", promptFile)
+	t.Setenv("TASK_FILE", taskFile)
+
+	resetSpecFeatureFlags()
+	sfInteractive = true
+
+	cmd := &cobra.Command{}
+	if _, err := captureStdout(t, func() error {
+		return runSpecFeature(cmd, []string{"ai-model-litellm-sync"})
+	}); err != nil {
+		t.Fatalf("interactive spec-feature should allow empty requirements: %v", err)
+	}
+
+	prompt, err := os.ReadFile(promptFile)
+	if err != nil {
+		t.Fatalf("read interactive prompt: %v", err)
+	}
+	if !strings.Contains(string(prompt), "Requirements:\n") ||
+		!strings.Contains(string(prompt), "Ask me clarifying questions") {
+		t.Errorf("interactive prompt should support gathering requirements, got:\n%s", prompt)
+	}
+	if _, err := os.Stat(taskFile); err != nil {
+		t.Errorf("expected interactive agent to write TASK.md: %v", err)
+	}
+}
+
 func TestSpecFeatureSplit(t *testing.T) {
 	splitFixture := fourPartFixture()
 

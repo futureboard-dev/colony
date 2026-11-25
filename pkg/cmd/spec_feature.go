@@ -113,7 +113,7 @@ func runSpecFeature(cmd *cobra.Command, args []string) error {
 		input = args[1]
 	}
 
-	if strings.TrimSpace(input) == "" {
+	if strings.TrimSpace(input) == "" && !sfInteractive {
 		return fmt.Errorf("requirements are empty — pass text as the argument or use --file")
 	}
 
