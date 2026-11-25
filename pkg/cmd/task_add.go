@@ -17,7 +17,7 @@ import (
 )
 
 var (
-	taskAddFile     string
+	taskAddFile     []string
 	taskAddBase     string
 	taskAddLang     string
 	taskAddNoFormat bool
@@ -31,7 +31,7 @@ var taskAddCmd = &cobra.Command{
 	Long: `Enqueues a new task into the loop queue for processing by colony loop.
 
 Flags:
-  --file <path>     Path to a spec file (stored in spec_path)
+  --file <path>     Path to a spec file; repeat or comma-separate to combine several files
   --base <branch>   Base branch (stored in base_branch)
   --lang <lang>     Language for gates: typescript, python, go, none (required)
   --no-format       Comma-joined gate names to skip (e.g. --no-format skips "format")
@@ -42,7 +42,7 @@ Flags:
 }
 
 func init() {
-	taskAddCmd.Flags().StringVar(&taskAddFile, "file", "", "path to a spec file")
+	taskAddCmd.Flags().StringSliceVar(&taskAddFile, "file", nil, "path to a spec file; repeat or comma-separate to combine several files")
 	taskAddCmd.Flags().StringVar(&taskAddBase, "base", "", "base branch")
 	taskAddCmd.Flags().StringVar(&taskAddLang, "lang", "", "language for gates: typescript, python, go, none (required)")
 	taskAddCmd.Flags().BoolVar(&taskAddNoFormat, "no-format", false, "skip format gate")
@@ -55,7 +55,7 @@ func runTaskAdd(cmd *cobra.Command, args []string) error {
 	}
 
 	description := strings.Join(args, " ")
-	if description == "" && taskAddFile == "" {
+	if description == "" && len(taskAddFile) == 0 {
 		return fmt.Errorf("task description or --file is required")
 	}
 
@@ -66,16 +66,21 @@ func runTaskAdd(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	specPath := taskAddFile
-	if specPath != "" {
-		abs, err := filepath.Abs(specPath)
+	specPaths := make([]string, len(taskAddFile))
+	for i, path := range taskAddFile {
+		abs, err := filepath.Abs(path)
 		if err != nil {
 			return fmt.Errorf("resolve spec path: %w", err)
 		}
 		if _, err := os.Stat(abs); err != nil {
-			return fmt.Errorf("spec file not found: %s", specPath)
+			return fmt.Errorf("spec file not found: %s", path)
 		}
-		specPath = abs
+		specPaths[i] = abs
+	}
+
+	specPath := ""
+	if len(specPaths) == 1 {
+		specPath = specPaths[0]
 	}
 
 	gateOverrides := ""
@@ -99,7 +104,24 @@ func runTaskAdd(cmd *cobra.Command, args []string) error {
 	}
 	defer func() { _ = store.Close() }()
 
+	taskID := ""
+	if len(specPaths) > 1 {
+		taskID = uuid.New().String()
+		data, err := readSpecFiles(specPaths)
+		if err != nil {
+			return fmt.Errorf("read spec files: %w", err)
+		}
+		specPath = filepath.Join(root, ".colony", "specs", taskID, "TASK.md")
+		if err := os.MkdirAll(filepath.Dir(specPath), 0755); err != nil {
+			return fmt.Errorf("create combined spec directory: %w", err)
+		}
+		if err := os.WriteFile(specPath, data, 0644); err != nil {
+			return fmt.Errorf("write combined spec: %w", err)
+		}
+	}
+
 	task := storage.Task{
+		ID:            taskID,
 		Description:   description,
 		SpecPath:      specPath,
 		BaseBranch:    taskAddBase,

@@ -384,6 +384,10 @@ colony task add "add rate limiting to the API"
 # isolated worktree, where the build/fix prompts expect to read it
 colony task add --file SPEC.md
 
+# Combine several specs into one task, in the order provided
+# (comma-separated paths also work: --file API.md,UI.md)
+colony task add --file API.md --file UI.md
+
 # Set the base branch the task's worktree branches from
 colony task add --file SPEC.md --base develop
 
@@ -393,7 +397,7 @@ colony task add --file SPEC.md --no-format
 
 | Flag          | Default | Description                                  |
 | ------------- | ------- | -------------------------------------------- |
-| `--file`      | ""      | Path to a spec file (stored in `spec_path`)  |
+| `--file`      | ""      | Spec path(s); multiple files are combined in order |
 | `--base`      | ""      | Base branch the worktree branches from       |
 | `--no-format` | false   | Skip the format gate for this task           |
 

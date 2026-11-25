@@ -19,7 +19,7 @@ func TestTaskAdd_InlineDescription(t *testing.T) {
 	os.Chdir(dir)
 	defer os.Chdir(origWd)
 
-	taskAddFile = ""
+	taskAddFile = nil
 	taskAddBase = ""
 	taskAddLang = "go"
 	taskAddNoFormat = false
@@ -69,7 +69,7 @@ func TestTaskAdd_FileFlag(t *testing.T) {
 	os.Chdir(dir)
 	defer os.Chdir(origWd)
 
-	taskAddFile = specPath
+	taskAddFile = []string{specPath}
 	taskAddBase = ""
 	taskAddLang = "go"
 	taskAddNoFormat = false
@@ -99,6 +99,72 @@ func TestTaskAdd_FileFlag(t *testing.T) {
 	}
 }
 
+func TestTaskAdd_MultiFileFlag(t *testing.T) {
+	dir := initTestRepo(t)
+	setupMinimalProject(t, dir)
+
+	apiPath := filepath.Join(dir, "API.md")
+	uiPath := filepath.Join(dir, "UI.md")
+	if err := os.WriteFile(apiPath, []byte("# API Spec\n\nBuild the API.\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(uiPath, []byte("# UI Spec\n\nBuild the UI.\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	origWd, _ := os.Getwd()
+	os.Chdir(dir)
+	defer os.Chdir(origWd)
+
+	taskAddFile = []string{apiPath, uiPath}
+	taskAddBase = ""
+	taskAddLang = "go"
+	taskAddNoFormat = false
+
+	cmd := &cobra.Command{}
+	if err := taskAddCmd.RunE(cmd, nil); err != nil {
+		t.Fatalf("RunE: %v", err)
+	}
+
+	store, err := storage.Open(filepath.Join(dir, ".colony", "missions.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	tasks, err := store.QueryTasks(storage.TaskFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+
+	task := tasks[0]
+	expectedSpecPath := filepath.Join(dir, ".colony", "specs", task.ID, "TASK.md")
+	if task.SpecPath != expectedSpecPath {
+		t.Errorf("expected combined spec_path %q, got %q", expectedSpecPath, task.SpecPath)
+	}
+
+	input, err := taskInput(&task)
+	if err != nil {
+		t.Fatalf("read combined task input: %v", err)
+	}
+	for _, want := range []string{
+		"## " + apiPath,
+		"Build the API.",
+		"## " + uiPath,
+		"Build the UI.",
+	} {
+		if !strings.Contains(input, want) {
+			t.Errorf("combined task input missing %q:\n%s", want, input)
+		}
+	}
+	if strings.Index(input, "Build the API.") > strings.Index(input, "Build the UI.") {
+		t.Error("expected combined specs to preserve --file order")
+	}
+}
+
 func TestTaskAdd_FileFlagMissing(t *testing.T) {
 	dir := initTestRepo(t)
 	setupMinimalProject(t, dir)
@@ -107,7 +173,7 @@ func TestTaskAdd_FileFlagMissing(t *testing.T) {
 	os.Chdir(dir)
 	defer os.Chdir(origWd)
 
-	taskAddFile = filepath.Join(dir, "nonexistent.md")
+	taskAddFile = []string{filepath.Join(dir, "nonexistent.md")}
 	taskAddBase = ""
 	taskAddLang = "go"
 	taskAddNoFormat = false
@@ -130,7 +196,7 @@ func TestTaskAdd_BaseFlag(t *testing.T) {
 	os.Chdir(dir)
 	defer os.Chdir(origWd)
 
-	taskAddFile = ""
+	taskAddFile = nil
 	taskAddBase = "feature/foo"
 	taskAddLang = "go"
 	taskAddNoFormat = false
@@ -168,7 +234,7 @@ func TestTaskAdd_NoFormatFlag(t *testing.T) {
 	os.Chdir(dir)
 	defer os.Chdir(origWd)
 
-	taskAddFile = ""
+	taskAddFile = nil
 	taskAddBase = ""
 	taskAddLang = "go"
 	taskAddNoFormat = true
@@ -212,7 +278,7 @@ func TestTaskAdd_AllFlags(t *testing.T) {
 	os.Chdir(dir)
 	defer os.Chdir(origWd)
 
-	taskAddFile = specPath
+	taskAddFile = []string{specPath}
 	taskAddBase = "develop"
 	taskAddLang = "typescript"
 	taskAddNoFormat = true
@@ -262,7 +328,7 @@ func TestTaskAdd_LangRequired(t *testing.T) {
 	os.Chdir(dir)
 	defer os.Chdir(origWd)
 
-	taskAddFile = ""
+	taskAddFile = nil
 	taskAddBase = ""
 	taskAddLang = ""
 	taskAddNoFormat = false
@@ -285,7 +351,7 @@ func TestTaskAdd_LangInvalid(t *testing.T) {
 	os.Chdir(dir)
 	defer os.Chdir(origWd)
 
-	taskAddFile = ""
+	taskAddFile = nil
 	taskAddBase = ""
 	taskAddLang = "rust"
 	taskAddNoFormat = false
@@ -308,7 +374,7 @@ func TestTaskAdd_NoLLM(t *testing.T) {
 	os.Chdir(dir)
 	defer os.Chdir(origWd)
 
-	taskAddFile = ""
+	taskAddFile = nil
 	taskAddBase = ""
 	taskAddLang = "go"
 	taskAddNoFormat = false
@@ -351,7 +417,8 @@ func writeTestParts(t *testing.T, specDir string, parts []specPart) {
 }
 
 func resetTaskAddFlags() {
-	taskAddFile, taskAddBase, taskAddLang, taskAddNoFormat, taskAddGroup = "", "", "", false, ""
+	taskAddFile = nil
+	taskAddBase, taskAddLang, taskAddNoFormat, taskAddGroup = "", "", false, ""
 }
 
 func TestTaskAddGroup(t *testing.T) {
