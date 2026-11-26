@@ -100,7 +100,7 @@ func TestReviewIncludesUntrackedExcludesDuplicateSpec(t *testing.T) {
 	dir := reviewFixture(t)
 	write(t, dir, "new.go", "required implementation")
 	before := git(t, dir, "ls-files", "--stage")
-	diff, err := reviewDiff(dir)
+	diff, err := reviewDiff(dir, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func TestReviewIncludesExcludedPartNotes(t *testing.T) {
 	}
 	t.Run("excluded notes are reviewed", func(t *testing.T) {
 		write(t, dir, PartNotesFile, "routes already covered; no error registry")
-		diff, err := reviewDiff(dir)
+		diff, err := reviewDiff(dir, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -131,7 +131,7 @@ func TestReviewIncludesExcludedPartNotes(t *testing.T) {
 		if err := os.Remove(filepath.Join(dir, PartNotesFile)); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := reviewDiff(dir); err != nil {
+		if _, err := reviewDiff(dir, ""); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -150,7 +150,7 @@ func TestReviewSmallDiffIsOneCall(t *testing.T) {
 func TestReviewLargeDiffBatchesWithCompleteCoverage(t *testing.T) {
 	dir := reviewFixture(t)
 	largeChange(t, dir)
-	diff, err := reviewDiff(dir)
+	diff, err := reviewDiff(dir, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,19 +244,21 @@ func TestReviewBinaryFailsClosed(t *testing.T) {
 	}
 }
 
-func TestReviewListsSeparatelyCommittedFiles(t *testing.T) {
+func TestReviewSeesWorkCommittedOnBranch(t *testing.T) {
 	dir := reviewFixture(t)
+	write(t, dir, "base.go", "already on base")
+	git(t, dir, "add", "base.go")
+	git(t, dir, "commit", "-m", "base work")
 	git(t, dir, "update-ref", "refs/remotes/origin/main", "HEAD")
 	write(t, dir, "client.gen.ts", "generated")
 	git(t, dir, "add", "client.gen.ts")
 	git(t, dir, "commit", "-m", "regenerate client")
-	write(t, dir, "new.go", "required implementation")
 	f := &fakeReviewer{}
-	if _, err := runReview(t, newFakeReview(f), dir, map[string]any{"base": "main"}); err != nil {
-		t.Fatal(err)
+	out, err := runReview(t, newFakeReview(f), dir, map[string]any{"base": "main"})
+	if err != nil || out.Envelope.Decision != graph.APPROVED || len(f.prompts) != 1 {
+		t.Fatal(out, err, len(f.prompts))
 	}
-	p := f.prompts[0]
-	if !strings.Contains(p, "Already committed on this branch") || !strings.Contains(p, "client.gen.ts") || strings.Contains(p, "+generated") {
+	if p := f.prompts[0]; !strings.Contains(p, "+generated") || strings.Contains(p, "already on base") {
 		t.Fatal(p)
 	}
 }

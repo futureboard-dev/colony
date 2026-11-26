@@ -12,6 +12,10 @@ Rules:
 - You are running non-interactively: nobody will answer questions. Never ask
   for confirmation or offer options — use your best judgment and make the change.
 - Do not change code the feedback does not concern.
+- If an item needs no code change (a check that already passes, a generator
+  that produces no diff, a file that does not exist), do not invent one: run
+  the check and add the item, the command and its result to PART_NOTES.md at
+  the repository root. It is not committed, and the reviewer reads it.
 - Do NOT run git.
 {{- if .Checks}}
 - Check your fix by running the check that failed (the pipeline re-runs all

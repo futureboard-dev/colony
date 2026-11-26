@@ -29,6 +29,12 @@ Be strict but fair: if the implementation genuinely fulfils the spec and the
 code is sound, APPROVE it. Do not reject over style nits, naming, or formatting
 — the deterministic gates own those.
 
+The diff may include PART_NOTES.md: the agent's notes, never committed. A check
+recorded there with its command and result counts as done. Do not reject
+because a check that needed no file change left nothing else in the diff, and
+do not ask for proof that is already there. Reject if a note contradicts the
+diff.
+
 You are given the specification and the git diff of the implementation below.
 
 Return ONLY a JSON object, no prose around it:

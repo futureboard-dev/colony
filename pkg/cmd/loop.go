@@ -709,10 +709,8 @@ func processTask(ctx context.Context, cfg *config.Config, root string, store *st
 	if err := os.WriteFile(filepath.Join(workdir, "SPEC.md"), []byte(input), 0644); err != nil {
 		return fmt.Errorf("write SPEC.md: %w", err)
 	}
-	if task.GroupID != "" {
-		if err := excludeFromGit(workdir, "/"+partNotesFile); err != nil {
-			return fmt.Errorf("exclude %s: %w", partNotesFile, err)
-		}
+	if err := excludeFromGit(workdir, "/"+partNotesFile); err != nil {
+		return fmt.Errorf("exclude %s: %w", partNotesFile, err)
 	}
 
 	baseBranch := task.BaseBranch
@@ -1557,8 +1555,8 @@ func partWithSource(partPath string, part groupPart) (string, error) {
 	return b.String(), nil
 }
 
-// partNotesFile is where a part's agent writes its handoff notes in its
-// worktree. It is git-excluded and moved to the spec folder when the part lands.
+// partNotesFile is where an agent writes its notes in its worktree. It is
+// git-excluded; a group part's copy is moved to the spec folder when it lands.
 const partNotesFile = nodes.PartNotesFile
 
 // partNotesPath is where a landed part's notes live: <spec-dir>/notes/<id>.md,

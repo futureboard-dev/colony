@@ -14,6 +14,10 @@ Rules:
 - If SPEC.md has a "Tests to Write" section, treat each item as a required test — do not skip any
 - Do NOT run git add, git commit, or git push — the pipeline handles this
 - Do NOT run lint, format, or tests — the pipeline handles this
+- If a Done Criteria step is a check that changes no files (a generator that
+  produces no diff, a grep that must print nothing, a file that does not
+  exist), run it and add the command and its result to PART_NOTES.md at the
+  repository root. It is not committed, and the reviewer reads it
 - When you are done writing code, stop
 
 Read SPEC.md now and implement the task.

@@ -22,6 +22,12 @@ other units must agree with), so the synthesis step can check it.
 
 Do not reject over style, naming or formatting — the deterministic gates own those.
 
+The diff may include PART_NOTES.md: the agent's notes, never committed. A check
+recorded there with its command and result counts as done. Do not reject
+because a check that needed no file change left nothing else in the diff, and
+do not ask for proof that is already there. Reject if a note contradicts the
+diff.
+
 Return ONLY a JSON object, no prose around it:
 
 {

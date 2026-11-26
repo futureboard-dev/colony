@@ -46,12 +46,12 @@ func (n *ReviewNode) Run(ctx context.Context, in graph.Input) (graph.Output, err
 		return graph.Output{}, fmt.Errorf("review coverage blocked: missing or unreadable SPEC.md: %v", specErr)
 	}
 	spec := string(specBytes)
-	diff, diffErr := reviewDiff(workdir)
+	base, _ := in.Params["base"].(string)
+	diff, diffErr := reviewDiff(workdir, base)
 	if diffErr != nil {
 		return graph.Output{}, fmt.Errorf("review coverage blocked: %w", diffErr)
 	}
-	base, _ := in.Params["base"].(string)
-	reviewContext := "## Specification\n\n" + spec + committedOnBranch(workdir, base)
+	reviewContext := "## Specification\n\n" + spec
 	if prior, _ := in.Params["prior_feedback"].(string); strings.TrimSpace(prior) != "" {
 		reviewContext += "\n\n## Previously reported issues\n\nAn earlier attempt was rejected for the issues below; some may since have been fixed. Verify each against the current diff: any that is still unresolved is a reason to reject.\n\n" + handoff.Bound(prior, handoff.FeedbackLimit)
 	}
@@ -106,32 +106,25 @@ func parseDecision(agentID string, result llm.Result) (graph.Envelope, error) {
 	return env, nil
 }
 
-// committedOnBranch lists files already committed on this branch since base.
-// They are absent from the working diff (e.g. regenerated API clients committed
-// separately), so the reviewer must not reject the task for missing them.
-func committedOnBranch(workdir, base string) string {
-	if base == "" {
-		return ""
-	}
-	cmd := exec.Command("git", "log", "--stat", "--format=%h %s", "origin/"+base+"..HEAD")
-	cmd.Dir = workdir
-	out, err := cmd.Output()
-	if err != nil || len(strings.TrimSpace(string(out))) == 0 {
-		return ""
-	}
-	return "\n\n## Already committed on this branch (not in the diff below)\n\n" + handoff.Bound(string(out), handoff.FeedbackLimit)
-}
-
-// PartNotesFile is where a group part's agent writes its handoff notes in its
-// worktree. It is git-excluded and moved to the spec folder when the part lands.
+// PartNotesFile is where an agent writes its notes in its worktree: checks that
+// changed no files, and a group part's handoff. It is git-excluded; a group
+// part's copy is moved to the spec folder when the part lands.
 const PartNotesFile = "PART_NOTES.md"
 
-// reviewDiff returns the combined staged+unstaged diff of the worktree against
-// HEAD plus every untracked file and the part's handoff notes, without
-// altering the index.
-// Returns "" when there are no changes.
-func reviewDiff(workdir string) (string, error) {
-	cmd := exec.Command("git", "diff", "--binary", "HEAD", "--", ".", ":(exclude)SPEC.md", ":(exclude).colony")
+// reviewDiff returns everything the task changed, committed or not: the
+// worktree against where the branch left origin/base (HEAD when there is no
+// base), plus every untracked file and the handoff notes, without altering
+// the index. Returns "" when there are no changes.
+func reviewDiff(workdir, base string) (string, error) {
+	from := "HEAD"
+	if base != "" {
+		mb := exec.Command("git", "merge-base", "HEAD", "origin/"+base)
+		mb.Dir = workdir
+		if out, err := mb.Output(); err == nil {
+			from = strings.TrimSpace(string(out))
+		}
+	}
+	cmd := exec.Command("git", "diff", "--binary", from, "--", ".", ":(exclude)SPEC.md", ":(exclude).colony")
 	cmd.Dir = workdir
 	out, err := cmd.Output()
 	if err != nil {
@@ -144,8 +137,8 @@ func reviewDiff(workdir string) (string, error) {
 		return "", err
 	}
 	files := strings.Split(string(names), "\x00")
-	// A group part's handoff notes are git-excluded so they never get
-	// committed, but they explain the part's choices and the reviewer needs them.
+	// The notes are git-excluded so they never get committed, but they explain
+	// the agent's choices and checks, and the reviewer needs them.
 	if _, err := os.Stat(filepath.Join(workdir, PartNotesFile)); err == nil {
 		ignored := exec.Command("git", "check-ignore", "-q", PartNotesFile)
 		ignored.Dir = workdir

@@ -10,6 +10,8 @@ fulfils the specification:
   by some unit in the manifest or confirmed in a batch verdict.
 - Every cross-file note must be resolved by another batch's verdict or by the
   manifest. An unresolved concern that could hide a real defect is a rejection.
+- A check recorded in PART_NOTES.md (the agent's uncommitted notes) with its
+  command and result is accounted for, even though it changed no other file.
 
 Do not reject over style, naming or formatting.
 
